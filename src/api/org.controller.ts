@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { OrgService } from '../services/org.service.js';
+import { MediaService } from '../services/media.service.js';
 import type { AuthenticatedUser } from '../models/index.js';
 
 export const OrgController = {
@@ -76,6 +77,29 @@ export const OrgController = {
         rejection_reason?: string;
       });
       res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async uploadLogo(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      if (!req.file) {
+        res.status(400).json({ error: { code: 'NO_FILE_PROVIDED' } });
+        return;
+      }
+      const publicUrl = await MediaService.setOrgLogo(req.params['id']!, user.id, req.file);
+      res.status(200).json({ logo_url: publicUrl });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async deleteLogo(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      await MediaService.deleteOrgLogo(req.params['id']!);
+      res.status(204).end();
     } catch (err) {
       next(err);
     }

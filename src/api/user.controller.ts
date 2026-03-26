@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { UserService } from '../services/user.service.js';
 import { TokenService } from '../services/token.service.js';
+import { MediaService } from '../services/media.service.js';
 import { sendAuthResponse } from '../utils/sendAuthResponse.js';
 import { serializeUserForAuth } from '../models/serializers.js';
 import type { AuthenticatedUser } from '../models/index.js';
@@ -19,12 +20,31 @@ export const UserController = {
   async updateMe(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const result = await UserService.updateMe(user.id, req.body as {
+      const result = await UserService.updateMe(user, req.body as {
         first_name?: string;
         last_name?: string;
         email?: string;
-        avatar_url?: string;
       });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async validatePassword(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      await UserService.validatePassword(user.id, (req.body as { password: string }).password);
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async toggle2fa(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.toggle2fa(user.id, (req.body as { enabled: boolean }).enabled);
       res.status(200).json(result);
     } catch (err) {
       next(err);
@@ -102,6 +122,30 @@ export const UserController = {
         org_id?: string;
       });
       res.status(201).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async uploadAvatar(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      if (!req.file) {
+        res.status(400).json({ error: { code: 'NO_FILE_PROVIDED' } });
+        return;
+      }
+      const publicUrl = await MediaService.setUserAvatar(user.id, user.id, req.file);
+      res.status(200).json({ avatar_url: publicUrl });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async deleteAvatar(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      await MediaService.deleteUserAvatar(user.id);
+      res.status(204).end();
     } catch (err) {
       next(err);
     }

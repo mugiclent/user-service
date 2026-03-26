@@ -12,7 +12,32 @@ export const AuthController = {
         password: string;
         device_name?: string;
       };
-      const { user, tokens } = await AuthService.login(identifier, password, device_name);
+      const result = await AuthService.login(identifier, password, device_name, req.ip);
+
+      if (result.requires_2fa) {
+        // Step 1 of 2FA: OTP sent, token issuance deferred
+        res.status(202).json({
+          requires_2fa: true,
+          user_id: result.user_id,
+          expires_in: result.expires_in,
+        });
+        return;
+      }
+
+      sendAuthResponse(req, res, { user: serializeUserForAuth(result.user), tokens: result.tokens });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verify2fa(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { user_id, otp, device_name } = req.body as {
+        user_id: string;
+        otp: string;
+        device_name?: string;
+      };
+      const { user, tokens } = await AuthService.verify2fa(user_id, otp, device_name, req.ip);
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
     } catch (err) {
       next(err);
@@ -25,7 +50,6 @@ export const AuthController = {
         first_name: string;
         last_name: string;
         phone_number: string;
-        email?: string;
         password: string;
       });
       res.status(201).json(result);
@@ -70,7 +94,6 @@ export const AuthController = {
 
   async refresh(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      // Web: token in cookie; Mobile: token in Authorization header
       const isMobile = req.headers['x-client-type'] === 'mobile';
       let rawToken: string | undefined;
 
@@ -106,7 +129,6 @@ export const AuthController = {
       }
 
       if (rawToken) await AuthService.logout(rawToken);
-
       clearAuthCookies(res);
       res.status(204).end();
     } catch (err) {

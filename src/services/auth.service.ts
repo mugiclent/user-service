@@ -5,7 +5,7 @@ import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
 import { OtpService } from './otp.service.js';
 import { PasswordService } from './password.service.js';
-import { publishNotification } from '../utils/publishers.js';
+import { publishAudit, publishSms } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 
 const withRoles = {
@@ -14,17 +14,31 @@ const withRoles = {
 
 const isEmail = (identifier: string): boolean => identifier.includes('@');
 
+// ---------------------------------------------------------------------------
+// Return types
+// ---------------------------------------------------------------------------
+
+export type LoginResult =
+  | { requires_2fa: false; user: UserWithRoles; tokens: AuthTokens }
+  | { requires_2fa: true;  user_id: string; expires_in: number };
+
 export const AuthService = {
   /**
    * Login with phone/email + password.
-   * Returns user (with roles) + token pair.
-   * Throws INVALID_CREDENTIALS (401), ACCOUNT_SUSPENDED (403), EMAIL_NOT_VERIFIED (403).
+   *
+   * If two_factor_enabled:
+   *   → creates OTP, publishes SMS, returns { requires_2fa: true, user_id, expires_in }
+   *   → client must call POST /auth/verify-2fa to complete login
+   *
+   * Otherwise:
+   *   → issues token pair immediately
    */
   async login(
     identifier: string,
     password: string,
     device_name?: string,
-  ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
+    ip?: string,
+  ): Promise<LoginResult> {
     const user = await prisma.user.findFirst({
       where: isEmail(identifier)
         ? { email: identifier }
@@ -32,7 +46,6 @@ export const AuthService = {
       ...withRoles,
     });
 
-    // Use constant-time-safe comparison — don't short-circuit on missing user
     if (!user || !user.password_hash) {
       throw new AppError('INVALID_CREDENTIALS', 401);
     }
@@ -41,17 +54,46 @@ export const AuthService = {
     if (!passwordValid) throw new AppError('INVALID_CREDENTIALS', 401);
 
     if (user.status === 'suspended') throw new AppError('ACCOUNT_SUSPENDED', 403);
+    if (user.status === 'pending_verification') throw new AppError('PHONE_NOT_VERIFIED', 403);
 
-    // Passengers must verify phone before logging in (status = pending_verification)
-    if (user.status === 'pending_verification') {
-      throw new AppError('PHONE_NOT_VERIFIED', 403);
+    // 2FA: send OTP, defer token issuance to verify-2fa step
+    if (user.two_factor_enabled) {
+      const { code, expiresIn } = await OtpService.create(user.id);
+      publishSms({ type: 'otp.send', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
+      return { requires_2fa: true, user_id: user.id, expires_in: expiresIn };
     }
 
-    // Update last_login_at (fire-and-forget, don't await to avoid blocking response)
-    prisma.user.update({
-      where: { id: user.id },
-      data: { last_login_at: new Date() },
-    }).catch((err) => console.error('[auth] Failed to update last_login_at', err));
+    prisma.user.update({ where: { id: user.id }, data: { last_login_at: new Date() } })
+      .catch((err) => console.error('[auth] Failed to update last_login_at', err));
+
+    publishAudit({ actor_id: user.id, action: 'login', resource: 'User', resource_id: user.id, ip });
+
+    const tokens = await TokenService.issueTokenPair(user, device_name);
+    return { requires_2fa: false, user, tokens };
+  },
+
+  /**
+   * Complete a 2FA login by verifying the OTP sent after password check.
+   * Issues the full token pair on success.
+   */
+  async verify2fa(
+    user_id: string,
+    otp: string,
+    device_name?: string,
+    ip?: string,
+  ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
+    await OtpService.verify(user_id, otp);
+
+    const user = await prisma.user.findUnique({
+      where: { id: user_id },
+      ...withRoles,
+    });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+
+    prisma.user.update({ where: { id: user.id }, data: { last_login_at: new Date() } })
+      .catch((err) => console.error('[auth] Failed to update last_login_at', err));
+
+    publishAudit({ actor_id: user.id, action: 'login_2fa', resource: 'User', resource_id: user.id, ip });
 
     const tokens = await TokenService.issueTokenPair(user, device_name);
     return { user, tokens };
@@ -59,14 +101,13 @@ export const AuthService = {
 
   /**
    * Register a new passenger account.
-   * Creates user with status=pending_verification, sends OTP via notification service.
-   * Throws PHONE_ALREADY_EXISTS (409).
+   * Passengers have phone only — no email accepted.
+   * Sends welcome SMS + OTP for phone verification.
    */
   async register(data: {
     first_name: string;
     last_name: string;
     phone_number: string;
-    email?: string;
     password: string;
   }): Promise<{ user_id: string; expires_in: number }> {
     const existing = await prisma.user.findUnique({
@@ -81,7 +122,6 @@ export const AuthService = {
         first_name: data.first_name,
         last_name: data.last_name,
         phone_number: data.phone_number,
-        email: data.email ?? null,
         password_hash,
         user_type: 'passenger',
         status: 'pending_verification',
@@ -90,27 +130,16 @@ export const AuthService = {
 
     const { code, expiresIn } = await OtpService.create(user.id);
 
-    publishNotification({
-      type: 'user.registered',
-      user_id: user.id,
-      first_name: user.first_name,
-      phone_number: user.phone_number!,
-    });
-
-    publishNotification({
-      type: 'otp.send',
-      phone_number: user.phone_number!,
-      code,
-      expires_in_seconds: expiresIn,
-    });
+    publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name });
+    publishSms({ type: 'otp.send', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
+    publishAudit({ actor_id: user.id, action: 'register', resource: 'User', resource_id: user.id });
 
     return { user_id: user.id, expires_in: expiresIn };
   },
 
   /**
    * Verify phone number with OTP.
-   * Activates the user account and issues a token pair.
-   * Throws INVALID_OTP (400), OTP_EXPIRED (410), USER_NOT_FOUND (404).
+   * Activates the account and issues the first token pair.
    */
   async verifyPhone(
     user_id: string,
@@ -121,54 +150,37 @@ export const AuthService = {
 
     const user = await prisma.user.update({
       where: { id: user_id },
-      data: {
-        status: 'active',
-        phone_verified_at: new Date(),
-      },
+      data: { status: 'active', phone_verified_at: new Date() },
       ...withRoles,
     });
+
+    publishAudit({ actor_id: user.id, action: 'verify_phone', resource: 'User', resource_id: user.id });
 
     const tokens = await TokenService.issueTokenPair(user, device_name);
     return { user, tokens };
   },
 
-  /**
-   * Initiate password recovery. Delegates to PasswordService.
-   * Always returns silently (no enumeration).
-   */
+  /** Initiate password recovery. Always silent — no enumeration. */
   async forgotPassword(identifier: string): Promise<void> {
     return PasswordService.forgotPassword(identifier);
   },
 
-  /**
-   * Complete password reset with token. Delegates to PasswordService.
-   */
+  /** Complete password reset. */
   async resetPassword(rawToken: string, newPassword: string): Promise<void> {
     return PasswordService.resetPassword(rawToken, newPassword);
   },
 
-  /**
-   * Rotate a refresh token. Delegates to TokenService.
-   * Reuse detection: if a revoked token is presented, all sessions are wiped.
-   */
-  async refresh(
-    rawToken: string,
-  ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
+  /** Rotate refresh token. Reuse detection wipes all sessions. */
+  async refresh(rawToken: string): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
     return TokenService.rotateRefreshToken(rawToken);
   },
 
-  /**
-   * Logout — revoke the presented refresh token. Idempotent.
-   * Mobile: raw token from Authorization header.
-   * Web: raw token from cookie.
-   */
+  /** Revoke one refresh token. Idempotent. */
   async logout(rawRefreshToken: string): Promise<void> {
     await TokenService.revokeByRawToken(rawRefreshToken);
   },
 
-  /**
-   * Logout all sessions for the authenticated user.
-   */
+  /** Revoke all sessions for user. */
   async logoutAll(userId: string): Promise<void> {
     await TokenService.revokeAllForUser(userId);
   },

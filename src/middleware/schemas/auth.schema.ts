@@ -12,17 +12,25 @@ export const loginSchema = Joi.object({
   device_name: Joi.string().trim().max(200).optional(),
 });
 
+// Passengers only — email is not accepted (staff are created via invite)
 export const registerSchema = Joi.object({
   first_name: Joi.string().trim().max(100).required(),
   last_name: Joi.string().trim().max(100).required(),
   phone_number: phone.required(),
-  email: Joi.string().trim().email().max(255).optional(),
   password: password.required(),
 });
 
 export const verifyPhoneSchema = Joi.object({
   user_id: Joi.string().uuid().required(),
   otp: Joi.string().trim().length(6).required(),
+  device_name: Joi.string().trim().max(200).optional(),
+});
+
+// Step-2 of login when two_factor_enabled = true
+export const verify2faSchema = Joi.object({
+  user_id: Joi.string().uuid().required(),
+  otp: Joi.string().trim().length(6).required(),
+  device_name: Joi.string().trim().max(200).optional(),
 });
 
 export const forgotPasswordSchema = Joi.object({

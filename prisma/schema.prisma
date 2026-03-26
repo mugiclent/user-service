@@ -86,13 +86,14 @@ model User {
   id                         String     @id @default(uuid())
   first_name                 String     @db.VarChar(100)
   last_name                  String     @db.VarChar(100)
-  phone_number               String?    @unique @db.VarChar(20)
+  phone_number               String     @unique @db.VarChar(20)  // mandatory for all users
   phone_verified_at          DateTime?
-  email                      String?    @unique @db.VarChar(255)
+  email                      String?    @unique @db.VarChar(255) // staff only (optional)
   email_verified_at          DateTime?
   password_hash              String?    // null for invited staff until they set a password
   user_type                  UserType
   status                     UserStatus @default(pending_verification)
+  two_factor_enabled         Boolean    @default(false)
   avatar_url                 String?
   org_id                     String?    // null for passengers
   driver_license_number      String?    @db.VarChar(100)
@@ -164,6 +165,24 @@ model PasswordReset {
 
   @@index([user_id])
   @@map("password_resets")
+}
+
+model MediaAsset {
+  id          String   @id @default(uuid())
+  entity_type String   @db.VarChar(20)  // "user" | "org"
+  entity_id   String
+  field_name  String   @db.VarChar(50)  // "avatar" | "logo"
+  filename    String   @db.VarChar(255) // UUID-based filename in SeaweedFS
+  mime_type   String   @db.VarChar(100)
+  size_bytes  Int
+  filer_path  String   @db.VarChar(500) // e.g. /images/avatars/<uuid>.jpg
+  public_url  String                    // full public URL stored in the entity field
+  uploaded_by String                    // user id of the uploader
+  created_at  DateTime @default(now())
+
+  @@unique([entity_type, entity_id, field_name]) // one active asset per field
+  @@index([entity_id])
+  @@map("media_assets")
 }
 
 model Invitation {

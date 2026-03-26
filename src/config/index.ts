@@ -23,6 +23,8 @@ export const config = {
     refreshTtlMs: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   },
 
+  trustProxy: env.TRUST_PROXY,
+
   cookie: {
     secure: env.COOKIE_SECURE,
   },
@@ -32,6 +34,12 @@ export const config = {
     length: env.OTP_LENGTH,
     maxAttempts: env.OTP_MAX_ATTEMPTS,
     windowSeconds: env.OTP_WINDOW_SECONDS,
+  },
+
+  seaweedfs: {
+    filerUrl: env.SEAWEEDFS_FILER_URL,
+    publicUrl: env.SEAWEEDFS_PUBLIC_URL,
+    maxFileSizeBytes: env.SEAWEEDFS_MAX_FILE_SIZE_MB * 1024 * 1024,
   },
 
   rateLimit: {

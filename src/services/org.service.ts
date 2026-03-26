@@ -3,6 +3,7 @@ import type { UserWithRoles } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { slugify } from '../utils/slugify.js';
+import { publishAudit } from '../utils/publishers.js';
 import {
   serializeOrgForList,
   serializeOrgCreated,
@@ -61,6 +62,7 @@ export const OrgService = {
       },
     });
 
+    publishAudit({ actor_id: requestingUser.id, action: 'create', resource: 'Org', resource_id: org.id });
     return serializeOrgCreated(org);
   },
 
@@ -209,6 +211,7 @@ export const OrgService = {
       }
     }
 
+    publishAudit({ actor_id: requestingUser.id, action: 'update', resource: 'Org', resource_id: orgId });
     return serializeOrgFull(org, admin);
   },
 
@@ -254,6 +257,7 @@ export const OrgService = {
       data: { status: 'active', approved_by: requestingUser.id, approved_at: new Date() },
       ...withRelations,
     });
+    publishAudit({ actor_id: requestingUser.id, action: 'approve', resource: 'Org', resource_id: orgId });
     return serializeOrgFull(updated, true);
   },
 };

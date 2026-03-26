@@ -6,7 +6,6 @@ export const updateMeSchema = Joi.object({
   first_name: Joi.string().trim().max(100).optional(),
   last_name: Joi.string().trim().max(100).optional(),
   email: Joi.string().trim().email().max(255).optional(),
-  avatar_url: Joi.string().uri().max(500).optional(),
 }).min(1);
 
 export const updateUserSchema = Joi.object({
@@ -30,4 +29,12 @@ export const acceptInviteSchema = Joi.object({
   token: Joi.string().trim().required(),
   password: password.required(),
   device_name: Joi.string().trim().max(200).optional(),
+});
+
+export const validatePasswordSchema = Joi.object({
+  password: password.required(),
+});
+
+export const toggle2faSchema = Joi.object({
+  enabled: Joi.boolean().required(),
 });

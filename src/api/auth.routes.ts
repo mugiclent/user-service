@@ -7,6 +7,7 @@ import {
   loginSchema,
   registerSchema,
   verifyPhoneSchema,
+  verify2faSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
 } from '../middleware/schemas/auth.schema.js';
@@ -21,6 +22,9 @@ router.post('/register', validate(registerSchema), AuthController.register);
 
 // POST /api/v1/auth/verify-phone
 router.post('/verify-phone', validate(verifyPhoneSchema), AuthController.verifyPhone);
+
+// POST /api/v1/auth/verify-2fa  — step 2 when two_factor_enabled = true
+router.post('/verify-2fa', validate(verify2faSchema), AuthController.verify2fa);
 
 // POST /api/v1/auth/forgot-password
 router.post('/forgot-password', resetRateLimiter, validate(forgotPasswordSchema), AuthController.forgotPassword);

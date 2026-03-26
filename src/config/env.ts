@@ -18,6 +18,7 @@ const schema = Joi.object({
   REFRESH_TOKEN_TTL_DAYS: Joi.number().default(30),
 
   COOKIE_SECURE: Joi.boolean().default(true),
+  TRUST_PROXY: Joi.number().integer().min(0).default(1),
 
   OTP_TTL_SECONDS: Joi.number().default(300),
   OTP_LENGTH: Joi.number().default(6),
@@ -28,6 +29,10 @@ const schema = Joi.object({
   RATE_LIMIT_LOGIN_WINDOW_SECONDS: Joi.number().default(900),
   RATE_LIMIT_RESET_MAX: Joi.number().default(3),
   RATE_LIMIT_RESET_WINDOW_SECONDS: Joi.number().default(3600),
+
+  SEAWEEDFS_FILER_URL: Joi.string().uri().required(),
+  SEAWEEDFS_PUBLIC_URL: Joi.string().uri().required(),
+  SEAWEEDFS_MAX_FILE_SIZE_MB: Joi.number().default(5),
 });
 
 const { error, value } = schema.validate(process.env, { allowUnknown: true });
@@ -47,6 +52,7 @@ export const env = value as {
   JWT_EXPIRES_IN: string;
   REFRESH_TOKEN_TTL_DAYS: number;
   COOKIE_SECURE: boolean;
+  TRUST_PROXY: number;
   OTP_TTL_SECONDS: number;
   OTP_LENGTH: number;
   OTP_MAX_ATTEMPTS: number;
@@ -55,4 +61,7 @@ export const env = value as {
   RATE_LIMIT_LOGIN_WINDOW_SECONDS: number;
   RATE_LIMIT_RESET_MAX: number;
   RATE_LIMIT_RESET_WINDOW_SECONDS: number;
+  SEAWEEDFS_FILER_URL: string;
+  SEAWEEDFS_PUBLIC_URL: string;
+  SEAWEEDFS_MAX_FILE_SIZE_MB: number;
 };

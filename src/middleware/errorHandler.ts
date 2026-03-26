@@ -19,7 +19,8 @@ export const errorHandler = (
   }
 
   // Unexpected errors — do not leak internals
-  console.error('[errorHandler] Unhandled error', err);
+  const requestId = _req.headers['x-request-id'] ?? _req.headers['x-correlation-id'];
+  console.error('[errorHandler] Unhandled error', { requestId, err });
   res.status(500).json({
     error: {
       code: 'INTERNAL_SERVER_ERROR',

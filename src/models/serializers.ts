@@ -15,6 +15,7 @@ export interface AuthUserDto {
   org_id: string | null;
   roles: string[];
   status: 'active' | 'pending_verification' | 'suspended';
+  two_factor_enabled: boolean;
 }
 
 export const serializeUserForAuth = (user: UserWithRoles): AuthUserDto => ({
@@ -26,6 +27,7 @@ export const serializeUserForAuth = (user: UserWithRoles): AuthUserDto => ({
   org_id: user.org_id,
   roles: user.user_roles.map((ur) => ur.role.slug),
   status: user.status,
+  two_factor_enabled: user.two_factor_enabled,
 });
 
 // ---------------------------------------------------------------------------
@@ -43,6 +45,7 @@ export interface UserMePassengerDto {
   avatar_url: string | null;
   user_type: 'passenger';
   status: string;
+  two_factor_enabled: boolean;
   created_at: Date;
   updated_at: Date;
 }
@@ -63,6 +66,7 @@ export interface UserMeStaffDto {
   org_id: string | null;
   roles: string[];
   permissions: AppRule[];
+  two_factor_enabled: boolean;
   driver_license_number: string | null;
   driver_license_verified_at: Date | null;
   last_login_at: Date | null;
@@ -86,6 +90,7 @@ export const serializeUserMe = (
       avatar_url: user.avatar_url,
       user_type: 'passenger',
       status: user.status,
+      two_factor_enabled: user.two_factor_enabled,
       created_at: user.created_at,
       updated_at: user.updated_at,
     };
@@ -103,6 +108,7 @@ export const serializeUserMe = (
     org_id: user.org_id,
     roles: user.user_roles.map((ur) => ur.role.slug),
     permissions: rules,
+    two_factor_enabled: user.two_factor_enabled,
     driver_license_number: user.driver_license_number,
     driver_license_verified_at: user.driver_license_verified_at,
     last_login_at: user.last_login_at,

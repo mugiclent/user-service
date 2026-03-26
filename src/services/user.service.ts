@@ -4,8 +4,8 @@ import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
 import { buildRulesForUser, buildAbilityFromRules } from '../utils/ability.js';
-import { generateRawToken, hashToken, hashPassword } from '../utils/crypto.js';
-import { publishNotification } from '../utils/publishers.js';
+import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
+import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
 
 const withRoles = {
   include: { user_roles: { include: { role: true } } },
@@ -30,11 +30,16 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async updateMe(
-    userId: string,
-    data: { first_name?: string; last_name?: string; email?: string; avatar_url?: string },
+    requestingUser: AuthenticatedUser,
+    data: { first_name?: string; last_name?: string; email?: string },
   ): Promise<Record<string, unknown>> {
+    // Passengers cannot have email — only staff can
+    if (data.email !== undefined && requestingUser.user_type === 'passenger') {
+      throw new AppError('PASSENGERS_CANNOT_HAVE_EMAIL', 422);
+    }
+
     const user = await prisma.user.update({
-      where: { id: userId },
+      where: { id: requestingUser.id },
       data,
       ...withRoles,
     });
@@ -195,6 +200,8 @@ export const UserService = {
     } catch (err) {
       console.error('[user] Failed to set blacklist entry', err);
     }
+
+    publishAudit({ actor_id: requestingUser.id, action: 'delete', resource: 'User', resource_id: targetId });
   },
 
   // ---------------------------------------------------------------------------
@@ -261,7 +268,7 @@ export const UserService = {
           first_name: invitation.first_name,
           last_name: invitation.last_name,
           email: invitation.email ?? null,
-          phone_number: invitation.phone_number ?? null,
+          phone_number: invitation.phone_number!,
           password_hash,
           user_type: 'staff',
           status: 'active',
@@ -278,6 +285,44 @@ export const UserService = {
       return tx.user.findUniqueOrThrow({ where: { id: created.id }, ...withRoles });
     });
 
+    // Welcome notifications for the newly created staff user
+    publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name });
+    if (user.email) {
+      publishMail({ type: 'welcome.mail', email: user.email, first_name: user.first_name });
+    }
+    publishAudit({ actor_id: user.id, action: 'accept_invite', resource: 'User', resource_id: user.id });
+
     return { user };
+  },
+
+  // ---------------------------------------------------------------------------
+  // POST /users/me/validate-password
+  // Verifies the user's current password — used as a gate before changing it.
+  // ---------------------------------------------------------------------------
+
+  async validatePassword(userId: string, password: string): Promise<void> {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.password_hash) throw new AppError('INVALID_CREDENTIALS', 401);
+
+    const valid = await verifyPassword(password, user.password_hash);
+    if (!valid) throw new AppError('INVALID_CREDENTIALS', 401);
+  },
+
+  // ---------------------------------------------------------------------------
+  // PATCH /users/me/2fa — enable or disable two-factor authentication
+  // ---------------------------------------------------------------------------
+
+  async toggle2fa(userId: string, enabled: boolean): Promise<{ two_factor_enabled: boolean }> {
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { two_factor_enabled: enabled },
+    });
+    publishAudit({
+      actor_id: userId,
+      action: enabled ? '2fa_enabled' : '2fa_disabled',
+      resource: 'User',
+      resource_id: userId,
+    });
+    return { two_factor_enabled: user.two_factor_enabled };
   },
 };
