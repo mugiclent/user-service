@@ -1,0 +1,402 @@
+
+<div style="padding:1.5rem 0;font-family:var(--font-sans);color:var(--color-text-primary)">
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.5rem" id="tabs"></div>
+<div id="panes"></div>
+<script>
+function code(str){
+  return `<pre style="margin:6px 0 0;padding:8px 10px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);font-family:var(--font-mono);font-size:10.5px;color:var(--color-text-primary);overflow-x:auto;white-space:pre">${str.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`;
+}
+function tbl(headers, rows){
+  const ths = headers.map(h=>`<th style="text-align:left;padding:5px 10px;font-weight:500;font-size:11px;color:var(--color-text-secondary);white-space:nowrap">${h}</th>`).join('');
+  const trs = rows.map(r=>`<tr style="border-bottom:1px solid var(--color-border-tertiary)">${r.map((c,i)=>`<td style="padding:5px 10px;font-size:11px;${i===0?'font-family:var(--font-mono);color:var(--color-text-primary)':'color:var(--color-text-secondary)'}">${c}</td>`).join('')}</tr>`).join('');
+  return `<table style="width:100%;border-collapse:collapse"><thead><tr style="border-bottom:1px solid var(--color-border-secondary)">${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+}
+function card(bg,bd,fg,title,body){
+  return `<div style="padding:10px 14px;background:${bg};border-radius:var(--border-radius-md);border:1px solid ${bd}"><p style="font-size:11px;font-weight:500;color:${fg};margin:0 0 5px">${title}</p><div style="font-size:11px;color:${fg}">${body}</div></div>`;
+}
+const ci = ['var(--color-background-info)','var(--color-border-info)','var(--color-text-info)'];
+const cw = ['var(--color-background-warning)','var(--color-border-warning)','var(--color-text-warning)'];
+const cd = ['var(--color-background-danger)','var(--color-border-danger)','var(--color-text-danger)'];
+const cs = ['var(--color-background-success)','var(--color-border-success)','var(--color-text-success)'];
+const cm = ['var(--color-background-secondary)','var(--color-border-tertiary)','var(--color-text-secondary)'];
+
+const sections = [
+  {
+    id:'get_list', label:'GET /users',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">GET /api/v1/users</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">authenticated</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1.2rem">The unified search and filter hub. What each caller sees is determined entirely by their CASL scope — same endpoint, enforced visibility.</p>
+
+      <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Query parameters</p>
+      ${tbl(['param','type','allowed for','notes'],[
+        ['q',            'string',  'all callers',        'Full-text search across first_name, last_name, phone_number, email. Min 2 chars.'],
+        ['role',         'string',  'all callers',        'Filter by role slug e.g. ?role=driver. Org Admin can pass ?role=passenger (scoped to their trip passengers only).'],
+        ['user_type',    'enum',    'katisha admin only', '"passenger" | "staff". Org Admins always get staff unless ?role=passenger is passed.'],
+        ['org_id',       'uuid',    'katisha admin only','Filter by organization. Ignored for Org Admins — their org_id is injected from JWT.'],
+        ['org_type',     'enum',    'katisha admin only', '"company" | "cooperative". Filters users belonging to orgs of that type.'],
+        ['status',       'enum',    'all callers',        '"active" | "inactive" | "suspended" | "pending_verification". Comma-separated for multiple e.g. ?status=active,suspended.'],
+        ['created_from', 'date',    'all callers',        'ISO 8601 date. Inclusive lower bound on created_at.'],
+        ['created_to',   'date',    'all callers',        'ISO 8601 date. Inclusive upper bound on created_at.'],
+        ['last_login_from','date',  'katisha admin only', 'Lower bound on last_login_at.'],
+        ['last_login_to','date',    'katisha admin only', 'Upper bound on last_login_at.'],
+        ['sort_order',   'enum',    'all callers',        '"asc" | "desc". Default: desc. Always sorts by created_at.'],
+        ['page',         'integer', 'all callers',        'Default: 1. Min: 1.'],
+        ['limit',        'integer', 'all callers',        'Default: 20. Max: 100.'],
+      ])}
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Visibility scope per caller — what the query is actually filtered to</p>
+        ${tbl(['caller','base WHERE clause injected','can pass org_id filter','sees passengers'],[
+          ['Katisha Super Admin',    'deleted_at IS NULL',                                        'yes — any org',    'yes — all passengers'],
+          ['Katisha Support',        'deleted_at IS NULL',                                        'yes — read only',  'yes — read only'],
+          ['Org Admin',              'org_id = jwt.org_id AND user_type = staff AND deleted_at IS NULL', 'no — ignored', 'only via ?role=passenger (trip-scoped)'],
+          ['Driver / Dispatcher',    'id = jwt.sub — effectively blocked from list endpoint',    'no',               'no'],
+          ['Passenger',              'id = jwt.sub — effectively blocked from list endpoint',    'no',               'no'],
+        ])}
+      </div>
+
+      <div style="margin-top:1rem;display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        ${card(...ci,'Passenger visibility for Org Admins',`
+          <p style="margin:0 0 4px">When <code>?role=passenger</code> is passed by an Org Admin, the query joins to the booking/trip table:</p>
+          ${code(`WHERE u.user_type = 'passenger'
+  AND EXISTS (
+    SELECT 1 FROM bookings b
+    JOIN trips t ON b.trip_id = t.id
+    WHERE b.user_id = u.id
+      AND t.org_id = jwt.org_id  -- scoped to their org
+      AND u.deleted_at IS NULL
+  )`)}
+          <p style="margin:6px 0 0">This query lives in the Booking/Trip service, not User service. The User service calls it via internal RPC or joins via a shared read model. Fields returned are limited — see response shape tab.</p>
+        `)}
+        ${card(...cm,'Example URLs by caller type',`
+          <p style="margin:0 0 4px;font-weight:500">Katisha Admin</p>
+          <code style="font-size:10px;display:block;margin-bottom:6px">GET /users?role=passenger&status=active&page=1&limit=20</code>
+          <code style="font-size:10px;display:block;margin-bottom:6px">GET /users?org_type=cooperative&sort_order=asc</code>
+          <code style="font-size:10px;display:block;margin-bottom:10px">GET /users?q=Olivier&org_id=uuid-xyz</code>
+          <p style="margin:0 0 4px;font-weight:500">Org Admin</p>
+          <code style="font-size:10px;display:block;margin-bottom:6px">GET /users?role=driver&status=active</code>
+          <code style="font-size:10px;display:block;margin-bottom:6px">GET /users?role=passenger&q=Jean</code>
+          <code style="font-size:10px;display:block;margin-bottom:6px">GET /users?created_from=2025-01-01&sort_order=desc</code>
+        `)}
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">400 / 403 error cases</p>
+        ${tbl(['status','error code','when'],[
+          ['400','INVALID_FILTER_VALUE',     '?status=unknown or ?sort_order=random or malformed date'],
+          ['400','QUERY_TOO_SHORT',          '?q= with less than 2 characters'],
+          ['403','FILTER_NOT_PERMITTED',     'Org Admin passes ?org_id, ?org_type, ?last_login_from — silently ignored OR return 403 depending on strictness preference'],
+          ['403','FORBIDDEN',               'Driver or Passenger hits GET /users — blocked at CASL class-level gate'],
+        ])}
+      </div>
+    `
+  },
+  {
+    id:'get_response', label:'GET /users response',
+    html:`
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1rem">Two response shapes depending on whether the result contains staff or passengers. The envelope is always the same.</p>
+
+      <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response envelope (always)</p>
+      ${code(`{
+  "data": [ ...user objects ],
+  "meta": {
+    "page":        1,
+    "limit":       20,
+    "total":       143,      // total matching records (for pagination UI)
+    "total_pages": 8,
+    "has_next":    true,
+    "has_prev":    false
+  }
+}`)}
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem">
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Staff user object (all callers seeing staff)</p>
+          ${tbl(['field','type','notes'],[
+            ['id',           'uuid',        ''],
+            ['first_name',   'string',      ''],
+            ['last_name',    'string',      ''],
+            ['email',        'string|null', ''],
+            ['phone_number', 'string|null', 'Masked for non-admin callers: +250788***123'],
+            ['avatar_url',   'string|null', ''],
+            ['user_type',    'enum',        '"staff"'],
+            ['status',       'enum',        '"active"|"suspended" etc.'],
+            ['roles',        'string[]',    'Role slugs only. e.g. ["driver"]'],
+            ['org_id',       'uuid',        ''],
+            ['last_login_at','datetime|null','Katisha Admin only. Omitted for Org Admin.'],
+            ['created_at',   'datetime',    ''],
+          ])}
+          <div style="margin-top:8px">
+          ${card(...cw,'Fields NEVER in list response','password_hash · otp_code · otp_expires_at · reset_token_hash · driver_license_number · deleted_at')}
+          </div>
+        </div>
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Passenger object — Org Admin view only (limited PII)</p>
+          ${tbl(['field','type','notes'],[
+            ['id',           'uuid',        ''],
+            ['first_name',   'string',      ''],
+            ['last_name',    'string',      ''],
+            ['email',        'string|null', ''],
+            ['phone_number', 'string',      'Masked: +250788***123'],
+            ['avatar_url',   'string|null', ''],
+            ['user_type',    'enum',        '"passenger"'],
+          ])}
+          <div style="margin-top:8px">
+          ${card(...ci,'Why phone is masked for Org Admins','Org Admins need enough to identify a passenger on their trip (name + photo + partial phone). They do not need full contact details — that would let them build a customer list outside Katisha.')}
+          </div>
+          <div style="margin-top:8px">
+          ${card(...cs,'Passenger object — Katisha Admin view','Full object: all fields above unmasked, plus account_status, last_login_at, created_at. Katisha Admin has no field restrictions.')}
+          </div>
+        </div>
+      </div>
+    `
+  },
+  {
+    id:'get_me', label:'GET /users/me',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">GET /api/v1/users/me</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">authenticated — any user</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1rem">Every logged-in user can call this — passenger, driver, org admin, Katisha admin. Returns their own full profile. No CASL subject check needed — <code>id = jwt.sub</code> is the only condition.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — passenger</p>
+          ${tbl(['field','type'],[
+            ['id','uuid'],['first_name','string'],['last_name','string'],
+            ['phone_number','string'],['phone_verified_at','datetime|null'],
+            ['email','string|null'],['email_verified_at','datetime|null'],
+            ['avatar_url','string|null'],['user_type','enum'],
+            ['status','enum'],['created_at','datetime'],['updated_at','datetime'],
+          ])}
+        </div>
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — staff (extra fields)</p>
+          ${tbl(['field','type','notes'],[
+            ['id','uuid',''],['first_name','string',''],['last_name','string',''],
+            ['phone_number','string|null',''],['email','string|null',''],
+            ['avatar_url','string|null',''],['user_type','enum','"staff"'],
+            ['status','enum',''],['org_id','uuid',''],
+            ['roles','string[]','Role slugs'],
+            ['permissions','object[]','Unpacked CASL rules — lets frontend render UI conditionally'],
+            ['driver_license_number','string|null','Only if role includes driver'],
+            ['driver_license_verified_at','datetime|null',''],
+            ['last_login_at','datetime|null',''],
+            ['created_at','datetime',''],['updated_at','datetime',''],
+          ])}
+          <div style="margin-top:8px">
+          ${card(...ci,'Why permissions in /me response?','The frontend needs to know what to render — which menu items, which buttons, which actions to show. Rather than the client re-parsing the JWT, /me returns the unpacked permissions as a clean object the UI can consume directly.')}
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">PATCH /api/v1/users/me — self-update</p>
+        ${tbl(['field','updatable by passenger','updatable by staff','notes'],[
+          ['first_name',   'yes','yes',''],
+          ['last_name',    'yes','yes',''],
+          ['email',        'yes','yes','Triggers email verification flow if changed'],
+          ['avatar_url',   'yes','yes','Upload handled separately via presigned URL — this field takes the resulting URL'],
+          ['password',     'via /auth/reset-password only','via /auth/reset-password only','Never updated via PATCH /me'],
+          ['phone_number', 'no — requires OTP re-verification flow','no','Phone change is a separate flow, not a simple PATCH'],
+          ['status',       'no','no','Only admin can change status'],
+          ['org_id',       'no','no','Only Katisha admin can reassign'],
+          ['roles',        'no','no','Only org admin or Katisha admin'],
+        ])}
+      </div>
+    `
+  },
+  {
+    id:'get_id', label:'GET /users/{id}',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">GET /api/v1/users/{id}</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">authenticated</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1rem">Detailed view of a specific user. CASL instance-level check runs — the fetched user's <code>org_id</code> must match the caller's scope.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Who can call this and what they see</p>
+          ${tbl(['caller','can fetch','field set'],[
+            ['Katisha Admin',    'any user',                  'Full profile — all fields'],
+            ['Org Admin',        'staff in their org only',   'Full staff profile. If fetching a passenger (trip-scoped): limited PII only'],
+            ['Driver/Dispatcher','own profile only (use /me)','Redirect to /me or 403'],
+            ['Passenger',        'own profile only (use /me)','Redirect to /me or 403'],
+          ])}
+
+          <div style="margin-top:8px">
+          ${card(...cm,'CASL instance check',code(`const user = await prisma.user.findUnique({
+  where: { id: req.params.id, deleted_at: null }
+});
+if (!user) throw new NotFoundError();
+
+// CASL checks { org_id } condition against fetched user
+if (req.ability.cannot('read', subject('User', user))) {
+  throw new ForbiddenError();
+}
+// Katisha admin: no condition — passes always
+// Org Admin: passes only if user.org_id === jwt.org_id`))}
+          </div>
+        </div>
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — full staff profile (Katisha Admin / Org Admin)</p>
+          ${tbl(['field','type','notes'],[
+            ['id','uuid',''],
+            ['first_name','string',''],
+            ['last_name','string',''],
+            ['email','string|null',''],
+            ['phone_number','string','Unmasked for full profile view'],
+            ['phone_verified_at','datetime|null',''],
+            ['email_verified_at','datetime|null',''],
+            ['avatar_url','string|null',''],
+            ['user_type','enum',''],
+            ['status','enum',''],
+            ['org_id','uuid|null',''],
+            ['roles','string[]',''],
+            ['driver_license_number','string|null','Katisha Admin only'],
+            ['driver_license_verified_at','datetime|null','Katisha Admin only'],
+            ['last_login_at','datetime|null','Katisha Admin only'],
+            ['created_at','datetime',''],
+            ['updated_at','datetime',''],
+          ])}
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">PATCH /api/v1/users/{id} — admin update</p>
+        ${tbl(['field','org admin','katisha admin','notes'],[
+          ['first_name',    'yes','yes',''],
+          ['last_name',     'yes','yes',''],
+          ['email',         'yes','yes',''],
+          ['status',        'yes — own org staff only','yes — anyone','Suspend, activate, etc.'],
+          ['roles',         'yes — own org staff only','yes — anyone','Replace role array'],
+          ['org_id',        'no','yes','Reassign user to another org'],
+          ['driver_license_number','no','yes','Compliance update'],
+          ['driver_license_verified_at','no','yes','Set by Katisha after verification'],
+        ])}
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">DELETE /api/v1/users/{id} — soft delete</p>
+        ${tbl(['field','value set','notes'],[
+          ['deleted_at','TIMESTAMPTZ now()','User disappears from all list queries. Data retained.'],
+          ['status','"inactive"','Belt-and-suspenders alongside soft delete.'],
+          ['refresh_tokens','all revoked','User is immediately logged out across all devices.'],
+          ['Redis','blacklist:user:{id} set','Access token invalidated within 15 min window.'],
+        ])}
+        ${card(...cd,'Who can DELETE?','Org Admin: only their own org staff. Cannot delete passengers or staff from other orgs. Katisha Admin: anyone except other Katisha Admins (protected — requires Super Admin escalation).')}
+      </div>
+    `
+  },
+  {
+    id:'post_users', label:'POST /users',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">POST /api/v1/users</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-warning);color:var(--color-text-warning);font-weight:500">admin only</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1rem">Katisha Admin creates any user type directly. Org Admin creates staff within their org only. Always triggers an invite — no password set during creation. The invited user sets their own password via the invite link.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Request body</p>
+          ${tbl(['field','type','required','who can send','notes'],[
+            ['first_name',   'string',  'yes','both',          'Max 100 chars'],
+            ['last_name',    'string',  'yes','both',          'Max 100 chars'],
+            ['email',        'string',  'yes*','both',         '*Required if invite_channel=email or not provided phone'],
+            ['phone_number', 'string',  'yes*','both',         '*Required if invite_channel=sms'],
+            ['invite_channel','enum',   'yes','both',          '"email" | "sms". Determines how invite is sent.'],
+            ['role_id',      'uuid',    'yes','both',          'Must belong to the caller\'s org (Org Admin) or any org (Katisha Admin)'],
+            ['org_id',       'uuid',    'yes','katisha admin only','Target org. Org Admins: auto-set to jwt.org_id'],
+            ['user_type',    'enum',    'no', 'katisha admin only','"staff" always. Katisha Admin can create katisha-level staff'],
+          ])}
+
+          <div style="margin-top:8px">
+          ${card(...ci,'Invite flow triggered on creation',`
+            ${code(`// On POST /users success:
+// 1. Create user row with status = 'pending_verification'
+// 2. Create invitation row in invitations table
+// 3. Publish to RabbitMQ → notification service sends email or SMS
+// 4. Return 201 with user stub (no tokens — user hasn't logged in)`)}
+          `)}
+          </div>
+        </div>
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — 201 Created</p>
+          ${tbl(['field','type','notes'],[
+            ['id',             'uuid',    'Newly created user id'],
+            ['first_name',     'string',  ''],
+            ['last_name',      'string',  ''],
+            ['email',          'string|null',''],
+            ['phone_number',   'string|null',''],
+            ['user_type',      'enum',    ''],
+            ['status',         'enum',    '"pending_verification" — invite not yet accepted'],
+            ['org_id',         'uuid',    ''],
+            ['roles',          'string[]','Role slugs'],
+            ['invite_sent_to', 'string',  'Masked email or phone — confirms channel used'],
+            ['created_at',     'datetime',''],
+          ])}
+
+          <div style="margin-top:8px">
+          ${card(...cm,'POST /users vs invite flow — when to use which',`
+            <p style="margin:0 0 4px"><strong>POST /users</strong> — Katisha Admin provisioning platform-level staff (support agents, partner managers). Also Org Admin bulk-creating their team.</p>
+            <p style="margin:0"><strong>POST /invitations</strong> (future endpoint) — lighter flow for Org Admin inviting one person at a time from the dashboard UI. Both ultimately write to the same invitations table and trigger the same notification event.</p>
+          `)}
+          </div>
+
+          <div style="margin-top:8px">
+          ${card(...cw,'Error cases',`
+            ${tbl(['status','code','when'],[
+              ['409','EMAIL_ALREADY_EXISTS',  'Email taken by an existing (even soft-deleted) account'],
+              ['409','PHONE_ALREADY_EXISTS',  'Phone taken'],
+              ['403','FORBIDDEN',             'Org Admin passing org_id of another org'],
+              ['403','ROLE_NOT_IN_ORG',       'role_id does not belong to caller\'s org'],
+              ['422','VALIDATION_ERROR',      'Missing required fields, invalid email/phone format'],
+            ])}
+          `)}
+          </div>
+        </div>
+      </div>
+    `
+  },
+];
+
+const tabsEl = document.getElementById('tabs');
+const panesEl = document.getElementById('panes');
+
+sections.forEach(sec => {
+  const btn = document.createElement('button');
+  btn.id = 'tab-'+sec.id;
+  btn.textContent = sec.label;
+  btn.style.cssText = 'padding:5px 12px;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);background:transparent;color:var(--color-text-secondary);font-size:12px;cursor:pointer;white-space:nowrap';
+  btn.onclick = () => switchTo(sec.id);
+  tabsEl.appendChild(btn);
+  const pane = document.createElement('div');
+  pane.id = 'pane-'+sec.id;
+  pane.style.display = 'none';
+  pane.innerHTML = sec.html;
+  panesEl.appendChild(pane);
+});
+
+function switchTo(id){
+  sections.forEach(s=>{
+    const p=document.getElementById('pane-'+s.id);
+    const t=document.getElementById('tab-'+s.id);
+    const on=s.id===id;
+    if(p) p.style.display=on?'block':'none';
+    if(t){
+      t.style.background=on?'var(--color-background-info)':'transparent';
+      t.style.color=on?'var(--color-text-info)':'var(--color-text-secondary)';
+      t.style.borderColor=on?'var(--color-border-info)':'var(--color-border-tertiary)';
+      t.style.fontWeight=on?'500':'400';
+    }
+  });
+}
+switchTo('get_list');
+</script>
+</div>

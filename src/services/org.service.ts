@@ -1,0 +1,259 @@
+import { prisma } from '../models/index.js';
+import type { UserWithRoles } from '../models/index.js';
+import { AppError } from '../utils/AppError.js';
+import { getRedisClient } from '../loaders/redis.js';
+import { slugify } from '../utils/slugify.js';
+import {
+  serializeOrgForList,
+  serializeOrgCreated,
+  serializeOrgFull,
+} from '../models/serializers.js';
+
+// 15-minute blacklist window (matches access token TTL)
+const BLACKLIST_TTL_SECONDS = 900;
+
+const withRelations = {
+  include: {
+    parent_org: { select: { id: true, name: true, slug: true, status: true } },
+    child_orgs: { select: { id: true, name: true, slug: true, status: true } },
+  },
+} as const;
+
+const isAdmin = (roleSlugs: string[]): boolean =>
+  roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+
+export const OrgService = {
+  // ---------------------------------------------------------------------------
+  // POST /organizations — create a new org (admin only)
+  // ---------------------------------------------------------------------------
+
+  async createOrg(
+    requestingUser: UserWithRoles,
+    data: {
+      name: string;
+      org_type: string;
+      contact_email: string;
+      contact_phone: string;
+      address?: string;
+      tin?: string;
+      license_number?: string;
+      parent_org_id?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    if (!isAdmin(roleSlugs)) throw new AppError('FORBIDDEN', 403);
+
+    const slug = slugify(data.name);
+    const existing = await prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] } });
+    if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
+
+    const org = await prisma.org.create({
+      data: {
+        name: data.name,
+        slug,
+        org_type: data.org_type as 'company' | 'cooperative',
+        contact_email: data.contact_email,
+        contact_phone: data.contact_phone,
+        address: data.address ?? null,
+        tin: data.tin ?? null,
+        license_number: data.license_number ?? null,
+        parent_org_id: data.parent_org_id ?? null,
+      },
+    });
+
+    return serializeOrgCreated(org);
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /organizations — list
+  // ---------------------------------------------------------------------------
+
+  async listOrgs(
+    requestingUser: UserWithRoles,
+    query: { page?: number; limit?: number; status?: string; org_type?: string },
+  ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
+    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const admin = isAdmin(roleSlugs);
+
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+    const skip = (page - 1) * limit;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = { deleted_at: null };
+    if (!admin) {
+      // Non-admin staff can only see their own org
+      if (!requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+      where['id'] = requestingUser.org_id;
+    }
+    if (query.status) where['status'] = query.status;
+    if (query.org_type) where['org_type'] = query.org_type;
+
+    const [orgs, total] = await Promise.all([
+      prisma.org.findMany({ where, skip, take: limit, orderBy: { created_at: 'desc' } }),
+      prisma.org.count({ where }),
+    ]);
+
+    return {
+      data: orgs.map((o) => serializeOrgForList(o)),
+      total,
+      page,
+      limit,
+    };
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /organizations/me — own org (for org staff)
+  // ---------------------------------------------------------------------------
+
+  async getMyOrg(requestingUser: UserWithRoles): Promise<Record<string, unknown>> {
+    if (!requestingUser.org_id) throw new AppError('ORG_NOT_FOUND', 404);
+
+    const org = await prisma.org.findUnique({
+      where: { id: requestingUser.org_id, deleted_at: null },
+      ...withRelations,
+    });
+    if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+
+    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    return serializeOrgFull(org, isAdmin(roleSlugs));
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /organizations/:id
+  // ---------------------------------------------------------------------------
+
+  async getOrgById(
+    requestingUser: UserWithRoles,
+    orgId: string,
+  ): Promise<Record<string, unknown>> {
+    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const admin = isAdmin(roleSlugs);
+
+    const org = await prisma.org.findUnique({
+      where: { id: orgId, deleted_at: null },
+      ...withRelations,
+    });
+    if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+
+    // Non-admin can only view their own org
+    if (!admin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
+
+    return serializeOrgFull(org, admin);
+  },
+
+  // ---------------------------------------------------------------------------
+  // PATCH /organizations/:id
+  // ---------------------------------------------------------------------------
+
+  async updateOrg(
+    requestingUser: UserWithRoles,
+    orgId: string,
+    data: {
+      name?: string;
+      contact_email?: string;
+      contact_phone?: string;
+      address?: string;
+      logo_url?: string;
+      status?: string;
+      rejection_reason?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const admin = isAdmin(roleSlugs);
+    const orgAdmin = roleSlugs.includes('org_admin');
+
+    if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    if (orgAdmin && !admin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
+
+    // org_admin cannot change status — only katisha_admin can
+    if (!admin && data.status !== undefined) throw new AppError('FORBIDDEN', 403);
+
+    const existing = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
+    if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
+
+    const updateData: Record<string, unknown> = {};
+    if (data.name !== undefined) {
+      updateData['name'] = data.name;
+      updateData['slug'] = slugify(data.name);
+    }
+    if (data.contact_email !== undefined) updateData['contact_email'] = data.contact_email;
+    if (data.contact_phone !== undefined) updateData['contact_phone'] = data.contact_phone;
+    if (data.address !== undefined) updateData['address'] = data.address;
+    if (data.logo_url !== undefined) updateData['logo_url'] = data.logo_url;
+
+    if (data.status !== undefined && admin) {
+      updateData['status'] = data.status;
+
+      if (data.status === 'active') {
+        updateData['approved_by'] = requestingUser.id;
+        updateData['approved_at'] = new Date();
+      }
+      if (data.status === 'rejected' && data.rejection_reason) {
+        updateData['rejection_reason'] = data.rejection_reason;
+      }
+    }
+
+    const org = await prisma.org.update({
+      where: { id: orgId },
+      data: updateData,
+      ...withRelations,
+    });
+
+    // Blacklist all active tokens for this org's users when suspended
+    if (data.status === 'suspended') {
+      try {
+        await getRedisClient().set(`blacklist:org:${orgId}`, '1', 'EX', BLACKLIST_TTL_SECONDS);
+      } catch (err) {
+        console.error('[org] Failed to set blacklist entry', err);
+      }
+    }
+
+    return serializeOrgFull(org, admin);
+  },
+
+  // ---------------------------------------------------------------------------
+  // POST /organizations/:id/approve — two-step cooperative approval
+  // ---------------------------------------------------------------------------
+
+  async approveChildOrg(
+    requestingUser: UserWithRoles,
+    orgId: string,
+  ): Promise<Record<string, unknown>> {
+    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const admin = isAdmin(roleSlugs);
+    const orgAdmin = roleSlugs.includes('org_admin');
+
+    if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+
+    const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
+    if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+
+    if (org.status !== 'pending') throw new AppError('ORG_NOT_PENDING', 400);
+
+    // Step 1: parent cooperative org_admin stamps cooperative_approved_at
+    if (orgAdmin && !admin) {
+      if (!requestingUser.org_id || org.parent_org_id !== requestingUser.org_id) {
+        throw new AppError('FORBIDDEN', 403);
+      }
+      const updated = await prisma.org.update({
+        where: { id: orgId },
+        data: { cooperative_approved_at: new Date() },
+        ...withRelations,
+      });
+      return serializeOrgFull(updated, false);
+    }
+
+    // Step 2: katisha_admin fully approves (requires step 1 for cooperatives)
+    if (org.org_type === 'cooperative' && !org.cooperative_approved_at) {
+      throw new AppError('COOPERATIVE_APPROVAL_REQUIRED', 400);
+    }
+
+    const updated = await prisma.org.update({
+      where: { id: orgId },
+      data: { status: 'active', approved_by: requestingUser.id, approved_at: new Date() },
+      ...withRelations,
+    });
+    return serializeOrgFull(updated, true);
+  },
+};

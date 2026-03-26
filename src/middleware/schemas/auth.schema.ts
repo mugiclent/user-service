@@ -22,7 +22,7 @@ export const registerSchema = Joi.object({
 
 export const verifyPhoneSchema = Joi.object({
   user_id: Joi.string().uuid().required(),
-  code: Joi.string().trim().length(6).required(),
+  otp: Joi.string().trim().length(6).required(),
 });
 
 export const forgotPasswordSchema = Joi.object({
@@ -31,5 +31,5 @@ export const forgotPasswordSchema = Joi.object({
 
 export const resetPasswordSchema = Joi.object({
   token: Joi.string().trim().required(),
-  password: password.required(),
+  new_password: password.required(),
 });

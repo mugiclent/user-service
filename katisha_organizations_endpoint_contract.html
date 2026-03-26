@@ -1,0 +1,391 @@
+
+<div style="padding:1.5rem 0;font-family:var(--font-sans);color:var(--color-text-primary)">
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.5rem" id="tabs"></div>
+<div id="panes"></div>
+<script>
+function code(str){
+  return `<pre style="margin:6px 0 0;padding:8px 10px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);font-family:var(--font-mono);font-size:10.5px;color:var(--color-text-primary);overflow-x:auto;white-space:pre">${str.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</pre>`;
+}
+function tbl(headers,rows){
+  const ths=headers.map(h=>`<th style="text-align:left;padding:5px 10px;font-weight:500;font-size:11px;color:var(--color-text-secondary);white-space:nowrap">${h}</th>`).join('');
+  const trs=rows.map(r=>`<tr style="border-bottom:1px solid var(--color-border-tertiary)">${r.map((c,i)=>`<td style="padding:5px 10px;font-size:11px;${i===0?'font-family:var(--font-mono);color:var(--color-text-primary)':'color:var(--color-text-secondary)'}">${c}</td>`).join('')}</tr>`).join('');
+  return `<table style="width:100%;border-collapse:collapse"><thead><tr style="border-bottom:1px solid var(--color-border-secondary)">${ths}</tr></thead><tbody>${trs}</tbody></table>`;
+}
+function card(type,title,body){
+  const map={
+    info:  ['var(--color-background-info)',   'var(--color-border-info)',   'var(--color-text-info)'],
+    warn:  ['var(--color-background-warning)','var(--color-border-warning)','var(--color-text-warning)'],
+    danger:['var(--color-background-danger)', 'var(--color-border-danger)', 'var(--color-text-danger)'],
+    success:['var(--color-background-success)','var(--color-border-success)','var(--color-text-success)'],
+    muted: ['var(--color-background-secondary)','var(--color-border-tertiary)','var(--color-text-secondary)'],
+  };
+  const [bg,bd,fg]=map[type]||map.muted;
+  return `<div style="padding:10px 14px;background:${bg};border-radius:var(--border-radius-md);border:1px solid ${bd}"><p style="font-size:11px;font-weight:500;color:${fg};margin:0 0 5px">${title}</p><div style="font-size:11px;color:${fg}">${body}</div></div>`;
+}
+function step(n,type,title,body){
+  const map={
+    info:  ['var(--color-background-info)',   'var(--color-border-info)',   'var(--color-text-info)'],
+    warn:  ['var(--color-background-warning)','var(--color-border-warning)','var(--color-text-warning)'],
+    danger:['var(--color-background-danger)', 'var(--color-border-danger)', 'var(--color-text-danger)'],
+    success:['var(--color-background-success)','var(--color-border-success)','var(--color-text-success)'],
+    muted: ['var(--color-background-secondary)','var(--color-border-tertiary)','var(--color-text-secondary)'],
+  };
+  const [bg,bd,fg]=map[type]||map.muted;
+  return `<div style="display:flex;gap:10px;margin-bottom:8px;align-items:flex-start">
+    <div style="min-width:22px;height:22px;border-radius:50%;background:${bg};border:1px solid ${bd};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500;color:${fg};flex-shrink:0">${n}</div>
+    <div style="flex:1;padding:8px 12px;background:${bg};border-radius:var(--border-radius-md);border:1px solid ${bd}">
+      <p style="font-size:11px;font-weight:500;color:${fg};margin:0 0 3px">${title}</p>
+      <div style="font-size:11px;color:${fg}">${body}</div>
+    </div>
+  </div>`;
+}
+
+const sections=[
+  {
+    id:'get_list', label:'GET /organizations',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">GET /api/v1/organizations</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-warning);color:var(--color-text-warning);font-weight:500">katisha admin only</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1.2rem">Lists all organizations on the platform. Katisha Admin exclusive. Org Admins are redirected to <code>GET /organizations/me</code> — they have no visibility into other orgs.</p>
+
+      <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Query parameters</p>
+      ${tbl(['param','type','notes'],[
+        ['q',            'string',  'Search by org name or slug. Min 2 chars.'],
+        ['org_type',     'enum',    '"company" | "cooperative"'],
+        ['status',       'enum',    '"pending" | "active" | "suspended" | "rejected". Comma-separated for multiple e.g. ?status=pending,active'],
+        ['has_parent',   'boolean', 'true = child orgs only (owner-driver orgs). false = top-level orgs only. Omit for all.'],
+        ['created_from', 'date',    'ISO 8601. Inclusive lower bound on created_at.'],
+        ['created_to',   'date',    'ISO 8601. Inclusive upper bound on created_at.'],
+        ['sort_order',   'enum',    '"asc" | "desc". Default: desc. Always sorts by created_at.'],
+        ['page',         'integer', 'Default: 1.'],
+        ['limit',        'integer', 'Default: 20. Max: 100.'],
+      ])}
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response envelope</p>
+        ${code(`{
+  "data": [ ...organization objects ],
+  "meta": {
+    "page":        1,
+    "limit":       20,
+    "total":       47,
+    "total_pages": 3,
+    "has_next":    true,
+    "has_prev":    false
+  }
+}`)}
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Organization object in list</p>
+        ${tbl(['field','type','notes'],[
+          ['id',             'uuid',        ''],
+          ['name',           'string',      ''],
+          ['slug',           'string',      'URL-safe unique identifier'],
+          ['org_type',       'enum',        '"company" | "cooperative"'],
+          ['status',         'enum',        '"pending" | "active" | "suspended" | "rejected"'],
+          ['logo_url',       'string|null', ''],
+          ['contact_email',  'string|null', ''],
+          ['contact_phone',  'string|null', ''],
+          ['parent_org_id',  'uuid|null',   'Non-null = this is a child (owner-driver) org'],
+          ['approved_at',    'datetime|null','null if still pending'],
+          ['created_at',     'datetime',    ''],
+        ])}
+        ${card('warn','Fields omitted from list — available in GET /organizations/{id} only','tin · license_number · address · approved_by · updated_at. Sensitive compliance fields are not bulk-exposed in list responses.')}
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Example URLs</p>
+        ${card('muted','Common Katisha Admin queries',`
+          <code style="font-size:10px;display:block;margin-bottom:5px">GET /organizations?status=pending</code>
+          <code style="font-size:10px;display:block;margin-bottom:5px">GET /organizations?org_type=cooperative&status=active</code>
+          <code style="font-size:10px;display:block;margin-bottom:5px">GET /organizations?has_parent=true</code>
+          <code style="font-size:10px;display:block;margin-bottom:5px">GET /organizations?q=Volcano&sort_order=asc</code>
+          <code style="font-size:10px;display:block">GET /organizations?created_from=2025-01-01&status=pending,active</code>
+        `)}
+      </div>
+    `
+  },
+  {
+    id:'post_org', label:'POST /organizations',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">POST /api/v1/organizations</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">public + katisha admin</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1.2rem">Two distinct callers, same endpoint. A prospective partner submits their registration form (public). A Katisha Admin can also create an org directly on behalf of a partner. The approval flow is the same either way — manual review by Katisha Admin.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Request body</p>
+          ${tbl(['field','type','required','notes'],[
+            ['name',           'string', 'yes', 'Max 200 chars. Must be unique.'],
+            ['org_type',       'enum',   'yes', '"company" | "cooperative"'],
+            ['tin',            'string', 'yes', 'Tax ID. Must be unique across top-level orgs. Child orgs omit this — inherited from parent.'],
+            ['license_number', 'string', 'yes', 'Operating license issued by transport authority.'],
+            ['contact_email',  'string', 'yes', 'Official org contact email. Must be valid format.'],
+            ['contact_phone',  'string', 'yes', 'E.164 format.'],
+            ['address',        'string', 'yes', 'Physical address. Max 500 chars.'],
+            ['logo_url',       'string', 'no',  'Upload separately via presigned URL. Submit resulting URL here.'],
+            ['parent_org_id',  'uuid',   'no',  'Required only for owner-driver child orgs. Parent must be a cooperative with status=active.'],
+          ])}
+
+          <div style="margin-top:8px">
+          ${card('info','Child org (owner-driver) special rules',`
+            <p style="margin:0 0 4px">When <code>parent_org_id</code> is provided:</p>
+            <ul style="margin:0;padding-left:14px">
+              <li style="margin-bottom:3px"><code>tin</code> and <code>license_number</code> are optional — inherited from parent cooperative on approval</li>
+              <li style="margin-bottom:3px">Parent must have <code>org_type=cooperative</code> and <code>status=active</code></li>
+              <li style="margin-bottom:3px">Approval requires sign-off from BOTH the parent cooperative's Org Admin AND a Katisha Admin</li>
+              <li>Max depth = 1. A child org cannot itself have a <code>parent_org_id</code></li>
+            </ul>
+          `)}
+          </div>
+        </div>
+
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Approval flow — after POST</p>
+          ${step(1,'muted','Org created with status: pending','All submitted fields stored. <code>approved_by</code> and <code>approved_at</code> are null.')}
+          ${step(2,'muted','RabbitMQ event published','<code>organization.registered</code> → notification service alerts Katisha Admin team.')}
+          ${step(3,'warn','Katisha Admin reviews','Admin calls <code>PATCH /organizations/{id}</code> with <code>status: active</code> or <code>status: rejected</code>. For child orgs: parent Org Admin also calls <code>PATCH /organizations/{id}/approve</code> first.')}
+          ${step(4,'success','On approval: status → active','<code>approved_by</code> and <code>approved_at</code> set. RabbitMQ event <code>organization.approved</code> published → notification service emails the registrant.')}
+          ${step(5,'success','Org Admin account provisioned','Katisha Admin creates the first Org Admin user via <code>POST /users</code> with <code>org_id</code> of the newly approved org. Invite sent.')}
+          ${card('danger','On rejection','<code>status → rejected</code>. A <code>rejection_reason</code> string should be included in the PATCH body and stored. Notification service emails the registrant with the reason. Rejected orgs can re-apply by submitting a new POST /organizations — they are not permanently blocked.')}
+        </div>
+      </div>
+
+      <div style="margin-top:1rem">
+        <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — 201 Created</p>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+          <div>
+          ${tbl(['field','type','notes'],[
+            ['id',             'uuid',     ''],
+            ['name',           'string',   ''],
+            ['slug',           'string',   'Auto-generated from name at creation'],
+            ['org_type',       'enum',     ''],
+            ['status',         'enum',     '"pending" always on creation'],
+            ['contact_email',  'string',   ''],
+            ['contact_phone',  'string',   ''],
+            ['parent_org_id',  'uuid|null',''],
+            ['created_at',     'datetime', ''],
+          ])}
+          </div>
+          <div>
+          ${card('warn','Fields omitted from creation response','tin · license_number · address · approved_by · approved_at. Sensitive compliance fields returned only in GET /organizations/{id} to authenticated admins.')}
+          ${card('muted','Error cases',tbl(['status','code','when'],[
+            ['409','ORG_NAME_TAKEN',      'Name already registered'],
+            ['409','TIN_ALREADY_EXISTS',  'TIN belongs to another org'],
+            ['409','LICENSE_ALREADY_EXISTS','License number already registered'],
+            ['400','INVALID_PARENT_ORG',  'parent_org_id org is not a cooperative, not active, or is itself a child org'],
+            ['422','VALIDATION_ERROR',    'Missing required fields, invalid formats'],
+          ]))}
+          </div>
+        </div>
+      </div>
+    `
+  },
+  {
+    id:'get_id', label:'GET /organizations/{id}',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">GET /api/v1/organizations/{id}</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">authenticated</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1.2rem">Full org profile. Katisha Admins can fetch any org. Org Admins can only fetch their own — and get the same response as <code>GET /organizations/me</code>. All other callers get 403.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — full org profile</p>
+          ${tbl(['field','type','visible to org admin','notes'],[
+            ['id',             'uuid',        'yes',''],
+            ['name',           'string',      'yes',''],
+            ['slug',           'string',      'yes',''],
+            ['org_type',       'enum',        'yes',''],
+            ['status',         'enum',        'yes',''],
+            ['logo_url',       'string|null', 'yes',''],
+            ['contact_email',  'string',      'yes',''],
+            ['contact_phone',  'string',      'yes',''],
+            ['address',        'string',      'yes',''],
+            ['tin',            'string|null', 'yes',''],
+            ['license_number', 'string|null', 'yes',''],
+            ['parent_org_id',  'uuid|null',   'yes','null for top-level orgs'],
+            ['parent_org',     'object|null', 'yes','Shallow: { id, name, slug, status } — no nesting beyond depth 1'],
+            ['child_orgs',     'object[]',    'no — katisha admin only','Array of { id, name, slug, status } for child orgs'],
+            ['approved_by',    'uuid|null',   'no — katisha admin only','user_id of approving Katisha Admin'],
+            ['approved_at',    'datetime|null','yes',''],
+            ['created_at',     'datetime',    'yes',''],
+            ['updated_at',     'datetime',    'yes',''],
+          ])}
+        </div>
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">PATCH /organizations/{id}</p>
+          ${tbl(['field','org admin','katisha admin','notes'],[
+            ['name',            'yes','yes','Slug auto-regenerated on name change'],
+            ['logo_url',        'yes','yes',''],
+            ['contact_email',   'yes','yes',''],
+            ['contact_phone',   'yes','yes',''],
+            ['address',         'yes','yes',''],
+            ['license_number',  'no', 'yes','Compliance update'],
+            ['tin',             'no', 'yes','Compliance update'],
+            ['status',          'no', 'yes','"active"|"suspended"|"rejected". Triggers blacklist:org Redis key on suspend.'],
+            ['rejection_reason','no', 'yes','Required when setting status=rejected'],
+          ])}
+          <div style="margin-top:8px">
+          ${card('warn','Org suspension side effects',`
+            When Katisha Admin sets <code>status: suspended</code> via PATCH:
+            ${code(`// In the same transaction / saga:
+// 1. Update organizations.status = 'suspended'
+// 2. Revoke ALL refresh tokens for all org staff
+//    UPDATE refresh_tokens SET revoked_at = now()
+//    WHERE user_id IN (
+//      SELECT id FROM users WHERE org_id = X
+//    )
+// 3. SET Redis blacklist:org:{org_id} EX 900
+// 4. Publish organization.suspended to RabbitMQ`)}`)}
+          </div>
+        </div>
+      </div>
+    `
+  },
+  {
+    id:'get_me', label:'GET /organizations/me',
+    html:`
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">GET /api/v1/organizations/me</span>
+        <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">org admin only</span>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1.2rem">Shortcut for an Org Admin to view and manage their own organization without knowing its UUID. Internally resolves to <code>GET /organizations/{jwt.org_id}</code>. Returns the Org Admin-scoped field set.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          ${card('info','Implementation note',`This is not a separate DB query — the handler reads <code>jwt.org_id</code> and delegates to the same service method as <code>GET /organizations/{id}</code>. The response serializer applies the Org Admin field filter automatically via CASL scope. No duplication of logic.`)}
+          <div style="margin-top:8px">
+          ${card('muted','Route ordering — critical',`In Express (and most routers), <code>/organizations/me</code> must be registered BEFORE <code>/organizations/:id</code>, otherwise <code>me</code> is interpreted as a UUID and the lookup fails with a DB error on an invalid UUID format.${code(`// Correct order
+router.get('/organizations/me',    orgController.getMyOrg);
+router.get('/organizations/:id',   orgController.getById);
+// Wrong order would treat "me" as :id`)}`)}
+          </div>
+        </div>
+        <div>
+          <p style="font-size:12px;font-weight:500;color:var(--color-text-secondary);margin:0 0 6px">Response — same as GET /organizations/{id} org-admin field set</p>
+          ${tbl(['field','type'],[
+            ['id','uuid'],['name','string'],['slug','string'],
+            ['org_type','enum'],['status','enum'],['logo_url','string|null'],
+            ['contact_email','string'],['contact_phone','string'],
+            ['address','string'],['tin','string|null'],
+            ['license_number','string|null'],['parent_org_id','uuid|null'],
+            ['parent_org','object|null'],['approved_at','datetime|null'],
+            ['created_at','datetime'],['updated_at','datetime'],
+          ])}
+          <div style="margin-top:8px">
+          ${card('success','PATCH /organizations/me','Org Admin can update their own org profile. Same field restrictions as PATCH /organizations/{id} org-admin column. Internally resolves to PATCH /organizations/{jwt.org_id}.')}
+          </div>
+        </div>
+      </div>
+    `
+  },
+  {
+    id:'approve', label:'Approval endpoints',
+    html:`
+      <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1.2rem">Two dedicated approval actions — kept separate from PATCH to make intent explicit, keep audit logs clean, and apply distinct CASL permissions per action.</p>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">POST /organizations/{id}/approve</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-warning);color:var(--color-text-warning);font-weight:500">katisha admin</span>
+          </div>
+          <p style="font-size:12px;color:var(--color-text-secondary);margin:0 0 8px">Approves a pending organization. Sets status to active. For child orgs, parent cooperative approval must already be recorded before this succeeds.</p>
+          ${tbl(['field','type','required','notes'],[
+            ['notes','string','no','Optional internal note from reviewer. Stored for audit.'],
+          ])}
+          <div style="margin-top:8px">
+          ${card('success','Side effects on approval',`
+            ${code(`// 1. organizations.status = 'active'
+// 2. organizations.approved_by = jwt.sub
+// 3. organizations.approved_at = now()
+// 4. Publish organization.approved to RabbitMQ
+//    → notification service emails registrant
+//    → partner_manager notified`)}`)}
+          </div>
+
+          <div style="margin-top:8px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">POST /organizations/{id}/reject</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-warning);color:var(--color-text-warning);font-weight:500">katisha admin</span>
+          </div>
+          ${tbl(['field','type','required','notes'],[
+            ['reason','string','yes','Rejection reason. Sent to registrant via notification service.'],
+          ])}
+          </div>
+        </div>
+
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+            <span style="font-family:var(--font-mono);font-size:12px;font-weight:500">POST /organizations/{id}/cooperative-approve</span>
+            <span style="font-size:11px;padding:2px 8px;border-radius:99px;background:var(--color-background-info);color:var(--color-text-info);font-weight:500">parent org admin only</span>
+          </div>
+          <p style="font-size:12px;color:var(--color-text-secondary);margin:0 0 8px">For child orgs (owner-drivers) only. The parent cooperative's Org Admin must approve first. Katisha Admin approval is still required afterward — this is step 1 of 2.</p>
+
+          ${card('info','Two-step approval for child orgs',`
+            ${tbl(['step','actor','action','result'],[
+              ['1','Parent cooperative Org Admin','POST /organizations/{child_id}/cooperative-approve','Stores cooperative_approved_at on the org row'],
+              ['2','Katisha Admin','POST /organizations/{child_id}/approve','Checks cooperative_approved_at is set. Sets status=active.'],
+            ])}
+            <p style="margin:6px 0 0">If Katisha Admin tries to approve a child org before the parent has approved, the endpoint returns <code>400 COOPERATIVE_APPROVAL_REQUIRED</code>.</p>
+          `)}
+
+          <div style="margin-top:8px">
+          ${card('warn','Child org inheritance on final approval',`When Katisha Admin approves a child org:${code(`// If child.tin is null → copy from parent
+// If child.license_number is null → copy from parent
+// This is applied at approval time, not at registration
+// Child row is updated in the same transaction`)}`)}
+          </div>
+
+          ${card('muted','Error cases across all approval endpoints',tbl(['status','code','when'],[
+            ['400','ORG_NOT_PENDING',              'Org is already active, suspended, or rejected'],
+            ['400','COOPERATIVE_APPROVAL_REQUIRED','Child org: parent has not yet approved'],
+            ['400','NOT_A_CHILD_ORG',             '/cooperative-approve called on a top-level org'],
+            ['403','FORBIDDEN',                    'Caller is not the parent org\'s admin'],
+            ['404','NOT_FOUND',                    'Org id does not exist or is soft-deleted'],
+          ]))}
+        </div>
+      </div>
+    `
+  },
+];
+
+const tabsEl=document.getElementById('tabs');
+const panesEl=document.getElementById('panes');
+sections.forEach(sec=>{
+  const btn=document.createElement('button');
+  btn.id='tab-'+sec.id;
+  btn.textContent=sec.label;
+  btn.style.cssText='padding:5px 12px;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);background:transparent;color:var(--color-text-secondary);font-size:12px;cursor:pointer;white-space:nowrap';
+  btn.onclick=()=>switchTo(sec.id);
+  tabsEl.appendChild(btn);
+  const pane=document.createElement('div');
+  pane.id='pane-'+sec.id;
+  pane.style.display='none';
+  pane.innerHTML=sec.html;
+  panesEl.appendChild(pane);
+});
+function switchTo(id){
+  sections.forEach(s=>{
+    const p=document.getElementById('pane-'+s.id);
+    const t=document.getElementById('tab-'+s.id);
+    const on=s.id===id;
+    if(p) p.style.display=on?'block':'none';
+    if(t){
+      t.style.background=on?'var(--color-background-info)':'transparent';
+      t.style.color=on?'var(--color-text-info)':'var(--color-text-secondary)';
+      t.style.borderColor=on?'var(--color-border-info)':'var(--color-border-tertiary)';
+      t.style.fontWeight=on?'500':'400';
+    }
+  });
+}
+switchTo('get_list');
+</script>
+</div>
