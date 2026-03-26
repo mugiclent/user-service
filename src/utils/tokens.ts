@@ -1,14 +1,14 @@
 import jwt from 'jsonwebtoken';
 import { packRules } from '@casl/ability/extra';
 import type { PackRule } from '@casl/ability/extra';
-import type { SubjectRawRule } from '@casl/ability';
+import type { AppRule } from './ability.js';
 import { config } from '../config/index.js';
 
 export interface JwtPayload {
   sub: string;
   org_id: string | null;
   user_type: 'passenger' | 'staff';
-  rules: PackRule<SubjectRawRule>[];
+  rules: PackRule<AppRule>[];
 }
 
 /**
@@ -16,12 +16,13 @@ export interface JwtPayload {
  * packed CASL rules for zero-DB-hit authorization.
  */
 export const signAccessToken = (
-  payload: Omit<JwtPayload, 'rules'> & { rules: SubjectRawRule[] },
+  payload: Omit<JwtPayload, 'rules'> & { rules: AppRule[] },
 ): string => {
   const { rules, ...rest } = payload;
   const tokenPayload: JwtPayload = { ...rest, rules: packRules(rules) };
-  return jwt.sign(tokenPayload, config.jwt.secret, {
-    expiresIn: config.jwt.expiresIn,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return jwt.sign(tokenPayload as object, config.jwt.secret, {
+    expiresIn: config.jwt.expiresIn as any,
   });
 };
 

@@ -95,7 +95,7 @@ export const OrgService = {
     ]);
 
     return {
-      data: orgs.map((o) => serializeOrgForList(o)),
+      data: orgs.map((o) => serializeOrgForList(o) as unknown as Record<string, unknown>),
       total,
       page,
       limit,

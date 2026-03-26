@@ -1,8 +1,8 @@
 import amqplib from 'amqplib';
-import type { Channel, Connection } from 'amqplib';
+import type { Channel, ChannelModel } from 'amqplib';
 import { config } from '../config/index.js';
 
-let connection: Connection;
+let connection: ChannelModel;
 let channel: Channel;
 
 export const initRabbitMQ = async (): Promise<void> => {

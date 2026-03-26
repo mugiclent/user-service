@@ -1,4 +1,4 @@
-import Redis from 'ioredis';
+import { Redis } from 'ioredis';
 import { config } from '../config/index.js';
 
 let redisClient: Redis;
@@ -9,7 +9,7 @@ export const initRedis = (): void => {
     maxRetriesPerRequest: 3,
   });
 
-  redisClient.on('error', (err) => {
+  redisClient.on('error', (err: Error) => {
     console.error('[redis] Connection error', err);
   });
 };

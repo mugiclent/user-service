@@ -6,6 +6,7 @@ import helmet from 'helmet';
 import passport from 'passport';
 import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
+import orgRouter from '../api/org.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
 
 export const createApp = (): Application => {
@@ -27,6 +28,7 @@ export const createApp = (): Application => {
   // Routes
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/users', userRouter);
+  app.use('/api/v1/organizations', orgRouter);
 
   // Global error handler — must be last
   app.use(errorHandler);

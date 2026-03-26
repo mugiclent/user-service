@@ -2,7 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { AuthService } from '../services/auth.service.js';
 import { serializeUserForAuth } from '../models/serializers.js';
 import { sendAuthResponse, sendRefreshResponse, clearAuthCookies } from '../utils/sendAuthResponse.js';
-import type { UserWithRoles } from '../models/index.js';
+import type { AuthenticatedUser } from '../models/index.js';
 
 export const AuthController = {
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -116,7 +116,7 @@ export const AuthController = {
 
   async logoutAll(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       await AuthService.logoutAll(user.id);
       clearAuthCookies(res);
       res.status(204).end();

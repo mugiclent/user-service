@@ -1,10 +1,9 @@
-import { prisma } from '../models/index.js';
-import type { UserWithRoles } from '../models/index.js';
+import { prisma, Prisma } from '../models/index.js';
+import type { UserWithRoles, AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
 import { buildRulesForUser, buildAbilityFromRules } from '../utils/ability.js';
-import type { AppRule } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword } from '../utils/crypto.js';
 import { publishNotification } from '../utils/publishers.js';
 
@@ -20,7 +19,7 @@ const BLACKLIST_TTL_SECONDS = 900;
 // ---------------------------------------------------------------------------
 
 export const UserService = {
-  async getMe(requestingUser: UserWithRoles): Promise<Record<string, unknown>> {
+  async getMe(requestingUser: AuthenticatedUser): Promise<Record<string, unknown>> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const rules = buildRulesForUser(requestingUser.id, requestingUser.org_id, roleSlugs);
     return serializeUserMe(requestingUser, rules) as unknown as Record<string, unknown>;
@@ -50,7 +49,7 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async listUsers(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
@@ -93,12 +92,12 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async getUserById(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     targetId: string,
   ): Promise<Record<string, unknown>> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
-    const ability = buildAbilityFromRules(requestingUser.rules as AppRule[]);
+    const ability = buildAbilityFromRules(requestingUser.rules);
 
     const user = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -119,13 +118,13 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async updateUser(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     targetId: string,
     data: { first_name?: string; last_name?: string; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
-    const ability = buildAbilityFromRules(requestingUser.rules as AppRule[]);
+    const ability = buildAbilityFromRules(requestingUser.rules);
 
     const target = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -137,12 +136,18 @@ export const UserService = {
       if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
     }
 
-    const { role_slugs, ...userFields } = data;
+    const { role_slugs, first_name, last_name, status, org_id } = data;
+
+    const updateData: Prisma.UserUncheckedUpdateInput = {};
+    if (first_name !== undefined) updateData.first_name = first_name;
+    if (last_name !== undefined) updateData.last_name = last_name;
+    if (status !== undefined) updateData.status = status as Prisma.EnumUserStatusFieldUpdateOperationsInput['set'];
+    if (org_id !== undefined) updateData.org_id = org_id;
 
     const updated = await prisma.$transaction(async (tx) => {
       const u = await tx.user.update({
         where: { id: targetId },
-        data: userFields,
+        data: updateData,
         ...withRoles,
       });
 
@@ -167,7 +172,7 @@ export const UserService = {
   // DELETE /users/:id — soft delete + blacklist
   // ---------------------------------------------------------------------------
 
-  async deleteUser(requestingUser: UserWithRoles, targetId: string): Promise<void> {
+  async deleteUser(requestingUser: AuthenticatedUser, targetId: string): Promise<void> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
     if (!isAdmin) throw new AppError('FORBIDDEN', 403);
@@ -197,7 +202,7 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async inviteUser(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);

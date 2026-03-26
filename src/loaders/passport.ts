@@ -20,9 +20,25 @@ export const initPassport = (): void => {
   passport.use(
     new JwtStrategy(options, async (payload: JwtPayload, done) => {
       try {
-        const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+        const user = await prisma.user.findUnique({
+          where: { id: payload.sub },
+          include: { user_roles: { include: { role: true } } },
+        });
         if (!user || user.deleted_at) return done(null, false);
         if (user.status === 'suspended') return done(null, false);
+
+        // Check Redis blacklist (soft-delete window, org suspension)
+        const { getRedisClient } = await import('../loaders/redis.js');
+        try {
+          const redis = getRedisClient();
+          const [userBlacklisted, orgBlacklisted] = await Promise.all([
+            redis.get(`blacklist:user:${user.id}`),
+            user.org_id ? redis.get(`blacklist:org:${user.org_id}`) : null,
+          ]);
+          if (userBlacklisted || orgBlacklisted) return done(null, false);
+        } catch {
+          // Redis unavailable — fail open (don't block auth)
+        }
 
         return done(null, {
           ...user,

@@ -1,11 +1,11 @@
 import type { Request, Response, NextFunction } from 'express';
 import { OrgService } from '../services/org.service.js';
-import type { UserWithRoles } from '../models/index.js';
+import type { AuthenticatedUser } from '../models/index.js';
 
 export const OrgController = {
   async createOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await OrgService.createOrg(user, req.body as {
         name: string;
         org_type: string;
@@ -24,7 +24,7 @@ export const OrgController = {
 
   async listOrgs(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const query = req.query as {
         page?: string;
         limit?: string;
@@ -45,7 +45,7 @@ export const OrgController = {
 
   async getMyOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await OrgService.getMyOrg(user);
       res.status(200).json(result);
     } catch (err) {
@@ -55,7 +55,7 @@ export const OrgController = {
 
   async getOrgById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await OrgService.getOrgById(user, req.params['id']!);
       res.status(200).json(result);
     } catch (err) {
@@ -65,7 +65,7 @@ export const OrgController = {
 
   async updateOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await OrgService.updateOrg(user, req.params['id']!, req.body as {
         name?: string;
         contact_email?: string;
@@ -83,7 +83,7 @@ export const OrgController = {
 
   async approveChildOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await OrgService.approveChildOrg(user, req.params['id']!);
       res.status(200).json(result);
     } catch (err) {

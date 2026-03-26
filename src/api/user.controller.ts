@@ -3,12 +3,12 @@ import { UserService } from '../services/user.service.js';
 import { TokenService } from '../services/token.service.js';
 import { sendAuthResponse } from '../utils/sendAuthResponse.js';
 import { serializeUserForAuth } from '../models/serializers.js';
-import type { UserWithRoles } from '../models/index.js';
+import type { AuthenticatedUser } from '../models/index.js';
 
 export const UserController = {
   async getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await UserService.getMe(user);
       res.status(200).json(result);
     } catch (err) {
@@ -18,7 +18,7 @@ export const UserController = {
 
   async updateMe(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await UserService.updateMe(user.id, req.body as {
         first_name?: string;
         last_name?: string;
@@ -33,7 +33,7 @@ export const UserController = {
 
   async listUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const query = req.query as {
         page?: string;
         limit?: string;
@@ -56,7 +56,7 @@ export const UserController = {
 
   async getUserById(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await UserService.getUserById(user, req.params['id']!);
       res.status(200).json(result);
     } catch (err) {
@@ -66,7 +66,7 @@ export const UserController = {
 
   async updateUser(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await UserService.updateUser(user, req.params['id']!, req.body as {
         first_name?: string;
         last_name?: string;
@@ -82,7 +82,7 @@ export const UserController = {
 
   async deleteUser(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       await UserService.deleteUser(user, req.params['id']!);
       res.status(204).end();
     } catch (err) {
@@ -92,7 +92,7 @@ export const UserController = {
 
   async inviteUser(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as UserWithRoles;
+      const user = req.user as AuthenticatedUser;
       const result = await UserService.inviteUser(user, req.body as {
         email?: string;
         phone_number?: string;
