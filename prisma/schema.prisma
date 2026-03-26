@@ -34,6 +34,19 @@ enum OrgStatus {
   rejected
 }
 
+enum PermissionLevel {
+  manage
+  write
+  read
+}
+
+enum PermissionSubject {
+  User
+  Org
+  Role
+  all
+}
+
 // ---------------------------------------------------------------------------
 // Models
 // ---------------------------------------------------------------------------
@@ -74,9 +87,10 @@ model Role {
   org_id     String?  // null = platform-level role (katisha_admin, katisha_support, etc.)
   created_at DateTime @default(now())
 
-  org         Org?         @relation(fields: [org_id], references: [id])
-  user_roles  UserRole[]
-  invitations Invitation[]
+  org              Org?             @relation(fields: [org_id], references: [id])
+  user_roles       UserRole[]
+  invitations      Invitation[]
+  role_permissions RolePermission[]
 
   @@unique([slug, org_id])
   @@map("roles")
@@ -103,12 +117,49 @@ model User {
   updated_at                 DateTime   @updatedAt
   deleted_at                 DateTime?
 
-  org            Org?           @relation(fields: [org_id], references: [id])
-  refresh_tokens RefreshToken[]
-  otps           Otp[]
-  user_roles     UserRole[]
+  org              Org?             @relation(fields: [org_id], references: [id])
+  refresh_tokens   RefreshToken[]
+  otps             Otp[]
+  user_roles       UserRole[]
+  user_permissions UserPermission[]
 
   @@map("users")
+}
+
+model Permission {
+  id      String            @id @default(uuid())
+  level   PermissionLevel
+  subject PermissionSubject
+
+  role_permissions RolePermission[]
+  user_permissions UserPermission[]
+
+  @@unique([level, subject])
+  @@map("permissions")
+}
+
+model RolePermission {
+  role_id       String
+  permission_id String
+  created_at    DateTime @default(now())
+
+  role       Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+
+  @@id([role_id, permission_id])
+  @@map("role_permissions")
+}
+
+model UserPermission {
+  user_id       String
+  permission_id String
+  created_at    DateTime @default(now())
+
+  user       User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+
+  @@id([user_id, permission_id])
+  @@map("user_permissions")
 }
 
 model UserRole {

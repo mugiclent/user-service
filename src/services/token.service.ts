@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import type { UserWithRoles } from '../models/index.js';
 import { hashToken, generateRawToken } from '../utils/crypto.js';
 import { signAccessToken } from '../utils/tokens.js';
-import { buildRulesForUser } from '../utils/ability.js';
+import { buildRulesForUser, collectPermissions } from '../utils/ability.js';
 import { AppError } from '../utils/AppError.js';
 import { config } from '../config/index.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
@@ -12,13 +12,24 @@ import type { AuthTokens } from '../utils/sendAuthResponse.js';
 // ---------------------------------------------------------------------------
 
 const withRoles = {
-  include: { user_roles: { include: { role: true } } },
+  include: {
+    user_roles: {
+      include: {
+        role: {
+          include: {
+            role_permissions: { include: { permission: true } },
+          },
+        },
+      },
+    },
+    user_permissions: { include: { permission: true } },
+  },
 } as const;
 
 /** Build access token payload and sign it. */
 const buildAccessToken = (user: UserWithRoles): string => {
-  const roleSlugs = user.user_roles.map((ur) => ur.role.slug);
-  const rules = buildRulesForUser(user.id, user.org_id, roleSlugs);
+  const entries = collectPermissions(user);
+  const rules = buildRulesForUser(user.id, user.org_id, entries);
   return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, rules });
 };
 

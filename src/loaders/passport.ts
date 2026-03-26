@@ -22,7 +22,18 @@ export const initPassport = (): void => {
       try {
         const user = await prisma.user.findUnique({
           where: { id: payload.sub },
-          include: { user_roles: { include: { role: true } } },
+          include: {
+            user_roles: {
+              include: {
+                role: {
+                  include: {
+                    role_permissions: { include: { permission: true } },
+                  },
+                },
+              },
+            },
+            user_permissions: { include: { permission: true } },
+          },
         });
         if (!user || user.deleted_at) return done(null, false);
         if (user.status === 'suspended') return done(null, false);

@@ -55,6 +55,9 @@ const mockFindUnique = vi.fn();
 const mockCreate = vi.fn();
 const mockUpdate = vi.fn();
 
+const mockRoleFindFirst = vi.fn().mockResolvedValue(null);
+const mockUserRoleCreate = vi.fn().mockResolvedValue({});
+
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     user: {
@@ -63,6 +66,20 @@ vi.mock('../../src/models/index.js', () => ({
       create:     mockCreate,
       update:     mockUpdate,
     },
+    role: {
+      findFirst: mockRoleFindFirst,
+    },
+    userRole: {
+      create: mockUserRoleCreate,
+    },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        user: { create: mockCreate },
+        role: { findFirst: mockRoleFindFirst },
+        userRole: { create: mockUserRoleCreate },
+      };
+      return fn(tx);
+    }),
   },
 }));
 

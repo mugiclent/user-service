@@ -9,7 +9,18 @@ import { publishAudit, publishSms } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 
 const withRoles = {
-  include: { user_roles: { include: { role: true } } },
+  include: {
+    user_roles: {
+      include: {
+        role: {
+          include: {
+            role_permissions: { include: { permission: true } },
+          },
+        },
+      },
+    },
+    user_permissions: { include: { permission: true } },
+  },
 } as const;
 
 const isEmail = (identifier: string): boolean => identifier.includes('@');
@@ -117,15 +128,22 @@ export const AuthService = {
 
     const password_hash = await hashPassword(data.password);
 
-    const user = await prisma.user.create({
-      data: {
-        first_name: data.first_name,
-        last_name: data.last_name,
-        phone_number: data.phone_number,
-        password_hash,
-        user_type: 'passenger',
-        status: 'pending_verification',
-      },
+    const user = await prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({
+        data: {
+          first_name: data.first_name,
+          last_name: data.last_name,
+          phone_number: data.phone_number,
+          password_hash,
+          user_type: 'passenger',
+          status: 'pending_verification',
+        },
+      });
+      const passengerRole = await tx.role.findFirst({ where: { slug: 'passenger', org_id: null } });
+      if (passengerRole) {
+        await tx.userRole.create({ data: { user_id: created.id, role_id: passengerRole.id } });
+      }
+      return created;
     });
 
     const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');

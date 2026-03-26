@@ -3,13 +3,24 @@ import type { UserWithRoles, AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
-import { buildRulesForUser, buildAbilityFromRules } from '../utils/ability.js';
+import { buildRulesForUser, buildAbilityFromRules, collectPermissions } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
 import { config } from '../config/index.js';
 
 const withRoles = {
-  include: { user_roles: { include: { role: true } } },
+  include: {
+    user_roles: {
+      include: {
+        role: {
+          include: {
+            role_permissions: { include: { permission: true } },
+          },
+        },
+      },
+    },
+    user_permissions: { include: { permission: true } },
+  },
 } as const;
 
 // 15-minute blacklist window (matches access token TTL)
@@ -21,8 +32,8 @@ const BLACKLIST_TTL_SECONDS = 900;
 
 export const UserService = {
   async getMe(requestingUser: AuthenticatedUser): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const rules = buildRulesForUser(requestingUser.id, requestingUser.org_id, roleSlugs);
+    const entries = collectPermissions(requestingUser);
+    const rules = buildRulesForUser(requestingUser.id, requestingUser.org_id, entries);
     return serializeUserMe(requestingUser, rules) as unknown as Record<string, unknown>;
   },
 
@@ -45,8 +56,8 @@ export const UserService = {
       ...withRoles,
     });
 
-    const roleSlugs = user.user_roles.map((ur) => ur.role.slug);
-    const rules = buildRulesForUser(user.id, user.org_id, roleSlugs);
+    const entries = collectPermissions(user);
+    const rules = buildRulesForUser(user.id, user.org_id, entries);
     return serializeUserMe(user, rules) as unknown as Record<string, unknown>;
   },
 
@@ -60,7 +71,6 @@ export const UserService = {
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
-    const isOrgAdmin = roleSlugs.includes('org_admin');
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -70,9 +80,10 @@ export const UserService = {
     const where: Record<string, any> = { deleted_at: null };
 
     if (!isAdmin) {
-      // org_admin can only see their own org
-      if (!isOrgAdmin || !requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
-      where['org_id'] = requestingUser.org_id;
+      // Non-admin (org_admin, dispatcher, etc.) can only see users in their org
+      if (requestingUser.org_id) {
+        where['org_id'] = requestingUser.org_id;
+      }
     } else if (query.org_id) {
       where['org_id'] = query.org_id;
     }
@@ -131,6 +142,7 @@ export const UserService = {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
     const ability = buildAbilityFromRules(requestingUser.rules);
+    // Role assignment requires unconditioned manage:User (platform admins only)
 
     const target = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -157,7 +169,7 @@ export const UserService = {
         ...withRoles,
       });
 
-      if (role_slugs && isAdmin) {
+      if (role_slugs && ability.can('manage', 'User') && isAdmin) {
         // Replace roles: delete existing, insert new
         const roles = await tx.role.findMany({ where: { slug: { in: role_slugs } } });
         await tx.userRole.deleteMany({ where: { user_id: targetId } });
@@ -179,10 +191,6 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async deleteUser(requestingUser: AuthenticatedUser, targetId: string): Promise<void> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
-    if (!isAdmin) throw new AppError('FORBIDDEN', 403);
-
     const target = await prisma.user.findUnique({ where: { id: targetId } });
     if (!target || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
 
@@ -214,10 +222,7 @@ export const UserService = {
     data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
     const isOrgAdmin = roleSlugs.includes('org_admin');
-
-    if (!isAdmin && !isOrgAdmin) throw new AppError('FORBIDDEN', 403);
 
     const org_id = isOrgAdmin ? requestingUser.org_id! : (data.org_id ?? null);
 

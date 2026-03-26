@@ -43,9 +43,6 @@ export const OrgService = {
       parent_org_id?: string;
     },
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    if (!isAdmin(roleSlugs)) throw new AppError('FORBIDDEN', 403);
-
     const slug = slugify(data.name);
     const existing = await prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] } });
     if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
@@ -86,9 +83,8 @@ export const OrgService = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = { deleted_at: null };
     if (!admin) {
-      // Non-admin staff can only see their own org
-      if (!requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
-      where['id'] = requestingUser.org_id;
+      // Non-admin staff can only see their own org (scope by conditions)
+      if (requestingUser.org_id) where['id'] = requestingUser.org_id;
     }
     if (query.status) where['status'] = query.status;
     if (query.org_type) where['org_type'] = query.org_type;
@@ -228,8 +224,6 @@ export const OrgService = {
     const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
     const admin = isAdmin(roleSlugs);
     const orgAdmin = roleSlugs.includes('org_admin');
-
-    if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
 
     const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
