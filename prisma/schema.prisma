@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum UserType {
+  passenger
+  staff
+}
+
+enum UserStatus {
+  active
+  pending_verification
+  suspended
+}
+
+// ---------------------------------------------------------------------------
+// Models
+// ---------------------------------------------------------------------------
+
+model Org {
+  id         String   @id @default(uuid())
+  name       String   @db.VarChar(200)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+  deleted_at DateTime?
+
+  users User[]
+
+  @@map("orgs")
+}
+
+model User {
+  id            String     @id @default(uuid())
+  first_name    String     @db.VarChar(100)
+  last_name     String     @db.VarChar(100)
+  phone_number  String     @unique @db.VarChar(20)
+  email         String?    @unique @db.VarChar(255)
+  password_hash String
+  user_type     UserType
+  status        UserStatus @default(pending_verification)
+  avatar_url    String?
+  org_id        String?    // null for passengers
+  created_at    DateTime   @default(now())
+  updated_at    DateTime   @updatedAt
+  deleted_at    DateTime?
+
+  org            Org?           @relation(fields: [org_id], references: [id])
+  refresh_tokens RefreshToken[]
+  otps           Otp[]
+  password_resets PasswordReset[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id          String    @id @default(uuid())
+  token_hash  String    @unique         // SHA-256 of raw token — never store raw
+  user_id     String
+  device_name String?   @db.VarChar(200)
+  expires_at  DateTime
+  revoked_at  DateTime?
+  created_at  DateTime  @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("refresh_tokens")
+}
+
+model Otp {
+  id         String   @id @default(uuid())
+  user_id    String
+  code       String   @db.VarChar(10)  // hashed in application layer
+  expires_at DateTime
+  used_at    DateTime?
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("otps")
+}
+
+model PasswordReset {
+  id         String    @id @default(uuid())
+  user_id    String
+  token_hash String    @unique          // SHA-256 of raw token
+  expires_at DateTime
+  used_at    DateTime?
+  created_at DateTime  @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("password_resets")
+}
