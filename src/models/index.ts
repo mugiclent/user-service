@@ -1,13 +1,13 @@
 import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
 import { config } from '../config/index.js';
 import type { AppRule } from '../utils/ability.js';
 
-export const prisma = new PrismaClient({
-  datasources: { db: { url: config.db.url } },
-});
+const adapter = new PrismaPg({ connectionString: config.db.url });
+export const prisma = new PrismaClient({ adapter });
 
 // Re-export Prisma types used across the service
-export type { User, Org, Role, UserRole, RefreshToken, Otp, PasswordReset, Invitation } from '@prisma/client';
+export type { User, Org, Role, UserRole, RefreshToken, Otp, Invitation } from '@prisma/client';
 export { Prisma } from '@prisma/client';
 
 // ---------------------------------------------------------------------------

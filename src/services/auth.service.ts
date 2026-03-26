@@ -58,8 +58,8 @@ export const AuthService = {
 
     // 2FA: send OTP, defer token issuance to verify-2fa step
     if (user.two_factor_enabled) {
-      const { code, expiresIn } = await OtpService.create(user.id);
-      publishSms({ type: 'otp.send', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
+      const { code, expiresIn } = await OtpService.create(user.id, '2fa');
+      publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
       return { requires_2fa: true, user_id: user.id, expires_in: expiresIn };
     }
 
@@ -82,7 +82,7 @@ export const AuthService = {
     device_name?: string,
     ip?: string,
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
-    await OtpService.verify(user_id, otp);
+    await OtpService.verify(user_id, otp, '2fa');
 
     const user = await prisma.user.findUnique({
       where: { id: user_id },
@@ -128,10 +128,10 @@ export const AuthService = {
       },
     });
 
-    const { code, expiresIn } = await OtpService.create(user.id);
+    const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
 
     publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name });
-    publishSms({ type: 'otp.send', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
     publishAudit({ actor_id: user.id, action: 'register', resource: 'User', resource_id: user.id });
 
     return { user_id: user.id, expires_in: expiresIn };
@@ -146,7 +146,7 @@ export const AuthService = {
     otp: string,
     device_name?: string,
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
-    await OtpService.verify(user_id, otp);
+    await OtpService.verify(user_id, otp, 'phone_verification');
 
     const user = await prisma.user.update({
       where: { id: user_id },
@@ -165,9 +165,9 @@ export const AuthService = {
     return PasswordService.forgotPassword(identifier);
   },
 
-  /** Complete password reset. */
-  async resetPassword(rawToken: string, newPassword: string): Promise<void> {
-    return PasswordService.resetPassword(rawToken, newPassword);
+  /** Complete password reset using the 6-digit OTP. */
+  async resetPassword(identifier: string, otp: string, newPassword: string): Promise<void> {
+    return PasswordService.resetPassword(identifier, otp, newPassword);
   },
 
   /** Rotate refresh token. Reuse detection wipes all sessions. */

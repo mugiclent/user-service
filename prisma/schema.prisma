@@ -103,11 +103,10 @@ model User {
   updated_at                 DateTime   @updatedAt
   deleted_at                 DateTime?
 
-  org             Org?            @relation(fields: [org_id], references: [id])
-  refresh_tokens  RefreshToken[]
-  otps            Otp[]
-  password_resets PasswordReset[]
-  user_roles      UserRole[]
+  org            Org?           @relation(fields: [org_id], references: [id])
+  refresh_tokens RefreshToken[]
+  otps           Otp[]
+  user_roles     UserRole[]
 
   @@map("users")
 }
@@ -142,6 +141,7 @@ model RefreshToken {
 model Otp {
   id         String    @id @default(uuid())
   user_id    String
+  purpose    String    @db.VarChar(30)   // phone_verification | 2fa | password_reset
   code_hash  String    // SHA-256 of the 6-digit code
   expires_at DateTime
   used_at    DateTime?
@@ -149,22 +149,8 @@ model Otp {
 
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
-  @@index([user_id])
+  @@index([user_id, purpose])
   @@map("otps")
-}
-
-model PasswordReset {
-  id         String    @id @default(uuid())
-  user_id    String
-  token_hash String    @unique // SHA-256 of raw token
-  expires_at DateTime
-  used_at    DateTime?
-  created_at DateTime  @default(now())
-
-  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@index([user_id])
-  @@map("password_resets")
 }
 
 model MediaAsset {

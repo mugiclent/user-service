@@ -15,10 +15,11 @@
     "lint:fix": "eslint src/ tests/ --fix",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
-    "db:seed": "prisma db seed"
+    "db:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@casl/ability": "^6.7.3",
+    "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^6.11.0",
     "amqplib": "^0.10.5",
     "argon2": "^0.41.1",
@@ -55,9 +56,6 @@
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.9"
-  },
-  "prisma": {
-    "seed": "tsx prisma/seed.ts"
   },
   "overrides": {
     "effect": ">=3.20.0"

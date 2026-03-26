@@ -6,6 +6,7 @@ import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from 
 import { buildRulesForUser, buildAbilityFromRules } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
+import { config } from '../config/index.js';
 
 const withRoles = {
   include: { user_roles: { include: { role: true } } },
@@ -242,6 +243,29 @@ export const UserService = {
         expires_at: expiresAt,
       },
     });
+
+    const inviteLink = `${config.appUrl}/accept-invite?token=${rawToken}`;
+    const expiresInSeconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
+
+    if (data.phone_number) {
+      publishSms({
+        type: 'invite.sms',
+        phone_number: data.phone_number,
+        first_name: data.first_name,
+        invite_link: inviteLink,
+        expires_in_seconds: expiresInSeconds,
+      });
+    }
+    if (data.email) {
+      publishMail({
+        type: 'invite.mail',
+        email: data.email,
+        first_name: data.first_name,
+        invite_link: inviteLink,
+        expires_in_seconds: expiresInSeconds,
+      });
+    }
+    publishAudit({ actor_id: requestingUser.id, action: 'invite', resource: 'User', resource_id: requestingUser.id });
 
     return { invite_token: rawToken, expires_at: expiresAt };
   },

@@ -30,6 +30,8 @@ const schema = Joi.object({
   RATE_LIMIT_RESET_MAX: Joi.number().default(3),
   RATE_LIMIT_RESET_WINDOW_SECONDS: Joi.number().default(3600),
 
+  APP_URL: Joi.string().uri().default('http://localhost:3001'),
+
   SEAWEEDFS_FILER_URL: Joi.string().uri().required(),
   SEAWEEDFS_PUBLIC_URL: Joi.string().uri().required(),
   SEAWEEDFS_MAX_FILE_SIZE_MB: Joi.number().default(5),
@@ -61,6 +63,7 @@ export const env = value as {
   RATE_LIMIT_LOGIN_WINDOW_SECONDS: number;
   RATE_LIMIT_RESET_MAX: number;
   RATE_LIMIT_RESET_WINDOW_SECONDS: number;
+  APP_URL: string;
   SEAWEEDFS_FILER_URL: string;
   SEAWEEDFS_PUBLIC_URL: string;
   SEAWEEDFS_MAX_FILE_SIZE_MB: number;

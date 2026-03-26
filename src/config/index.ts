@@ -36,6 +36,8 @@ export const config = {
     windowSeconds: env.OTP_WINDOW_SECONDS,
   },
 
+  appUrl: env.APP_URL,
+
   seaweedfs: {
     filerUrl: env.SEAWEEDFS_FILER_URL,
     publicUrl: env.SEAWEEDFS_PUBLIC_URL,

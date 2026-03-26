@@ -1,15 +1,20 @@
 import { getRabbitMQChannel } from '../loaders/rabbitmq.js';
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+import { randomUUID } from 'node:crypto';
 
 const publish = (exchange: string, routingKey: string, payload: object): void => {
   try {
     getRabbitMQChannel().publish(
       exchange,
       routingKey,
-      Buffer.from(JSON.stringify({ ...payload, timestamp: new Date().toISOString() })),
+      Buffer.from(
+        JSON.stringify({
+          event_id: randomUUID(),
+          version: 1,
+          source: 'user-service',
+          timestamp: new Date().toISOString(),
+          ...payload,
+        }),
+      ),
       { persistent: true },
     );
   } catch (err) {
@@ -30,45 +35,50 @@ export interface AuditEvent {
   ip?: string;
 }
 
-/**
- * Publish an audit event.
- * Routed to the `audit` queue via routing key `audit.logs`.
- * Fire-and-forget — never throws.
- */
 export const publishAudit = (event: AuditEvent): void =>
   publish('logs', 'audit.logs', event);
 
 // ---------------------------------------------------------------------------
 // SMS notifications — notifications exchange, routing key: sms.notifications
 // Routed to the `sms` queue.
+//
+// otp.sms: single type for all OTP deliveries; `purpose` selects template wording
 // ---------------------------------------------------------------------------
 
 export type SmsEvent =
-  | { type: 'otp.send';            phone_number: string; code: string; expires_in_seconds: number }
-  | { type: 'password_reset.sms';  phone_number: string; reset_token: string; expires_in_seconds: number }
-  | { type: 'welcome.sms';         phone_number: string; first_name: string };
+  | {
+      type: 'otp.sms';
+      purpose: 'phone_verification' | '2fa' | 'password_reset';
+      phone_number: string;
+      code: string;
+      expires_in_seconds: number;
+    }
+  | { type: 'welcome.sms'; phone_number: string; first_name: string }
+  | { type: 'invite.sms'; phone_number: string; first_name: string; invite_link: string; expires_in_seconds: number }
+  | { type: 'org_approved.sms'; phone_number: string; org_name: string; invite_link: string; expires_in_seconds: number };
 
-/**
- * Publish an SMS notification event.
- * Routed to the `sms` queue via routing key `sms.notifications`.
- * Fire-and-forget — never throws.
- */
 export const publishSms = (event: SmsEvent): void =>
   publish('notifications', 'sms.notifications', event);
 
 // ---------------------------------------------------------------------------
 // Mail notifications — notifications exchange, routing key: mail.notifications
 // Routed to the `mail` queue.
+//
+// otp.mail: password reset via email now uses a 6-digit code (not a link)
 // ---------------------------------------------------------------------------
 
 export type MailEvent =
-  | { type: 'password_reset.mail'; email: string; first_name: string; reset_token: string; expires_in_seconds: number }
-  | { type: 'welcome.mail';        email: string; first_name: string };
+  | {
+      type: 'otp.mail';
+      purpose: 'password_reset';
+      email: string;
+      first_name: string;
+      code: string;
+      expires_in_seconds: number;
+    }
+  | { type: 'welcome.mail'; email: string; first_name: string }
+  | { type: 'invite.mail'; email: string; first_name: string; invite_link: string; expires_in_seconds: number }
+  | { type: 'org_approved.mail'; email: string; org_name: string; invite_link: string; expires_in_seconds: number };
 
-/**
- * Publish a mail notification event.
- * Routed to the `mail` queue via routing key `mail.notifications`.
- * Fire-and-forget — never throws.
- */
 export const publishMail = (event: MailEvent): void =>
   publish('notifications', 'mail.notifications', event);

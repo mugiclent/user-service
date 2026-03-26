@@ -4,6 +4,8 @@ import { hashToken } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { config } from '../config/index.js';
 
+export type OtpPurpose = 'phone_verification' | '2fa' | 'password_reset';
+
 /** Generate a zero-padded N-digit numeric OTP. */
 const generateCode = (length: number): string => {
   const max = Math.pow(10, length);
@@ -12,14 +14,14 @@ const generateCode = (length: number): string => {
 
 export const OtpService = {
   /**
-   * Create a new OTP for a user.
-   * Deletes any existing unused OTPs first.
+   * Create a new OTP for a user and purpose.
+   * Deletes any existing unused OTPs for the same user+purpose first.
    * Returns the raw code (to be sent via notification service) and its TTL.
    */
-  async create(userId: string): Promise<{ code: string; expiresIn: number }> {
-    // Delete previous unused OTPs for this user
+  async create(userId: string, purpose: OtpPurpose): Promise<{ code: string; expiresIn: number }> {
+    // Delete previous unused OTPs for this user+purpose
     await prisma.otp.deleteMany({
-      where: { user_id: userId, used_at: null },
+      where: { user_id: userId, purpose, used_at: null },
     });
 
     const code = generateCode(config.otp.length);
@@ -28,6 +30,7 @@ export const OtpService = {
     await prisma.otp.create({
       data: {
         user_id: userId,
+        purpose,
         code_hash: hashToken(code),
         expires_at: expiresAt,
       },
@@ -37,15 +40,15 @@ export const OtpService = {
   },
 
   /**
-   * Verify a 6-digit OTP for a user.
+   * Verify a 6-digit OTP for a user and purpose.
    * Throws INVALID_OTP (400) or OTP_EXPIRED (410) on failure.
-   * Marks as used and deletes the record on success.
+   * Deletes the record on success (single-use).
    */
-  async verify(userId: string, code: string): Promise<void> {
+  async verify(userId: string, code: string, purpose: OtpPurpose): Promise<void> {
     const codeHash = hashToken(code);
 
     const otp = await prisma.otp.findFirst({
-      where: { user_id: userId, code_hash: codeHash, used_at: null },
+      where: { user_id: userId, purpose, code_hash: codeHash, used_at: null },
     });
 
     if (!otp) throw new AppError('INVALID_OTP', 400);
@@ -55,7 +58,6 @@ export const OtpService = {
       throw new AppError('OTP_EXPIRED', 410);
     }
 
-    // Single-use: delete immediately after verification
     await prisma.otp.delete({ where: { id: otp.id } });
   },
 };

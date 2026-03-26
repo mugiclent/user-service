@@ -3,7 +3,9 @@ import type { UserWithRoles } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { slugify } from '../utils/slugify.js';
-import { publishAudit } from '../utils/publishers.js';
+import { generateRawToken, hashToken } from '../utils/crypto.js';
+import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
+import { config } from '../config/index.js';
 import {
   serializeOrgForList,
   serializeOrgCreated,
@@ -257,6 +259,45 @@ export const OrgService = {
       data: { status: 'active', approved_by: requestingUser.id, approved_at: new Date() },
       ...withRelations,
     });
+
+    // Create an invitation for the org admin account using the org contact details.
+    // The contact email/phone belongs to the person who will manage this org.
+    const orgAdminRole = await prisma.role.findFirst({ where: { slug: 'org_admin', org_id: null } });
+    if (orgAdminRole) {
+      const rawToken = generateRawToken();
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      await prisma.invitation.create({
+        data: {
+          email: updated.contact_email,
+          phone_number: updated.contact_phone,
+          first_name: updated.name,
+          last_name: 'Admin',
+          role_id: orgAdminRole.id,
+          org_id: updated.id,
+          invited_by: requestingUser.id,
+          token_hash: hashToken(rawToken),
+          expires_at: expiresAt,
+        },
+      });
+
+      const inviteLink = `${config.appUrl}/accept-invite?token=${rawToken}`;
+      const expiresInSeconds = 7 * 24 * 60 * 60;
+      publishSms({
+        type: 'org_approved.sms',
+        phone_number: updated.contact_phone,
+        org_name: updated.name,
+        invite_link: inviteLink,
+        expires_in_seconds: expiresInSeconds,
+      });
+      publishMail({
+        type: 'org_approved.mail',
+        email: updated.contact_email,
+        org_name: updated.name,
+        invite_link: inviteLink,
+        expires_in_seconds: expiresInSeconds,
+      });
+    }
+
     publishAudit({ actor_id: requestingUser.id, action: 'approve', resource: 'Org', resource_id: orgId });
     return serializeOrgFull(updated, true);
   },
