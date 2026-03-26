@@ -1,0 +1,384 @@
+
+<div style="padding:1.5rem 0;font-family:var(--font-sans);color:var(--color-text-primary)">
+
+<div style="padding:10px 14px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);margin-bottom:1.5rem">
+  <p style="font-size:12px;font-weight:500;color:var(--color-text-primary);margin:0 0 6px">Dual-client strategy — one route, two response modes</p>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem">
+    <div style="padding:8px 12px;background:var(--color-background-info);border-radius:var(--border-radius-md)">
+      <p style="font-size:12px;font-weight:500;color:var(--color-text-info);margin:0 0 4px">Web (no X-Client-Type header)</p>
+      <p style="font-size:12px;color:var(--color-text-info);margin:0">Tokens delivered as <code>HttpOnly</code> cookies. Body contains user object only. JS never touches tokens.</p>
+    </div>
+    <div style="padding:8px 12px;background:var(--color-background-success);border-radius:var(--border-radius-md)">
+      <p style="font-size:12px;font-weight:500;color:var(--color-text-success);margin:0 0 4px">Mobile (X-Client-Type: mobile)</p>
+      <p style="font-size:12px;color:var(--color-text-success);margin:0">Tokens delivered in JSON response body. No cookies set. Client stores in secure enclave (Keychain / Keystore).</p>
+    </div>
+  </div>
+  <p style="font-size:11px;color:var(--color-text-secondary);margin:8px 0 0">All endpoints share the same URL, same validation, same DB logic. The header is inspected only at the response-serialization step.</p>
+</div>
+
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:1.5rem" id="tabs"></div>
+<div id="panes"></div>
+
+<script>
+const eps = [
+  {
+    id:'login', label:'POST /auth/login', badge:'public',
+    desc:'Single login for all user types. Identifier can be phone or email. Response shape depends on X-Client-Type header.',
+    request:[
+      {n:'identifier',  t:'string', r:true,  note:'Phone (E.164) or email. Backend auto-detects type.'},
+      {n:'password',    t:'string', r:true,  note:'Never logged or returned.'},
+      {n:'device_name', t:'string', r:false, note:'e.g. "iPhone 15". Stored in refresh_tokens for session list UI.'},
+    ],
+    web:{
+      cookies:[
+        {n:'access_token',  o:'httpOnly · secure · sameSite=Lax · path=/',                     note:'JWT. 15 min TTL.'},
+        {n:'refresh_token', o:'httpOnly · secure · sameSite=Lax · path=/api/v1/auth/refresh',  note:'Opaque. 30 day TTL. Scoped — browser only sends to refresh route.'},
+      ],
+      body:[
+        {n:'user', t:'object', note:'See user object below. No tokens in body.'},
+      ]
+    },
+    mobile:{
+      body:[
+        {n:'access_token',   t:'string', note:'JWT. 15 min TTL. Store in iOS Keychain / Android Keystore.'},
+        {n:'refresh_token',  t:'string', note:'Opaque. 30 day TTL. Store in secure enclave.'},
+        {n:'token_type',     t:'string', note:'"Bearer"'},
+        {n:'expires_in',     t:'number', note:'900 (seconds)'},
+        {n:'user',           t:'object', note:'See user object below.'},
+      ]
+    },
+    user:[
+      {n:'id',         t:'uuid'},
+      {n:'first_name', t:'string'},
+      {n:'last_name',  t:'string'},
+      {n:'user_type',  t:'enum',        note:'"passenger" | "staff"'},
+      {n:'avatar_url', t:'string|null'},
+      {n:'org_id',     t:'uuid|null',   note:'null for passengers'},
+      {n:'roles',      t:'string[]',    note:'Role slugs from JWT payload'},
+      {n:'status',     t:'enum',        note:'"active" | "pending_verification" | "suspended"'},
+    ],
+    errors:[
+      {c:401, k:'INVALID_CREDENTIALS',  note:'Vague by design. Never reveal which field was wrong.'},
+      {c:403, k:'ACCOUNT_SUSPENDED',    note:'Tell user to contact support.'},
+      {c:403, k:'PHONE_NOT_VERIFIED',   note:'Passenger registered but never completed OTP.'},
+      {c:429, k:'TOO_MANY_ATTEMPTS',    note:'5 failed attempts → 15 min lockout per identifier.'},
+    ],
+    security:[
+      'Web: HttpOnly cookies — JS cannot read tokens. XSS cannot steal them.',
+      'Mobile: tokens in body — mobile team must store in Keychain/Keystore, never in AsyncStorage or localStorage.',
+      'sameSite: Lax blocks CSRF on web. Mobile has no cookies so CSRF is not applicable.',
+      'Refresh token cookie path scoped to /api/v1/auth/refresh — browser never sends it elsewhere.',
+      'Rotate refresh token on every use. Reuse detection → wipe all sessions for that user.',
+    ]
+  },
+  {
+    id:'register', label:'POST /auth/register', badge:'public',
+    desc:'Passenger self-signup only. Staff are always invited. Creates user with status: pending_verification. Sends OTP via SMS. No tokens issued yet — only after /auth/verify-phone.',
+    request:[
+      {n:'first_name',   t:'string', r:true,  note:'Max 100 chars.'},
+      {n:'last_name',    t:'string', r:true,  note:'Max 100 chars.'},
+      {n:'phone_number', t:'string', r:true,  note:'E.164 format e.g. +250788000000. Must be unique.'},
+      {n:'password',     t:'string', r:true,  note:'Min 8 chars, at least 1 letter + 1 number.'},
+      {n:'email',        t:'string', r:false, note:'Optional. If provided, must be unique.'},
+    ],
+    web:{ cookies:[], body:[
+      {n:'message',        t:'string', note:'"OTP sent to +250788***000. Please verify your phone."'},
+      {n:'user_id',        t:'uuid',   note:'Pass to /auth/verify-phone.'},
+      {n:'otp_expires_in', t:'number', note:'Seconds until OTP expires. e.g. 300.'},
+    ]},
+    mobile:{ body:[
+      {n:'message',        t:'string', note:'Same message as web.'},
+      {n:'user_id',        t:'uuid',   note:'Pass to /auth/verify-phone.'},
+      {n:'otp_expires_in', t:'number', note:'300'},
+    ]},
+    note:'Register response is identical for web and mobile — no tokens yet. Divergence happens at /auth/verify-phone.',
+    extra:{
+      label:'POST /auth/verify-phone (mandatory second step)',
+      request:[
+        {n:'user_id', t:'uuid',   r:true, note:'From the register response.'},
+        {n:'otp',     t:'string', r:true, note:'6-digit code from SMS.'},
+      ],
+      web:{
+        cookies:[
+          {n:'access_token',  o:'httpOnly · secure · sameSite=Lax · path=/',                    note:'Issued on success. User is now logged in.'},
+          {n:'refresh_token', o:'httpOnly · secure · sameSite=Lax · path=/api/v1/auth/refresh', note:'30 day TTL.'},
+        ],
+        body:'Returns user object. Same shape as /login web response.'
+      },
+      mobile:{
+        body:'Returns full token pair + user object. Same shape as /login mobile response.'
+      }
+    },
+    errors:[
+      {c:409, k:'PHONE_ALREADY_EXISTS', note:'Even if status is pending — prevents race conditions on the same number.'},
+      {c:422, k:'VALIDATION_ERROR',     note:'Invalid phone format, weak password. Include field-level detail.'},
+      {c:400, k:'INVALID_OTP',          note:'From verify-phone. Wrong code.'},
+      {c:410, k:'OTP_EXPIRED',          note:'From verify-phone. Code past TTL.'},
+    ],
+    security:[
+      'OTP: 6 digits, 5 min TTL, single-use. Deleted from DB immediately after verification.',
+      'Rate limit OTP sends: max 3 per phone per 10 minutes (gate the RabbitMQ notification event here).',
+      'User row created with status=pending_verification. Cron cleans unverified rows after 24h.',
+      'Tokens only issued after OTP verification — not at register step.',
+    ]
+  },
+  {
+    id:'forgot', label:'POST /auth/forgot-password', badge:'public',
+    desc:'Works for any identifier — phone or email. Routes to SMS or email automatically. Always returns 200 regardless of whether the account exists.',
+    request:[
+      {n:'identifier', t:'string', r:true, note:'Phone or email. Backend detects type and picks delivery channel.'},
+    ],
+    web:{ cookies:[], body:[{n:'message', t:'string', note:'"If an account with that identifier exists, a recovery link has been sent."'}]},
+    mobile:{ body:[{n:'message', t:'string', note:'Identical message.'}]},
+    note:'Response is identical for web and mobile. No tokens involved.',
+    errors:[
+      {c:429, k:'TOO_MANY_REQUESTS', note:'Max 3 recovery attempts per identifier per hour.'},
+    ],
+    security:[
+      'ALWAYS return 200 even if identifier does not exist — prevents user enumeration.',
+      'Store only SHA-256(token) in DB. Raw token travels via SMS/email only.',
+      'TTL: 15 min for SMS codes, 1 hour for email links.',
+      'Issuing a new token invalidates all existing reset tokens for this user.',
+    ]
+  },
+  {
+    id:'reset', label:'POST /auth/reset-password', badge:'public',
+    desc:'Finalizes recovery. On success: all refresh tokens revoked. User must re-login. No tokens issued here — intentional friction.',
+    request:[
+      {n:'token',        t:'string', r:true, note:'Raw token from email link or SMS. Backend hashes + compares to DB.'},
+      {n:'new_password', t:'string', r:true, note:'Same rules as register.'},
+    ],
+    web:{ cookies:[], body:[{n:'message', t:'string', note:'"Password updated. Please log in again."'}]},
+    mobile:{ body:[{n:'message', t:'string', note:'Identical message.'}]},
+    note:'Response is identical for web and mobile. No cookies cleared here — refresh token is revoked in DB. Web client\'s cookies will fail on next refresh attempt.',
+    errors:[
+      {c:400, k:'INVALID_TOKEN',    note:'Token not found or already used.'},
+      {c:410, k:'TOKEN_EXPIRED',    note:'Token found but TTL passed. Deleted on detection.'},
+      {c:422, k:'VALIDATION_ERROR', note:'New password too weak.'},
+    ],
+    security:[
+      'After reset: delete reset token row, revoke ALL refresh tokens in DB for this user.',
+      'Do not auto-login after reset — force back through /login on both web and mobile.',
+      'Return 410 (not 400) for expired tokens — client can show "link expired, request a new one".',
+      'Web: cookies expire naturally or on next refresh attempt. No need to clear them explicitly here.',
+    ]
+  },
+  {
+    id:'refresh', label:'POST /auth/refresh', badge:'cookie / bearer',
+    desc:'Web sends refresh cookie automatically (browser-scoped path). Mobile sends refresh token in Authorization header as Bearer token. Both get a new access token back.',
+    request:[
+      {n:'— (web)',             t:'—',      r:false, note:'No body. Browser sends refresh_token cookie automatically to this path.'},
+      {n:'Authorization (mobile)', t:'header', r:true,  note:'Bearer <refresh_token>. Mobile client reads from secure storage and sets this header.'},
+    ],
+    web:{
+      cookies:[
+        {n:'access_token',  o:'httpOnly · secure · sameSite=Lax · path=/',                    note:'New JWT. Old one expires in ≤15 min.'},
+        {n:'refresh_token', o:'httpOnly · secure · sameSite=Lax · path=/api/v1/auth/refresh', note:'New token. Old one revoked immediately.'},
+      ],
+      body:[{n:'(empty)', t:'—', note:'204 No Content for web.'}]
+    },
+    mobile:{ body:[
+      {n:'access_token',  t:'string', note:'New JWT.'},
+      {n:'refresh_token', t:'string', note:'New opaque token. Old one is now revoked. Client must replace stored token.'},
+      {n:'token_type',    t:'string', note:'"Bearer"'},
+      {n:'expires_in',    t:'number', note:'900'},
+    ]},
+    errors:[
+      {c:401, k:'INVALID_REFRESH_TOKEN', note:'Missing, revoked, or expired.'},
+      {c:401, k:'TOKEN_REUSE_DETECTED',  note:'Already-revoked token presented again → all sessions wiped. Signals theft.'},
+      {c:403, k:'ACCOUNT_SUSPENDED',     note:'Enforce suspension here — checked on every refresh.'},
+    ],
+    security:[
+      'Web: no body needed — cookie sent by browser automatically due to path scoping.',
+      'Mobile: refresh token travels in Authorization header, not request body, to align with Bearer convention.',
+      'Reuse detection applies to both clients — if a revoked token is used again, wipe all sessions.',
+      'This is the primary suspension enforcement point — check user status on every refresh.',
+    ]
+  },
+  {
+    id:'logout', label:'POST /auth/logout', badge:'cookie / bearer',
+    desc:'Revokes the current session. Web clears cookies server-side. Mobile revokes the token in DB — client discards tokens from secure storage.',
+    request:[
+      {n:'— (web)',                t:'—',      r:false, note:'No body. Refresh token read from cookie.'},
+      {n:'Authorization (mobile)', t:'header', r:true,  note:'Bearer <refresh_token>. Tells the server which token to revoke.'},
+    ],
+    web:{
+      cookies:[
+        {n:'access_token',  o:'maxAge=0 · path=/',                    note:'Cleared. Browser deletes immediately.'},
+        {n:'refresh_token', o:'maxAge=0 · path=/api/v1/auth/refresh', note:'Cleared. Revoked in DB simultaneously.'},
+      ],
+      body:[{n:'(empty)', t:'—', note:'204 No Content.'}]
+    },
+    mobile:{ body:[{n:'(empty)', t:'—', note:'204 No Content. Client must delete tokens from secure storage.'}]},
+    extra:{
+      label:'POST /auth/logout-all',
+      request:[
+        {n:'— (web)',                t:'—',      r:false, note:'Access token from cookie identifies the user.'},
+        {n:'Authorization (mobile)', t:'header', r:true,  note:'Bearer <access_token> identifies the user.'},
+      ],
+      web:{ cookies:'Clears same cookies with maxAge=0.', body:'204 No Content.' },
+      mobile:{ body:'204 No Content. Client discards all locally stored tokens.' },
+    },
+    errors:[
+      {c:204, k:'(always)', note:'Logout is idempotent. Missing or already-revoked token → still 204.'},
+    ],
+    security:[
+      'Web: clear cookies server-side by re-setting with maxAge=0. Never rely on client to delete.',
+      'Mobile: server revokes token in DB. Client is responsible for deleting from Keychain/Keystore.',
+      'logout-all revokes every refresh_token row for this user across all devices.',
+      'Access token cannot be revoked (stateless). 15 min window is the accepted tradeoff for both clients.',
+    ]
+  },
+];
+
+const clr = {
+  success:['var(--color-background-success)','var(--color-text-success)'],
+  info:   ['var(--color-background-info)',   'var(--color-text-info)'],
+  warning:['var(--color-background-warning)','var(--color-text-warning)'],
+};
+
+function bdg(label, c) {
+  const [bg,fg] = clr[c]||clr.info;
+  return `<span style="font-size:11px;padding:2px 8px;border-radius:99px;background:${bg};color:${fg};font-weight:500">${label}</span>`;
+}
+function thead(cols) {
+  return `<thead><tr style="border-bottom:1px solid var(--color-border-secondary)">${cols.map(c=>`<th style="text-align:left;padding:5px 10px;font-weight:500;font-size:11px;color:var(--color-text-secondary)">${c}</th>`).join('')}</tr></thead>`;
+}
+function frows(rows, showR=true) {
+  return (rows||[]).map(f=>{
+    const rc = showR ? `<td style="padding:4px 10px;font-size:11px;color:${f.r===false?'var(--color-text-tertiary)':'var(--color-text-danger)'}">${f.r===false?'optional':'required'}</td>` : '';
+    return `<tr style="border-bottom:1px solid var(--color-border-tertiary)">
+      <td style="padding:4px 10px;font-family:var(--font-mono);font-size:11px;color:var(--color-text-primary)">${f.n}</td>
+      <td style="padding:4px 10px;font-size:11px;color:var(--color-text-info)">${f.t||''}</td>
+      ${rc}
+      <td style="padding:4px 10px;font-size:11px;color:var(--color-text-secondary)">${f.note||''}</td>
+    </tr>`;
+  }).join('');
+}
+function crows(cookies) {
+  return (cookies||[]).map(c=>`<tr style="border-bottom:1px solid var(--color-border-tertiary)">
+    <td style="padding:4px 10px;font-family:var(--font-mono);font-size:11px;color:var(--color-text-primary)">${c.n}</td>
+    <td style="padding:4px 10px;font-size:10px;color:var(--color-text-secondary);font-family:var(--font-mono)">${c.o}</td>
+    <td style="padding:4px 10px;font-size:11px;color:var(--color-text-secondary)">${c.note}</td>
+  </tr>`).join('');
+}
+function tbl(head, body) {
+  return `<table style="width:100%;border-collapse:collapse">${head}<tbody>${body}</tbody></table>`;
+}
+
+const tabsEl = document.getElementById('tabs');
+const panesEl = document.getElementById('panes');
+
+eps.forEach(ep => {
+  const btn = document.createElement('button');
+  btn.id = 'tab-'+ep.id;
+  btn.textContent = ep.label;
+  btn.style.cssText = 'padding:5px 11px;border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary);background:transparent;color:var(--color-text-secondary);font-size:11px;cursor:pointer;white-space:nowrap';
+  btn.onclick = () => switchTo(ep.id);
+  tabsEl.appendChild(btn);
+
+  const reqHtml = ep.request.length
+    ? tbl(thead(['field / header','type','required','notes']), frows(ep.request))
+    : `<p style="font-size:12px;color:var(--color-text-secondary);margin:0">See client-specific rows below.</p>`;
+
+  const webCookieHtml = ep.web.cookies && ep.web.cookies.length
+    ? `<p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:8px 0 3px">Set-Cookie headers</p>${tbl(thead(['name','options','note']),crows(ep.web.cookies))}`
+    : '';
+  const webBodyHtml = ep.web.body && ep.web.body.length
+    ? `<p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:8px 0 3px">Body</p>${tbl(thead(['field','type','note']),frows(ep.web.body,false))}`
+    : (typeof ep.web.body==='string' ? `<p style="font-size:11px;color:var(--color-text-secondary);margin:8px 0 0">${ep.web.body}</p>` : '');
+
+  const mobBodyHtml = ep.mobile.body && Array.isArray(ep.mobile.body) && ep.mobile.body.length
+    ? tbl(thead(['field','type','note']),frows(ep.mobile.body,false))
+    : (typeof ep.mobile.body==='string' ? `<p style="font-size:11px;color:var(--color-text-secondary);margin:0">${ep.mobile.body}</p>` : '');
+
+  const userHtml = ep.user
+    ? `<div style="margin-top:10px;padding:8px 12px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary)">
+        <p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:0 0 4px">user object (shared by both clients)</p>
+        ${tbl(thead(['field','type','note']),frows(ep.user,false))}
+       </div>` : '';
+
+  const noteHtml = ep.note
+    ? `<p style="font-size:11px;color:var(--color-text-secondary);margin:8px 0 0;font-style:italic">${ep.note}</p>` : '';
+
+  const errHtml = ep.errors && ep.errors.length
+    ? `<div style="margin-top:10px"><p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:0 0 4px">Error responses</p>
+       ${tbl(thead(['status','error code','notes']),(ep.errors||[]).map(e=>`<tr style="border-bottom:1px solid var(--color-border-tertiary)">
+         <td style="padding:4px 10px;font-size:11px;color:var(--color-text-danger);font-family:var(--font-mono)">${e.c}</td>
+         <td style="padding:4px 10px;font-family:var(--font-mono);font-size:11px;color:var(--color-text-primary)">${e.k}</td>
+         <td style="padding:4px 10px;font-size:11px;color:var(--color-text-secondary)">${e.note}</td>
+       </tr>`).join(''))}</div>` : '';
+
+  const secHtml = ep.security
+    ? `<div style="margin-top:1rem;padding:10px 14px;background:var(--color-background-warning);border-radius:var(--border-radius-md);border-left:3px solid var(--color-border-warning)">
+        <p style="font-size:11px;font-weight:500;color:var(--color-text-warning);margin:0 0 4px">Security decisions</p>
+        <ul style="margin:0;padding-left:16px">${ep.security.map(s=>`<li style="font-size:11px;color:var(--color-text-warning);margin-bottom:3px">${s}</li>`).join('')}</ul>
+       </div>` : '';
+
+  let extraHtml = '';
+  if (ep.extra) {
+    const xreq = ep.extra.request ? `<p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:0 0 4px">Request</p>${tbl(thead(['field / header','type','required','notes']),frows(ep.extra.request))}` : '';
+    let xweb = '';
+    if (ep.extra.web) {
+      if (ep.extra.web.cookies && typeof ep.extra.web.cookies !== 'string') xweb += `<p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:6px 0 3px">Web — Set-Cookie</p>${tbl(thead(['name','options','note']),crows(ep.extra.web.cookies))}`;
+      if (typeof ep.extra.web.cookies === 'string') xweb += `<p style="font-size:11px;color:var(--color-text-secondary);margin:6px 0 0">${ep.extra.web.cookies}</p>`;
+      if (ep.extra.web.body) xweb += `<p style="font-size:11px;color:var(--color-text-secondary);margin:4px 0 0">Web body: ${ep.extra.web.body}</p>`;
+    }
+    let xmob = ep.extra.mobile ? `<p style="font-size:11px;color:var(--color-text-secondary);margin:4px 0 0">Mobile: ${ep.extra.mobile.body||''}</p>` : '';
+    extraHtml = `<div style="margin-top:10px;padding:8px 12px;background:var(--color-background-secondary);border-radius:var(--border-radius-md);border:1px solid var(--color-border-tertiary)">
+      <p style="font-size:12px;font-weight:500;color:var(--color-text-primary);margin:0 0 6px">${ep.extra.label}</p>
+      ${xreq}${xweb}${xmob}
+    </div>`;
+  }
+
+  const pane = document.createElement('div');
+  pane.id = 'pane-'+ep.id;
+  pane.style.display = 'none';
+  pane.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="font-family:var(--font-mono);font-size:13px;font-weight:500">${ep.label}</span>
+      ${bdg(ep.badge,'success')}
+    </div>
+    <p style="font-size:13px;color:var(--color-text-secondary);margin:0 0 1rem">${ep.desc}</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:1rem">
+      <div>
+        <p style="font-size:11px;font-weight:500;color:var(--color-text-secondary);margin:0 0 4px">Request</p>
+        ${reqHtml}
+        ${extraHtml}
+      </div>
+      <div style="padding:8px 12px;background:var(--color-background-info);border-radius:var(--border-radius-md);border:1px solid var(--color-border-info)">
+        <p style="font-size:11px;font-weight:500;color:var(--color-text-info);margin:0 0 6px">Web response</p>
+        ${webCookieHtml}
+        ${webBodyHtml}
+        ${noteHtml}
+      </div>
+      <div style="padding:8px 12px;background:var(--color-background-success);border-radius:var(--border-radius-md);border:1px solid var(--color-border-success)">
+        <p style="font-size:11px;font-weight:500;color:var(--color-text-success);margin:0 0 6px">Mobile response (X-Client-Type: mobile)</p>
+        ${mobBodyHtml}
+        ${noteHtml}
+      </div>
+    </div>
+    ${userHtml}
+    ${errHtml}
+    ${secHtml}
+  `;
+  panesEl.appendChild(pane);
+});
+
+function switchTo(id) {
+  eps.forEach(ep => {
+    const p = document.getElementById('pane-'+ep.id);
+    const t = document.getElementById('tab-'+ep.id);
+    const on = ep.id===id;
+    if(p) p.style.display = on?'block':'none';
+    if(t){
+      t.style.background  = on?'var(--color-background-info)':'transparent';
+      t.style.color       = on?'var(--color-text-info)':'var(--color-text-secondary)';
+      t.style.borderColor = on?'var(--color-border-info)':'var(--color-border-tertiary)';
+      t.style.fontWeight  = on?'500':'400';
+    }
+  });
+}
+switchTo('login');
+</script>
+</div>
