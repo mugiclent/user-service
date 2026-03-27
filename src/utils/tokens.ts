@@ -8,6 +8,7 @@ export interface JwtPayload {
   sub: string;
   org_id: string | null;
   user_type: 'passenger' | 'staff';
+  role_slugs: string[];
   rules: PackRule<AppRule>[];
 }
 

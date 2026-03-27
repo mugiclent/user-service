@@ -1,5 +1,5 @@
 import { prisma } from '../models/index.js';
-import type { UserWithRoles } from '../models/index.js';
+import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { slugify } from '../utils/slugify.js';
@@ -32,7 +32,7 @@ export const OrgService = {
   // ---------------------------------------------------------------------------
 
   async createOrg(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     data: {
       name: string;
       org_type: string;
@@ -71,10 +71,10 @@ export const OrgService = {
   // ---------------------------------------------------------------------------
 
   async listOrgs(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     query: { page?: number; limit?: number; status?: string; org_type?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const roleSlugs = requestingUser.role_slugs;
     const admin = isAdmin(roleSlugs);
 
     const page = Math.max(1, query.page ?? 1);
@@ -107,7 +107,7 @@ export const OrgService = {
   // GET /organizations/me — own org (for org staff)
   // ---------------------------------------------------------------------------
 
-  async getMyOrg(requestingUser: UserWithRoles): Promise<Record<string, unknown>> {
+  async getMyOrg(requestingUser: AuthenticatedUser): Promise<Record<string, unknown>> {
     if (!requestingUser.org_id) throw new AppError('ORG_NOT_FOUND', 404);
 
     const org = await prisma.org.findUnique({
@@ -116,7 +116,7 @@ export const OrgService = {
     });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const roleSlugs = requestingUser.role_slugs;
     return serializeOrgFull(org, isAdmin(roleSlugs));
   },
 
@@ -125,10 +125,10 @@ export const OrgService = {
   // ---------------------------------------------------------------------------
 
   async getOrgById(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     orgId: string,
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const roleSlugs = requestingUser.role_slugs;
     const admin = isAdmin(roleSlugs);
 
     const org = await prisma.org.findUnique({
@@ -148,7 +148,7 @@ export const OrgService = {
   // ---------------------------------------------------------------------------
 
   async updateOrg(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     orgId: string,
     data: {
       name?: string;
@@ -160,7 +160,7 @@ export const OrgService = {
       rejection_reason?: string;
     },
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const roleSlugs = requestingUser.role_slugs;
     const admin = isAdmin(roleSlugs);
     const orgAdmin = roleSlugs.includes('org_admin');
 
@@ -228,10 +228,10 @@ export const OrgService = {
   // ---------------------------------------------------------------------------
 
   async approveChildOrg(
-    requestingUser: UserWithRoles,
+    requestingUser: AuthenticatedUser,
     orgId: string,
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
+    const roleSlugs = requestingUser.role_slugs;
     const admin = isAdmin(roleSlugs);
     const orgAdmin = roleSlugs.includes('org_admin');
 

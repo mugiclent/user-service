@@ -71,7 +71,7 @@ const { UserService } = await import('../../src/services/user.service.js');
 const makeAdmin = (overrides: Record<string, unknown> = {}) => ({
   id: 'admin-1',
   org_id: null,
-  user_roles: [{ role: { slug: 'katisha_admin' } }],
+  role_slugs: ['katisha_admin'],
   rules: [],
   user_type: 'staff',
   ...overrides,
@@ -80,7 +80,7 @@ const makeAdmin = (overrides: Record<string, unknown> = {}) => ({
 const makeOrgAdmin = () => ({
   id: 'orgadmin-1',
   org_id: 'org-1',
-  user_roles: [{ role: { slug: 'org_admin' } }],
+  role_slugs: ['org_admin'],
   rules: [],
   user_type: 'staff',
 });

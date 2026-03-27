@@ -4,7 +4,6 @@ import type { Application, Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
-import passport from 'passport';
 import { config } from '../config/index.js';
 import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
@@ -39,9 +38,6 @@ export const createApp = (): Application => {
   // Body parsing
   app.use(express.json());
   app.use(cookieParser());
-
-  // Auth
-  app.use(passport.initialize());
 
   // Health check — unauthenticated, for gateway / load-balancer probes
   app.get('/health', (_req: Request, res: Response) => {

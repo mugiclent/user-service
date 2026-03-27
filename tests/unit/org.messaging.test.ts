@@ -54,7 +54,7 @@ const baseOrg = {
 
 const adminUser = {
   id: 'admin-1',
-  user_roles: [{ role: { slug: 'katisha_super_admin' } }],
+  role_slugs: ['katisha_super_admin'],
   org_id: null,
 };
 

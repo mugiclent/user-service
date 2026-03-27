@@ -29,5 +29,17 @@ export type UserWithRoles = import('@prisma/client').Prisma.UserGetPayload<{
   };
 }>;
 
-/** UserWithRoles extended with CASL rules from the JWT (set by Passport strategy). */
-export type AuthenticatedUser = UserWithRoles & { rules: AppRule[] };
+/**
+ * Slim identity set on req.user by the authenticate middleware.
+ * Populated from gateway-injected headers — no DB hit per request.
+ * Services fetch the full Prisma record when they actually need it.
+ */
+export interface AuthenticatedUser {
+  id: string;
+  org_id: string | null;
+  user_type: 'passenger' | 'staff';
+  /** Role slugs from the JWT — used for admin/org-scope checks without a DB query. */
+  role_slugs: string[];
+  /** Unpacked CASL rules from the JWT. */
+  rules: AppRule[];
+}

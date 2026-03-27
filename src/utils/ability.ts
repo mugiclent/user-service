@@ -29,7 +29,7 @@ export interface PermissionEntry {
 export const buildAbility = (packedRules: PackRule<AppRule>[]): AppAbility =>
   createMongoAbility<AppAbility>(unpackRules(packedRules));
 
-/** Build an AppAbility from already-unpacked rules (e.g. after passport strategy unpacks them). */
+/** Build an AppAbility from already-unpacked rules. */
 export const buildAbilityFromRules = (rules: AppRule[]): AppAbility =>
   createMongoAbility<AppAbility>(rules);
 

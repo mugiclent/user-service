@@ -30,7 +30,8 @@ const withRoles = {
 const buildAccessToken = (user: UserWithRoles): string => {
   const entries = collectPermissions(user);
   const rules = buildRulesForUser(user.id, user.org_id, entries);
-  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, rules });
+  const role_slugs = user.user_roles.map((ur) => ur.role.slug);
+  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules });
 };
 
 // ---------------------------------------------------------------------------

@@ -33,9 +33,9 @@ const BLACKLIST_TTL_SECONDS = 900;
 
 export const UserService = {
   async getMe(requestingUser: AuthenticatedUser): Promise<Record<string, unknown>> {
-    const entries = collectPermissions(requestingUser);
-    const rules = buildRulesForUser(requestingUser.id, requestingUser.org_id, entries);
-    return serializeUserMe(requestingUser, rules) as unknown as Record<string, unknown>;
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: requestingUser.id }, ...withRoles });
+    // Rules come from the JWT (already validated by the gateway) — no need to rebuild from DB
+    return serializeUserMe(user, requestingUser.rules) as unknown as Record<string, unknown>;
   },
 
   // ---------------------------------------------------------------------------
@@ -51,16 +51,18 @@ export const UserService = {
       throw new AppError('PASSENGERS_CANNOT_HAVE_EMAIL', 422);
     }
 
+    // Fetch old avatar_path before overwriting so we can delete it from S3
+    const existing = 'avatar_path' in data
+      ? await prisma.user.findUnique({ where: { id: requestingUser.id }, select: { avatar_path: true } })
+      : null;
+
     const user = await prisma.user.update({
       where: { id: requestingUser.id },
       data,
       ...withRoles,
     });
 
-    // After DB commit: delete old avatar from S3 if avatar_path changed
-    if ('avatar_path' in data && requestingUser.avatar_path) {
-      deleteFromS3(requestingUser.avatar_path);
-    }
+    if (existing?.avatar_path) deleteFromS3(existing.avatar_path);
 
     const entries = collectPermissions(user);
     const rules = buildRulesForUser(user.id, user.org_id, entries);
@@ -75,8 +77,7 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -118,8 +119,7 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     targetId: string,
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
     const ability = buildAbilityFromRules(requestingUser.rules);
 
     const user = await prisma.user.findUnique({
@@ -145,8 +145,7 @@ export const UserService = {
     targetId: string,
     data: { first_name?: string; last_name?: string; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const isAdmin = roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
     const ability = buildAbilityFromRules(requestingUser.rules);
     // Role assignment requires unconditioned manage:User (platform admins only)
 
@@ -227,8 +226,7 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
-    const roleSlugs = requestingUser.user_roles.map((ur) => ur.role.slug);
-    const isOrgAdmin = roleSlugs.includes('org_admin');
+    const isOrgAdmin = requestingUser.role_slugs.includes('org_admin');
 
     const org_id = isOrgAdmin ? requestingUser.org_id! : (data.org_id ?? null);
 
