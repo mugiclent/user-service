@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import type { PermissionLevel, PermissionSubject } from '@prisma/client';
+import { hashPassword } from '../src/utils/crypto.js';
 
 const prisma = new PrismaClient();
 
@@ -66,6 +67,53 @@ const ASSIGNMENTS: Record<string, string[]> = {
 };
 
 // ---------------------------------------------------------------------------
+// Seed users (dev/test only — change credentials before any production use)
+// ---------------------------------------------------------------------------
+
+const SEED_USERS = [
+  {
+    first_name:      'Amani',
+    last_name:       'Uwimana',
+    phone_number:    '+250788000001',
+    email:           'amani.uwimana@katisha.rw',
+    password:        'KatishaAdmin@2025',
+    user_type:       'staff'  as const,
+    status:          'active' as const,
+    phone_verified:  true,
+    email_verified:  true,
+    role_slug:       'katisha_admin',
+  },
+  {
+    first_name:      'Claudine',
+    last_name:       'Mutesi',
+    phone_number:    '+250788000099',
+    email:           null,
+    password:        'Passenger@2025',
+    user_type:       'passenger' as const,
+    status:          'active'    as const,
+    phone_verified:  true,
+    email_verified:  false,
+    role_slug:       'passenger',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Upsert a platform-level role (org_id = null).
+ *  Prisma upsert doesn't accept null in compound unique keys, so we use findFirst + create/update. */
+async function upsertPlatformRole(slug: string, name: string): Promise<string> {
+  const existing = await prisma.role.findFirst({ where: { slug, org_id: null } });
+  if (existing) {
+    await prisma.role.update({ where: { id: existing.id }, data: { name } });
+    return existing.id;
+  }
+  const created = await prisma.role.create({ data: { name, slug, org_id: null } });
+  return created.id;
+}
+
+// ---------------------------------------------------------------------------
 // Seed
 // ---------------------------------------------------------------------------
 
@@ -82,24 +130,17 @@ async function main() {
     });
     permMap[`${def.level}:${def.subject}`] = p.id;
   }
-
   console.log(`  ${PERMISSIONS.length} permissions upserted`);
 
   // 2. Upsert platform roles
   const roleMap: Record<string, string> = {};
   for (const def of ROLES) {
-    const r = await prisma.role.upsert({
-      where: { slug_org_id: { slug: def.slug, org_id: null } },
-      update: { name: def.name },
-      create: { name: def.name, slug: def.slug, org_id: null },
-    });
-    roleMap[def.slug] = r.id;
+    roleMap[def.slug] = await upsertPlatformRole(def.slug, def.name);
   }
-
   console.log(`  ${ROLES.length} roles upserted`);
 
   // 3. Upsert role-permission assignments
-  let count = 0;
+  let assignCount = 0;
   for (const [roleSlug, permKeys] of Object.entries(ASSIGNMENTS)) {
     const roleId = roleMap[roleSlug];
     if (!roleId) throw new Error(`Unknown role slug: ${roleSlug}`);
@@ -113,12 +154,46 @@ async function main() {
         update: {},
         create: { role_id: roleId, permission_id: permId },
       });
-      count++;
+      assignCount++;
     }
   }
+  console.log(`  ${assignCount} role-permission assignments upserted`);
 
-  console.log(`  ${count} role-permission assignments upserted`);
-  console.log('Seed complete.');
+  // 4. Seed users
+  console.log('\nSeeding users...');
+  for (const u of SEED_USERS) {
+    const now = new Date();
+    const password_hash = await hashPassword(u.password);
+
+    const existing = await prisma.user.findUnique({ where: { phone_number: u.phone_number } });
+    if (existing) {
+      console.log(`  Skipping ${u.first_name} ${u.last_name} — already exists`);
+      continue;
+    }
+
+    const user = await prisma.user.create({
+      data: {
+        first_name:           u.first_name,
+        last_name:            u.last_name,
+        phone_number:         u.phone_number,
+        email:                u.email,
+        password_hash,
+        user_type:            u.user_type,
+        status:               u.status,
+        phone_verified_at:    u.phone_verified  ? now : null,
+        email_verified_at:    u.email_verified  ? now : null,
+      },
+    });
+
+    const roleId = roleMap[u.role_slug];
+    if (roleId) {
+      await prisma.userRole.create({ data: { user_id: user.id, role_id: roleId } });
+    }
+
+    console.log(`  Created ${u.first_name} ${u.last_name} (${u.role_slug})`);
+  }
+
+  console.log('\nSeed complete.');
 }
 
 main()

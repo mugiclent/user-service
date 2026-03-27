@@ -9,6 +9,7 @@ import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
 import orgRouter from '../api/org.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
+import { createSwaggerRouter } from './swagger.js';
 
 export const createApp = (): Application => {
   const app = express();
@@ -17,6 +18,13 @@ export const createApp = (): Application => {
   // Set TRUST_PROXY=1 when behind one gateway/load-balancer (default).
   // Set to 0 only in local development without a proxy.
   app.set('trust proxy', config.trustProxy);
+
+  // API docs — must be registered BEFORE helmet() so that swagger-ui's inline
+  // scripts are not blocked by the default Content-Security-Policy header.
+  // Disabled in production.
+  if (!config.isProd) {
+    app.use('/api/v1/users/docs', createSwaggerRouter());
+  }
 
   // Security headers — kept even behind a gateway (defense-in-depth)
   app.use(helmet());

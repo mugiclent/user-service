@@ -1,0 +1,1132 @@
+openapi: 3.1.0
+
+info:
+  title: Katisha User Service
+  version: 1.0.0
+  description: |
+    Handles authentication, user management, organization management, and IAM for the Katisha platform.
+
+    ## Authentication
+
+    All protected endpoints require a valid access token issued by `POST /auth/login` or `POST /auth/verify-phone`.
+
+    **Mobile clients** — send `Authorization: Bearer <access_token>` and pass the refresh token the same way.
+
+    **Web clients** — the server sets `access_token` and `refresh_token` as `HttpOnly` cookies automatically.
+    Send cookies back; no explicit Authorization header is needed for web.
+
+    Use `X-Client-Type: mobile` to signal mobile mode (affects token delivery and refresh/logout token source).
+
+servers:
+  - url: /api/v1
+    description: Default base path
+
+tags:
+  - name: Auth
+    description: Registration, login, 2FA, password reset, token management
+  - name: Users
+    description: User profiles, invitations, avatar
+  - name: Organizations
+    description: Organization CRUD, approval, logo
+
+# ---------------------------------------------------------------------------
+# Reusable components
+# ---------------------------------------------------------------------------
+
+components:
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token. Mobile clients only — web uses the `access_token` cookie.
+    CookieAuth:
+      type: apiKey
+      in: cookie
+      name: access_token
+      description: Web clients only — set automatically by the server.
+
+  schemas:
+
+    # ── Error ────────────────────────────────────────────────────────────────
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code]
+          properties:
+            code:
+              type: string
+              example: INVALID_CREDENTIALS
+            message:
+              type: string
+              example: Invalid credentials
+
+    # ── Auth ─────────────────────────────────────────────────────────────────
+
+    AuthUser:
+      type: object
+      description: Minimal user object returned alongside tokens on every auth response.
+      properties:
+        id:           { type: string, format: uuid }
+        first_name:   { type: string }
+        last_name:    { type: string }
+        user_type:    { type: string, enum: [passenger, staff] }
+        avatar_url:   { type: string, format: uri, nullable: true }
+        org_id:       { type: string, format: uuid, nullable: true }
+        roles:
+          type: array
+          items: { type: string }
+          example: [org_admin]
+        status:       { type: string, enum: [active, pending_verification, suspended] }
+        two_factor_enabled: { type: boolean }
+
+    Tokens:
+      type: object
+      description: |
+        For mobile clients (`X-Client-Type: mobile`) these fields are present in the JSON response body.
+        For web clients the tokens are delivered as `HttpOnly` cookies and are **not** present in the body.
+      properties:
+        access_token:
+          type: string
+          description: Short-lived JWT (15 min). Mobile only.
+        refresh_token:
+          type: string
+          description: Long-lived opaque token. Mobile only.
+
+    AuthResponse:
+      type: object
+      properties:
+        user:   { $ref: '#/components/schemas/AuthUser' }
+        tokens: { $ref: '#/components/schemas/Tokens' }
+
+    # ── User ─────────────────────────────────────────────────────────────────
+
+    UserMePassenger:
+      type: object
+      properties:
+        id:               { type: string, format: uuid }
+        first_name:       { type: string }
+        last_name:        { type: string }
+        phone_number:     { type: string, nullable: true, example: '+250780000001' }
+        phone_verified_at: { type: string, format: date-time, nullable: true }
+        email:            { type: string, format: email, nullable: true }
+        email_verified_at: { type: string, format: date-time, nullable: true }
+        avatar_url:       { type: string, format: uri, nullable: true }
+        user_type:        { type: string, enum: [passenger] }
+        status:           { type: string }
+        two_factor_enabled: { type: boolean }
+        created_at:       { type: string, format: date-time }
+        updated_at:       { type: string, format: date-time }
+
+    CaslRule:
+      type: object
+      description: A single packed CASL rule. Conditions are subject-specific.
+      properties:
+        action:     { type: string, example: update }
+        subject:    { type: string, example: User }
+        conditions: { type: object, nullable: true, example: { org_id: 'uuid' } }
+        inverted:   { type: boolean, nullable: true }
+
+    UserMeStaff:
+      type: object
+      properties:
+        id:               { type: string, format: uuid }
+        first_name:       { type: string }
+        last_name:        { type: string }
+        phone_number:     { type: string, nullable: true }
+        email:            { type: string, format: email, nullable: true }
+        avatar_url:       { type: string, format: uri, nullable: true }
+        user_type:        { type: string, enum: [staff] }
+        status:           { type: string }
+        org_id:           { type: string, format: uuid, nullable: true }
+        roles:
+          type: array
+          items: { type: string }
+        permissions:
+          type: array
+          items: { $ref: '#/components/schemas/CaslRule' }
+          description: Current CASL rules — use these for frontend feature-flag rendering.
+        two_factor_enabled: { type: boolean }
+        driver_license_number:       { type: string, nullable: true }
+        driver_license_verified_at:  { type: string, format: date-time, nullable: true }
+        last_login_at:    { type: string, format: date-time, nullable: true }
+        created_at:       { type: string, format: date-time }
+        updated_at:       { type: string, format: date-time }
+
+    UserListItem:
+      type: object
+      properties:
+        id:           { type: string, format: uuid }
+        first_name:   { type: string }
+        last_name:    { type: string }
+        email:        { type: string, format: email, nullable: true }
+        phone_number: { type: string, nullable: true, description: Masked to +250***123 for non-admin callers }
+        avatar_url:   { type: string, format: uri, nullable: true }
+        user_type:    { type: string }
+        status:       { type: string }
+        roles:
+          type: array
+          items: { type: string }
+        org_id:       { type: string, format: uuid, nullable: true }
+        last_login_at: { type: string, format: date-time, nullable: true, description: Admin only }
+        created_at:   { type: string, format: date-time }
+
+    UserFullProfile:
+      type: object
+      properties:
+        id:               { type: string, format: uuid }
+        first_name:       { type: string }
+        last_name:        { type: string }
+        email:            { type: string, format: email, nullable: true }
+        phone_number:     { type: string, nullable: true }
+        phone_verified_at: { type: string, format: date-time, nullable: true }
+        email_verified_at: { type: string, format: date-time, nullable: true }
+        avatar_url:       { type: string, format: uri, nullable: true }
+        user_type:        { type: string }
+        status:           { type: string }
+        org_id:           { type: string, format: uuid, nullable: true }
+        roles:
+          type: array
+          items: { type: string }
+        driver_license_number:       { type: string, nullable: true, description: Admin only }
+        driver_license_verified_at:  { type: string, format: date-time, nullable: true, description: Admin only }
+        last_login_at:    { type: string, format: date-time, nullable: true, description: Admin only }
+        created_at:       { type: string, format: date-time }
+        updated_at:       { type: string, format: date-time }
+
+    PaginationMeta:
+      type: object
+      properties:
+        total: { type: integer }
+        page:  { type: integer }
+        limit: { type: integer }
+        pages: { type: integer }
+
+    # ── Organization ─────────────────────────────────────────────────────────
+
+    OrgListItem:
+      type: object
+      properties:
+        id:             { type: string, format: uuid }
+        name:           { type: string }
+        slug:           { type: string }
+        org_type:       { type: string, enum: [company, cooperative] }
+        status:         { type: string, enum: [pending, active, suspended, rejected] }
+        logo_url:       { type: string, format: uri, nullable: true }
+        contact_email:  { type: string, format: email }
+        contact_phone:  { type: string }
+        parent_org_id:  { type: string, format: uuid, nullable: true }
+        approved_at:    { type: string, format: date-time, nullable: true }
+        created_at:     { type: string, format: date-time }
+
+    OrgFull:
+      type: object
+      properties:
+        id:             { type: string, format: uuid }
+        name:           { type: string }
+        slug:           { type: string }
+        org_type:       { type: string, enum: [company, cooperative] }
+        status:         { type: string, enum: [pending, active, suspended, rejected] }
+        logo_url:       { type: string, format: uri, nullable: true }
+        contact_email:  { type: string, format: email }
+        contact_phone:  { type: string }
+        address:        { type: string, nullable: true }
+        tin:            { type: string, nullable: true }
+        license_number: { type: string, nullable: true }
+        parent_org_id:  { type: string, format: uuid, nullable: true }
+        parent_org:
+          nullable: true
+          type: object
+          properties:
+            id:     { type: string, format: uuid }
+            name:   { type: string }
+            slug:   { type: string }
+            status: { type: string }
+        child_orgs:
+          type: array
+          description: Admin only
+          items:
+            type: object
+            properties:
+              id:     { type: string, format: uuid }
+              name:   { type: string }
+              slug:   { type: string }
+              status: { type: string }
+        approved_by:  { type: string, format: uuid, nullable: true, description: Admin only }
+        approved_at:  { type: string, format: date-time, nullable: true }
+        created_at:   { type: string, format: date-time }
+        updated_at:   { type: string, format: date-time }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: UNAUTHORIZED }
+    Forbidden:
+      description: Authenticated but insufficient permissions
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: FORBIDDEN }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: NOT_FOUND }
+    UnprocessableEntity:
+      description: Validation error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: VALIDATION_ERROR, message: '"phone_number" must be in E.164 format' }
+
+# ---------------------------------------------------------------------------
+# Default security (override per-endpoint where needed)
+# ---------------------------------------------------------------------------
+
+security:
+  - BearerAuth: []
+  - CookieAuth: []
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+paths:
+
+  # ── Auth ──────────────────────────────────────────────────────────────────
+
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new passenger
+      description: |
+        Passengers self-register with phone + password. Staff accounts are created via `POST /users/invite`.
+
+        On success: sends a welcome SMS and a 6-digit OTP to the provided phone number.
+        The account is in `pending_verification` status until `POST /auth/verify-phone` is called.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, phone_number, password]
+              properties:
+                first_name:   { type: string, maxLength: 100 }
+                last_name:    { type: string, maxLength: 100 }
+                phone_number: { type: string, pattern: '^\+\d{7,15}$', example: '+250780000001' }
+                password:     { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '201':
+          description: User created — OTP sent to phone
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  user_id:    { type: string, format: uuid }
+                  expires_in: { type: integer, description: OTP TTL in seconds, example: 600 }
+        '409':
+          description: Phone number already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: PHONE_ALREADY_EXISTS } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/verify-phone:
+    post:
+      tags: [Auth]
+      summary: Verify phone number with OTP
+      description: |
+        Activates the account (`pending_verification` → `active`) and issues the first token pair.
+        This is the only way a self-registered passenger obtains tokens.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, otp]
+              properties:
+                user_id:     { type: string, format: uuid }
+                otp:         { type: string, minLength: 6, maxLength: 6 }
+                device_name: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: Phone verified — tokens issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':
+          description: Invalid or expired OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_INVALID } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login with phone/email + password
+      description: |
+        Accepts either `phone_number` (E.164) or `email` as `identifier`.
+
+        **2FA disabled** → returns `200` with tokens.
+
+        **2FA enabled** → returns `202` with `{ requires_2fa: true, user_id, expires_in }`.
+        Client must then call `POST /auth/verify-2fa` with the OTP sent by SMS.
+
+        Rate-limited to 10 attempts per 15 min per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier:  { type: string, example: '+250780000001' }
+                password:    { type: string, minLength: 8, maxLength: 128 }
+                device_name: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: Login successful (2FA disabled)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '202':
+          description: 2FA OTP sent — awaiting verification
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  requires_2fa: { type: boolean, enum: [true] }
+                  user_id:      { type: string, format: uuid }
+                  expires_in:   { type: integer, example: 600 }
+        '401':
+          description: Invalid credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_CREDENTIALS } }
+        '403':
+          description: Account suspended or not yet verified
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: RATE_LIMIT_EXCEEDED } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/verify-2fa:
+    post:
+      tags: [Auth]
+      summary: Complete 2FA login
+      description: 'Step 2 when `login` returns `requires_2fa: true`. Verifies the OTP and issues tokens.'
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, otp]
+              properties:
+                user_id:     { type: string, format: uuid }
+                otp:         { type: string, minLength: 6, maxLength: 6 }
+                device_name: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: 2FA verified — tokens issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':
+          description: Invalid or expired OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_INVALID } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      summary: Request a password reset OTP
+      description: |
+        Silently sends a 6-digit OTP to the user's phone/email. Always returns 204 regardless of
+        whether the identifier exists — prevents user enumeration.
+
+        Rate-limited to 5 attempts per 15 min per IP.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string, example: '+250780000001' }
+      responses:
+        '204': { description: OTP sent (or silently ignored if identifier not found) }
+        '429':
+          description: Rate limit exceeded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      summary: Reset password using OTP
+      description: Verifies the OTP and sets a new password. Revokes all existing sessions.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, otp, new_password]
+              properties:
+                identifier:   { type: string }
+                otp:          { type: string, minLength: 6, maxLength: 6 }
+                new_password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '204': { description: Password reset successful — all sessions revoked }
+        '400':
+          description: Invalid or expired OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate refresh token
+      description: |
+        Issues a new access token + refresh token and invalidates the old refresh token.
+
+        **Mobile** — send `Authorization: Bearer <refresh_token>` with `X-Client-Type: mobile`.
+
+        **Web** — refresh token is read from the `refresh_token` cookie automatically.
+
+        Reuse detection: if an already-revoked token is presented, all sessions for that user are wiped.
+      security: []
+      parameters:
+        - in: header
+          name: X-Client-Type
+          schema: { type: string, enum: [mobile] }
+          description: Required for mobile clients to deliver the token via Authorization header.
+      responses:
+        '200':
+          description: New tokens issued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tokens: { $ref: '#/components/schemas/Tokens' }
+        '401':
+          description: Refresh token missing, invalid, or revoked
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout (revoke current refresh token)
+      description: |
+        Revokes the current session. Idempotent — safe to call even if already logged out.
+
+        **Mobile** — send refresh token via `Authorization: Bearer`.
+        **Web** — read from `refresh_token` cookie. Clears auth cookies on response.
+      security: []
+      responses:
+        '204': { description: Logged out }
+
+  /auth/logout-all:
+    post:
+      tags: [Auth]
+      summary: Logout all sessions
+      description: Revokes all refresh tokens for the authenticated user. Requires a valid access token.
+      responses:
+        '204': { description: All sessions revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ── Users ─────────────────────────────────────────────────────────────────
+
+  /users/me:
+    get:
+      tags: [Users]
+      summary: Get own profile
+      description: |
+        Returns the authenticated user's profile. Response shape differs by `user_type`:
+        - `passenger` → `UserMePassenger`
+        - `staff` → `UserMeStaff` (includes role slugs and packed CASL permission rules)
+      responses:
+        '200':
+          description: Own profile
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/UserMePassenger'
+                  - $ref: '#/components/schemas/UserMeStaff'
+                discriminator:
+                  propertyName: user_type
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+    patch:
+      tags: [Users]
+      summary: Update own profile
+      description: |
+        Passengers may update `first_name`, `last_name` only — `email` is rejected for passenger accounts.
+        Staff may also update `email`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                first_name: { type: string, maxLength: 100 }
+                last_name:  { type: string, maxLength: 100 }
+                email:      { type: string, format: email, maxLength: 255, description: Staff only }
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/UserMePassenger'
+                  - $ref: '#/components/schemas/UserMeStaff'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /users/me/validate-password:
+    post:
+      tags: [Users]
+      summary: Validate current password
+      description: Returns 204 if the supplied password matches the current hash. Used before sensitive operations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password: { type: string, minLength: 8, maxLength: 128 }
+      responses:
+        '204': { description: Password matches }
+        '401':
+          description: Wrong password or unauthenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /users/me/2fa:
+    patch:
+      tags: [Users]
+      summary: Enable or disable 2FA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled: { type: boolean }
+      responses:
+        '200':
+          description: 2FA setting updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  two_factor_enabled: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/me/avatar:
+    post:
+      tags: [Users]
+      summary: Upload own avatar
+      description: Accepts PNG/JPEG/WebP up to 5 MB. Replaces any existing avatar.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [avatar]
+              properties:
+                avatar:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Avatar uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  avatar_url: { type: string, format: uri }
+        '400':
+          description: No file provided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: NO_FILE_PROVIDED } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+    delete:
+      tags: [Users]
+      summary: Delete own avatar
+      responses:
+        '204': { description: Avatar deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /users/invite:
+    post:
+      tags: [Users]
+      summary: Invite a staff user
+      description: |
+        Creates a pending staff account and sends an invitation link by SMS and/or email.
+        At least one of `phone_number` or `email` must be supplied.
+
+        **Required permission:** `create:User`
+        → `katisha_admin`, `org_admin`, `dispatcher`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [first_name, last_name, role_slug]
+              properties:
+                first_name:   { type: string, maxLength: 100 }
+                last_name:    { type: string, maxLength: 100 }
+                role_slug:    { type: string, example: dispatcher }
+                org_id:       { type: string, format: uuid }
+                email:        { type: string, format: email, maxLength: 255 }
+                phone_number: { type: string, pattern: '^\+\d{7,15}$' }
+      responses:
+        '201':
+          description: Invitation created and sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation_id: { type: string, format: uuid }
+                  expires_at:    { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /users/accept-invite:
+    post:
+      tags: [Users]
+      summary: Accept an invitation (public)
+      description: |
+        Activates a pending staff account with the supplied password. Issues tokens on success.
+        The `token` is the opaque invite token embedded in the invitation link.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token:       { type: string }
+                password:    { type: string, minLength: 8, maxLength: 128 }
+                device_name: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: Invite accepted — tokens issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':
+          description: Token invalid or expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: List users
+      description: |
+        **Required permission:** `read:User`
+
+        Results are automatically scoped to the calling user's org for `org_admin` and `dispatcher`.
+        Platform admins and support see all users.
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, maximum: 100 }
+        - in: query
+          name: status
+          schema: { type: string, enum: [active, pending_verification, suspended] }
+        - in: query
+          name: user_type
+          schema: { type: string, enum: [passenger, staff] }
+        - in: query
+          name: org_id
+          schema: { type: string, format: uuid }
+          description: Admin only — filter by org
+      responses:
+        '200':
+          description: Paginated user list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UserListItem' }
+                  meta: { $ref: '#/components/schemas/PaginationMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [Users]
+      summary: Get user by ID
+      description: |
+        **Required permission:** `read:User`
+
+        Passengers and drivers may only read their own profile through this endpoint
+        (condition `{ id: userId }` baked into their JWT rules).
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserFullProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    patch:
+      tags: [Users]
+      summary: Update user by ID
+      description: |
+        **Required permission:** `update:User`
+
+        `role_slugs` can only be set by users with `manage:User` (admins).
+        `status` can be set by admins and `org_admin`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                first_name:  { type: string, maxLength: 100 }
+                last_name:   { type: string, maxLength: 100 }
+                status:      { type: string, enum: [active, suspended] }
+                org_id:      { type: string, format: uuid }
+                role_slugs:
+                  type: array
+                  items: { type: string }
+                  description: Requires manage:User
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserFullProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+    delete:
+      tags: [Users]
+      summary: Soft-delete user by ID
+      description: |
+        **Required permission:** `delete:User`
+
+        Sets `deleted_at` — does not permanently remove the record.
+      responses:
+        '204': { description: User deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ── Organizations ─────────────────────────────────────────────────────────
+
+  /organizations:
+    post:
+      tags: [Organizations]
+      summary: Create organization
+      description: |
+        **Required permission:** `create:Org`
+        → `katisha_admin`, `katisha_super_admin`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, org_type, contact_email, contact_phone]
+              properties:
+                name:           { type: string, maxLength: 200 }
+                org_type:       { type: string, enum: [company, cooperative] }
+                contact_email:  { type: string, format: email, maxLength: 255 }
+                contact_phone:  { type: string, maxLength: 20 }
+                address:        { type: string, maxLength: 500 }
+                tin:            { type: string, maxLength: 50 }
+                license_number: { type: string, maxLength: 100 }
+                parent_org_id:  { type: string, format: uuid }
+      responses:
+        '201':
+          description: Organization created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgListItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+    get:
+      tags: [Organizations]
+      summary: List organizations
+      description: |
+        **Required permission:** `read:Org`
+
+        Platform admins see all orgs. `org_admin` and `dispatcher` see only their own org.
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, maximum: 100 }
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, active, suspended, rejected] }
+        - in: query
+          name: org_type
+          schema: { type: string, enum: [company, cooperative] }
+      responses:
+        '200':
+          description: Paginated org list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrgListItem' }
+                  meta: { $ref: '#/components/schemas/PaginationMeta' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /organizations/me:
+    get:
+      tags: [Organizations]
+      summary: Get own organization
+      description: Returns the organization the authenticated user belongs to. No permission gate — any authenticated org member can call this.
+      responses:
+        '200':
+          description: Own organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: User has no organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /organizations/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [Organizations]
+      summary: Get organization by ID
+      description: |
+        **Required permission:** `read:Org`
+
+        Non-admin callers may only read their own org (object-level check in service).
+      responses:
+        '200':
+          description: Organization detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    patch:
+      tags: [Organizations]
+      summary: Update organization
+      description: |
+        **Required permission:** `update:Org`
+
+        `status` and `rejection_reason` can only be set by platform admins — `org_admin` with
+        `write:Org` may update name/contact fields but not lifecycle status.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name:             { type: string, maxLength: 200 }
+                contact_email:    { type: string, format: email, maxLength: 255 }
+                contact_phone:    { type: string, maxLength: 20 }
+                address:          { type: string, maxLength: 500 }
+                logo_url:         { type: string, format: uri, maxLength: 500 }
+                status:
+                  type: string
+                  enum: [active, suspended, rejected]
+                  description: Admin only
+                rejection_reason: { type: string, maxLength: 1000, description: Admin only }
+      responses:
+        '200':
+          description: Updated organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /organizations/{id}/approve:
+    post:
+      tags: [Organizations]
+      summary: Approve a child organization
+      description: |
+        Transitions a `pending` child org to `active` and notifies the org admin.
+
+        **Required permission:** `update:Org`
+        → `katisha_admin`, `katisha_super_admin`, `org_admin` (for their own child orgs)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Organization approved
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /organizations/{id}/logo:
+    post:
+      tags: [Organizations]
+      summary: Upload organization logo
+      description: |
+        **Required permission:** `update:Org`
+
+        Accepts PNG/JPEG/WebP up to 5 MB.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [logo]
+              properties:
+                logo:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Logo uploaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  logo_url: { type: string, format: uri }
+        '400':
+          description: No file provided
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    delete:
+      tags: [Organizations]
+      summary: Delete organization logo
+      description: |
+        **Required permission:** `update:Org`
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Logo deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
