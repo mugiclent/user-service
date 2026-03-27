@@ -18,6 +18,11 @@ vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
 
 vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com' } }));
 
+vi.mock('../../src/utils/s3.js', () => ({
+  keyFromPublicUrl: vi.fn(() => null),
+  deleteFromS3: vi.fn(),
+}));
+
 const mockSet = vi.fn().mockResolvedValue('OK');
 vi.mock('../../src/loaders/redis.js', () => ({
   getRedisClient: () => ({ set: mockSet }),
@@ -34,7 +39,7 @@ const baseOrg = {
   contact_email: 'ops@acme.com',
   contact_phone: '+250780000010',
   address: null,
-  logo_url: null,
+  logo_path: null,
   parent_org_id: null,
   approved_by: null,
   approved_at: null,

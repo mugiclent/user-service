@@ -26,6 +26,11 @@ vi.mock('../../src/config/index.js', () => ({
   config: { appUrl: 'https://app.katisha.com' },
 }));
 
+vi.mock('../../src/utils/s3.js', () => ({
+  keyFromPublicUrl: vi.fn(() => null),
+  deleteFromS3: vi.fn(),
+}));
+
 const mockRoleFindFirst = vi.fn();
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
 const mockInvitationFindUnique = vi.fn();
@@ -91,7 +96,7 @@ const makeAcceptedUser = (overrides: Record<string, unknown> = {}) => ({
   status: 'active',
   two_factor_enabled: false,
   org_id: 'org-1',
-  avatar_url: null,
+  avatar_path: null,
   phone_verified_at: new Date(),
   email_verified_at: null,
   created_at: new Date(),

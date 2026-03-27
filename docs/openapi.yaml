@@ -76,7 +76,7 @@ components:
         first_name:   { type: string }
         last_name:    { type: string }
         user_type:    { type: string, enum: [passenger, staff] }
-        avatar_url:   { type: string, format: uri, nullable: true }
+        avatar_path:   { type: string, nullable: true }
         org_id:       { type: string, format: uuid, nullable: true }
         roles:
           type: array
@@ -116,7 +116,7 @@ components:
         phone_verified_at: { type: string, format: date-time, nullable: true }
         email:            { type: string, format: email, nullable: true }
         email_verified_at: { type: string, format: date-time, nullable: true }
-        avatar_url:       { type: string, format: uri, nullable: true }
+        avatar_path:       { type: string, nullable: true }
         user_type:        { type: string, enum: [passenger] }
         status:           { type: string }
         two_factor_enabled: { type: boolean }
@@ -140,7 +140,7 @@ components:
         last_name:        { type: string }
         phone_number:     { type: string, nullable: true }
         email:            { type: string, format: email, nullable: true }
-        avatar_url:       { type: string, format: uri, nullable: true }
+        avatar_path:       { type: string, nullable: true }
         user_type:        { type: string, enum: [staff] }
         status:           { type: string }
         org_id:           { type: string, format: uuid, nullable: true }
@@ -166,7 +166,7 @@ components:
         last_name:    { type: string }
         email:        { type: string, format: email, nullable: true }
         phone_number: { type: string, nullable: true, description: Masked to +250***123 for non-admin callers }
-        avatar_url:   { type: string, format: uri, nullable: true }
+        avatar_path:   { type: string, nullable: true }
         user_type:    { type: string }
         status:       { type: string }
         roles:
@@ -186,7 +186,7 @@ components:
         phone_number:     { type: string, nullable: true }
         phone_verified_at: { type: string, format: date-time, nullable: true }
         email_verified_at: { type: string, format: date-time, nullable: true }
-        avatar_url:       { type: string, format: uri, nullable: true }
+        avatar_path:       { type: string, nullable: true }
         user_type:        { type: string }
         status:           { type: string }
         org_id:           { type: string, format: uuid, nullable: true }
@@ -217,7 +217,7 @@ components:
         slug:           { type: string }
         org_type:       { type: string, enum: [company, cooperative] }
         status:         { type: string, enum: [pending, active, suspended, rejected] }
-        logo_url:       { type: string, format: uri, nullable: true }
+        logo_path:       { type: string, nullable: true }
         contact_email:  { type: string, format: email }
         contact_phone:  { type: string }
         parent_org_id:  { type: string, format: uuid, nullable: true }
@@ -232,7 +232,7 @@ components:
         slug:           { type: string }
         org_type:       { type: string, enum: [company, cooperative] }
         status:         { type: string, enum: [pending, active, suspended, rejected] }
-        logo_url:       { type: string, format: uri, nullable: true }
+        logo_path:       { type: string, nullable: true }
         contact_email:  { type: string, format: email }
         contact_phone:  { type: string }
         address:        { type: string, nullable: true }
@@ -620,6 +620,7 @@ paths:
                 first_name: { type: string, maxLength: 100 }
                 last_name:  { type: string, maxLength: 100 }
                 email:      { type: string, format: email, maxLength: 255, description: Staff only }
+                avatar_path: { type: string, maxLength: 500, nullable: true, description: 'Use path from GET /users/me/avatar/presigned-url. Pass null to remove.' }
       responses:
         '200':
           description: Updated profile
@@ -678,45 +679,52 @@ paths:
                   two_factor_enabled: { type: boolean }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
-  /users/me/avatar:
-    post:
+  /users/me/avatar/presigned-url:
+    get:
       tags: [Users]
-      summary: Upload own avatar
-      description: Accepts PNG/JPEG/WebP up to 5 MB. Replaces any existing avatar.
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [avatar]
-              properties:
-                avatar:
-                  type: string
-                  format: binary
+      summary: Get presigned PUT URL for own avatar
+      description: |
+        Returns a short-lived S3 presigned URL the client uses to upload the avatar
+        directly to SeaweedFS — the user-service never handles the file bytes.
+
+        **Upload flow:**
+        1. Call this endpoint with `?content_type=image/jpeg` (or png/webp/gif).
+        2. `PUT` the image file to `upload_url` with the matching `Content-Type` header.
+        3. `PATCH /users/me` with `{ "avatar_path": "<path>" }` to commit.
+
+        To **remove** an existing avatar, `PATCH /users/me` with `{ "avatar_path": null }`.
+
+        The full CDN URL is never stored in the database. The frontend constructs it as
+        `CDN_URL + "/" + avatar_path` using its own CDN base URL config.
+      parameters:
+        - in: query
+          name: content_type
+          required: true
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp, image/gif]
       responses:
         '200':
-          description: Avatar uploaded
+          description: Presigned URL ready
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  avatar_url: { type: string, format: uri }
+                  upload_url: { type: string, format: uri, description: PUT the file here (expires in 5 min) }
+                  key:        { type: string, example: 'avatars/user-id/uuid.jpg' }
+                  path: { type: string, example: 'avatars/user-id/uuid.jpg', description: 'Send this value as avatar_path in PATCH /users/me. Frontend builds CDN URL as: CDN_URL + "/" + path' }
         '400':
-          description: No file provided
+          description: Missing or missing content_type
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: NO_FILE_PROVIDED } }
         '401': { $ref: '#/components/responses/Unauthorized' }
-
-    delete:
-      tags: [Users]
-      summary: Delete own avatar
-      responses:
-        '204': { description: Avatar deleted }
-        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /users/invite:
     post:
@@ -1034,7 +1042,7 @@ paths:
                 contact_email:    { type: string, format: email, maxLength: 255 }
                 contact_phone:    { type: string, maxLength: 20 }
                 address:          { type: string, maxLength: 500 }
-                logo_url:         { type: string, format: uri, maxLength: 500 }
+                logo_path:         { type: string, maxLength: 500, nullable: true, description: 'Use path from GET /organizations/me/logo/presigned-url. Pass null to remove.' }
                 status:
                   type: string
                   enum: [active, suspended, rejected]
@@ -1075,58 +1083,87 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /organizations/{id}/logo:
-    post:
+  /organizations/me/logo/presigned-url:
+    get:
       tags: [Organizations]
-      summary: Upload organization logo
+      summary: Get presigned PUT URL for own org's logo (org admin)
       description: |
+        Returns a short-lived S3 presigned URL for uploading the org logo directly to SeaweedFS.
+
         **Required permission:** `update:Org`
 
-        Accepts PNG/JPEG/WebP up to 5 MB.
+        **Upload flow:**
+        1. Call this endpoint with `?content_type=image/png`.
+        2. `PUT` the image to `upload_url` with the matching `Content-Type` header.
+        3. `PATCH /organizations/:id` with `{ "logo_path": "<path>" }` to commit.
+
+        To **remove** the logo, `PATCH /organizations/:id` with `{ "logo_path": null }`.
+
+        The full CDN URL is never stored in the database. The frontend constructs it as
+        `CDN_URL + "/" + logo_path` using its own CDN base URL config.
       parameters:
-        - in: path
-          name: id
+        - in: query
+          name: content_type
           required: true
-          schema: { type: string, format: uuid }
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              required: [logo]
-              properties:
-                logo:
-                  type: string
-                  format: binary
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp, image/gif]
       responses:
         '200':
-          description: Logo uploaded
+          description: Presigned URL ready
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  logo_url: { type: string, format: uri }
-        '400':
-          description: No file provided
+                  upload_url: { type: string, format: uri }
+                  key:        { type: string, example: 'logos/org-id/uuid.png' }
+                  path: { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id. Frontend builds CDN URL as: CDN_URL + "/" + path' }
+        '400': { $ref: '#/components/responses/UnprocessableEntity' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415':
+          description: Unsupported content type
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
 
-    delete:
+  /organizations/{id}/logo/presigned-url:
+    get:
       tags: [Organizations]
-      summary: Delete organization logo
+      summary: Get presigned PUT URL for any org's logo (platform admin)
       description: |
+        Same flow as `/organizations/me/logo/presigned-url` but scoped to a specific org ID.
+
         **Required permission:** `update:Org`
+        → `katisha_admin`, `katisha_super_admin`
       parameters:
         - in: path
           name: id
           required: true
           schema: { type: string, format: uuid }
+        - in: query
+          name: content_type
+          required: true
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp, image/gif]
       responses:
-        '204': { description: Logo deleted }
+        '200':
+          description: Presigned URL ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url: { type: string, format: uri }
+                  key:        { type: string, example: 'logos/org-id/uuid.png' }
+                  path: { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id. Frontend builds CDN URL as: CDN_URL + "/" + path' }
+        '400': { $ref: '#/components/responses/UnprocessableEntity' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }

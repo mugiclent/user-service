@@ -62,7 +62,7 @@ model Org {
   contact_email           String    @db.VarChar(255)
   contact_phone           String    @db.VarChar(20)
   address                 String?   @db.VarChar(500)
-  logo_url                String?
+  logo_path               String?
   parent_org_id           String?
   approved_by             String?   // user id of the approving Katisha Admin
   approved_at             DateTime?
@@ -108,7 +108,7 @@ model User {
   user_type                  UserType
   status                     UserStatus @default(pending_verification)
   two_factor_enabled         Boolean    @default(false)
-  avatar_url                 String?
+  avatar_path                String?
   org_id                     String?    // null for passengers
   driver_license_number      String?    @db.VarChar(100)
   driver_license_verified_at DateTime?

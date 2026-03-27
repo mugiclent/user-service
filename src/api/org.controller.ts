@@ -2,6 +2,7 @@ import type { Request, Response, NextFunction } from 'express';
 import { OrgService } from '../services/org.service.js';
 import { MediaService } from '../services/media.service.js';
 import type { AuthenticatedUser } from '../models/index.js';
+import { AppError } from '../utils/AppError.js';
 
 export const OrgController = {
   async createOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -72,7 +73,7 @@ export const OrgController = {
         contact_email?: string;
         contact_phone?: string;
         address?: string;
-        logo_url?: string;
+        logo_path?: string;
         status?: string;
         rejection_reason?: string;
       });
@@ -82,24 +83,14 @@ export const OrgController = {
     }
   },
 
-  async uploadLogo(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async getLogoPresignedUrl(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const user = req.user as AuthenticatedUser;
-      if (!req.file) {
-        res.status(400).json({ error: { code: 'NO_FILE_PROVIDED' } });
-        return;
-      }
-      const publicUrl = await MediaService.setOrgLogo(req.params['id']!, user.id, req.file);
-      res.status(200).json({ logo_url: publicUrl });
-    } catch (err) {
-      next(err);
-    }
-  },
-
-  async deleteLogo(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      await MediaService.deleteOrgLogo(req.params['id']!);
-      res.status(204).end();
+      const orgId = req.params['id'] ?? (req.user as AuthenticatedUser).org_id;
+      if (!orgId) return next(new AppError('NO_ORG', 400));
+      const contentType = req.query['content_type'] as string | undefined;
+      if (!contentType) return next(new AppError('MISSING_CONTENT_TYPE', 400));
+      const result = await MediaService.generateOrgLogoPresignedUrl(orgId, contentType);
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

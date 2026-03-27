@@ -18,6 +18,8 @@
     "db:seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1018.0",
+    "@aws-sdk/s3-request-presigner": "^3.1018.0",
     "@casl/ability": "^6.7.3",
     "@prisma/adapter-pg": "^7.5.0",
     "@prisma/client": "^6.11.0",
@@ -31,7 +33,6 @@
     "ioredis": "^5.4.2",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^2.1.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "swagger-ui-express": "^5.0.1",
@@ -43,7 +44,6 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.7",
-    "@types/multer": "^2.1.0",
     "@types/node": "^22.13.13",
     "@types/passport": "^1.0.17",
     "@types/passport-jwt": "^4.0.1",

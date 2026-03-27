@@ -3,7 +3,6 @@ import { UserController } from './user.controller.js';
 import { validate } from '../middleware/validate.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
-import { uploadImage } from '../middleware/upload.js';
 import {
   updateMeSchema,
   updateUserSchema,
@@ -24,7 +23,7 @@ router.post('/accept-invite', validate(acceptInviteSchema), UserController.accep
 // GET /api/v1/users/me  (must be before /:id — no authorize, every authenticated user accesses own profile)
 router.get('/me', authenticate, UserController.getMe);
 
-// PATCH /api/v1/users/me
+// PATCH /api/v1/users/me  (also accepts avatar_path to commit a presigned upload, or null to delete)
 router.patch('/me', authenticate, validate(updateMeSchema), UserController.updateMe);
 
 // POST /api/v1/users/me/validate-password
@@ -33,11 +32,8 @@ router.post('/me/validate-password', authenticate, validate(validatePasswordSche
 // PATCH /api/v1/users/me/2fa
 router.patch('/me/2fa', authenticate, validate(toggle2faSchema), UserController.toggle2fa);
 
-// POST /api/v1/users/me/avatar
-router.post('/me/avatar', authenticate, uploadImage('avatar'), UserController.uploadAvatar);
-
-// DELETE /api/v1/users/me/avatar
-router.delete('/me/avatar', authenticate, UserController.deleteAvatar);
+// GET /api/v1/users/me/avatar/presigned-url?content_type=image/jpeg
+router.get('/me/avatar/presigned-url', authenticate, UserController.getAvatarPresignedUrl);
 
 // GET /api/v1/users
 router.get('/', authenticate, authorize('read', 'User'), UserController.listUsers);

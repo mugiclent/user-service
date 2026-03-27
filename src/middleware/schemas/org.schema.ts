@@ -16,7 +16,7 @@ export const updateOrgSchema = Joi.object({
   contact_email: Joi.string().trim().email().max(255).optional(),
   contact_phone: Joi.string().trim().max(20).optional(),
   address: Joi.string().trim().max(500).optional(),
-  logo_url: Joi.string().uri().max(500).optional(),
+  logo_path: Joi.string().max(500).optional().allow(null),
   status: Joi.string().valid('active', 'suspended', 'rejected').optional(),
   rejection_reason: Joi.string().trim().max(1000).optional(),
 }).min(1);

@@ -38,10 +38,14 @@ export const config = {
 
   appUrl: env.APP_URL,
 
-  seaweedfs: {
-    filerUrl: env.SEAWEEDFS_FILER_URL,
-    publicUrl: env.SEAWEEDFS_PUBLIC_URL,
-    maxFileSizeBytes: env.SEAWEEDFS_MAX_FILE_SIZE_MB * 1024 * 1024,
+  s3: {
+    endpoint: env.S3_ENDPOINT,
+    publicEndpoint: env.S3_PUBLIC_ENDPOINT,
+    accessKey: env.S3_ACCESS_KEY,
+    secretKey: env.S3_SECRET_KEY,
+    bucket: env.S3_BUCKET,
+    region: env.S3_REGION,
+    presignedExpiresIn: env.S3_PRESIGNED_EXPIRES_IN,
   },
 
   rateLimit: {

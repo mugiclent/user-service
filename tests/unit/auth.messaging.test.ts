@@ -36,7 +36,7 @@ const makeUser = (overrides: Record<string, unknown> = {}) => ({
   status: 'active',
   two_factor_enabled: false,
   org_id: null,
-  avatar_url: null,
+  avatar_path: null,
   phone_verified_at: null,
   email_verified_at: null,
   driver_license_number: null,

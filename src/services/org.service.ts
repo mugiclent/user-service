@@ -6,6 +6,7 @@ import { slugify } from '../utils/slugify.js';
 import { generateRawToken, hashToken } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
 import { config } from '../config/index.js';
+import { deleteFromS3 } from '../utils/s3.js';
 import {
   serializeOrgForList,
   serializeOrgCreated,
@@ -154,7 +155,7 @@ export const OrgService = {
       contact_email?: string;
       contact_phone?: string;
       address?: string;
-      logo_url?: string;
+      logo_path?: string | null;
       status?: string;
       rejection_reason?: string;
     },
@@ -169,8 +170,12 @@ export const OrgService = {
     // org_admin cannot change status — only katisha_admin can
     if (!admin && data.status !== undefined) throw new AppError('FORBIDDEN', 403);
 
-    const existing = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
+    const existing = await prisma.org.findUnique({
+      where: { id: orgId, deleted_at: null },
+      select: { id: true, logo_path: true },
+    });
     if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
+    const oldLogoPath = existing.logo_path;
 
     const updateData: Record<string, unknown> = {};
     if (data.name !== undefined) {
@@ -180,7 +185,7 @@ export const OrgService = {
     if (data.contact_email !== undefined) updateData['contact_email'] = data.contact_email;
     if (data.contact_phone !== undefined) updateData['contact_phone'] = data.contact_phone;
     if (data.address !== undefined) updateData['address'] = data.address;
-    if (data.logo_url !== undefined) updateData['logo_url'] = data.logo_url;
+    if (data.logo_path !== undefined) updateData['logo_path'] = data.logo_path;
 
     if (data.status !== undefined && admin) {
       updateData['status'] = data.status;
@@ -199,6 +204,11 @@ export const OrgService = {
       data: updateData,
       ...withRelations,
     });
+
+    // After DB commit: delete old logo from S3 if logo_path changed
+    if ('logo_path' in data && oldLogoPath) {
+      deleteFromS3(oldLogoPath);
+    }
 
     // Blacklist all active tokens for this org's users when suspended
     if (data.status === 'suspended') {

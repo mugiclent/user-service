@@ -7,6 +7,7 @@ import { buildRulesForUser, buildAbilityFromRules, collectPermissions } from '..
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
 import { config } from '../config/index.js';
+import { deleteFromS3 } from '../utils/s3.js';
 
 const withRoles = {
   include: {
@@ -43,7 +44,7 @@ export const UserService = {
 
   async updateMe(
     requestingUser: AuthenticatedUser,
-    data: { first_name?: string; last_name?: string; email?: string },
+    data: { first_name?: string; last_name?: string; email?: string; avatar_path?: string | null },
   ): Promise<Record<string, unknown>> {
     // Passengers cannot have email — only staff can
     if (data.email !== undefined && requestingUser.user_type === 'passenger') {
@@ -55,6 +56,11 @@ export const UserService = {
       data,
       ...withRoles,
     });
+
+    // After DB commit: delete old avatar from S3 if avatar_path changed
+    if ('avatar_path' in data && requestingUser.avatar_path) {
+      deleteFromS3(requestingUser.avatar_path);
+    }
 
     const entries = collectPermissions(user);
     const rules = buildRulesForUser(user.id, user.org_id, entries);

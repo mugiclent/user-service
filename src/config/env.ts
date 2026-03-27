@@ -32,9 +32,13 @@ const schema = Joi.object({
 
   APP_URL: Joi.string().uri().default('http://localhost:3001'),
 
-  SEAWEEDFS_FILER_URL: Joi.string().uri().required(),
-  SEAWEEDFS_PUBLIC_URL: Joi.string().uri().required(),
-  SEAWEEDFS_MAX_FILE_SIZE_MB: Joi.number().default(5),
+  S3_ENDPOINT: Joi.string().uri().required(),
+  S3_PUBLIC_ENDPOINT: Joi.string().uri().required(),
+  S3_ACCESS_KEY: Joi.string().required(),
+  S3_SECRET_KEY: Joi.string().required(),
+  S3_BUCKET: Joi.string().default('katisha'),
+  S3_REGION: Joi.string().default('us-east-1'),
+  S3_PRESIGNED_EXPIRES_IN: Joi.number().integer().default(300),
 });
 
 const { error, value } = schema.validate(process.env, { allowUnknown: true });
@@ -64,7 +68,11 @@ export const env = value as {
   RATE_LIMIT_RESET_MAX: number;
   RATE_LIMIT_RESET_WINDOW_SECONDS: number;
   APP_URL: string;
-  SEAWEEDFS_FILER_URL: string;
-  SEAWEEDFS_PUBLIC_URL: string;
-  SEAWEEDFS_MAX_FILE_SIZE_MB: number;
+  S3_ENDPOINT: string;
+  S3_PUBLIC_ENDPOINT: string;
+  S3_ACCESS_KEY: string;
+  S3_SECRET_KEY: string;
+  S3_BUCKET: string;
+  S3_REGION: string;
+  S3_PRESIGNED_EXPIRES_IN: number;
 };

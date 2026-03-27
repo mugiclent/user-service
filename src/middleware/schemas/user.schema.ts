@@ -6,6 +6,7 @@ export const updateMeSchema = Joi.object({
   first_name: Joi.string().trim().max(100).optional(),
   last_name: Joi.string().trim().max(100).optional(),
   email: Joi.string().trim().email().max(255).optional(),
+  avatar_path: Joi.string().max(500).optional().allow(null),
 }).min(1);
 
 export const updateUserSchema = Joi.object({

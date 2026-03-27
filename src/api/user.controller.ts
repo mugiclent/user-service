@@ -5,6 +5,7 @@ import { MediaService } from '../services/media.service.js';
 import { sendAuthResponse } from '../utils/sendAuthResponse.js';
 import { serializeUserForAuth } from '../models/serializers.js';
 import type { AuthenticatedUser } from '../models/index.js';
+import { AppError } from '../utils/AppError.js';
 
 export const UserController = {
   async getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -24,7 +25,22 @@ export const UserController = {
         first_name?: string;
         last_name?: string;
         email?: string;
+        avatar_path?: string | null;
       });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getAvatarPresignedUrl(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const contentType = req.query['content_type'] as string | undefined;
+      if (!contentType) {
+        return next(new AppError('MISSING_CONTENT_TYPE', 400));
+      }
+      const result = await MediaService.generateUserAvatarPresignedUrl(user.id, contentType);
       res.status(200).json(result);
     } catch (err) {
       next(err);
@@ -122,30 +138,6 @@ export const UserController = {
         org_id?: string;
       });
       res.status(201).json(result);
-    } catch (err) {
-      next(err);
-    }
-  },
-
-  async uploadAvatar(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const user = req.user as AuthenticatedUser;
-      if (!req.file) {
-        res.status(400).json({ error: { code: 'NO_FILE_PROVIDED' } });
-        return;
-      }
-      const publicUrl = await MediaService.setUserAvatar(user.id, user.id, req.file);
-      res.status(200).json({ avatar_url: publicUrl });
-    } catch (err) {
-      next(err);
-    }
-  },
-
-  async deleteAvatar(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const user = req.user as AuthenticatedUser;
-      await MediaService.deleteUserAvatar(user.id);
-      res.status(204).end();
     } catch (err) {
       next(err);
     }

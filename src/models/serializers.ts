@@ -11,7 +11,7 @@ export interface AuthUserDto {
   first_name: string;
   last_name: string;
   user_type: 'passenger' | 'staff';
-  avatar_url: string | null;
+  avatar_path: string | null;
   org_id: string | null;
   roles: string[];
   status: 'active' | 'pending_verification' | 'suspended';
@@ -23,7 +23,7 @@ export const serializeUserForAuth = (user: UserWithRoles): AuthUserDto => ({
   first_name: user.first_name,
   last_name: user.last_name,
   user_type: user.user_type,
-  avatar_url: user.avatar_url,
+  avatar_path: user.avatar_path,
   org_id: user.org_id,
   roles: user.user_roles.map((ur) => ur.role.slug),
   status: user.status,
@@ -42,7 +42,7 @@ export interface UserMePassengerDto {
   phone_verified_at: Date | null;
   email: string | null;
   email_verified_at: Date | null;
-  avatar_url: string | null;
+  avatar_path: string | null;
   user_type: 'passenger';
   status: string;
   two_factor_enabled: boolean;
@@ -60,7 +60,7 @@ export interface UserMeStaffDto {
   last_name: string;
   phone_number: string | null;
   email: string | null;
-  avatar_url: string | null;
+  avatar_path: string | null;
   user_type: 'staff';
   status: string;
   org_id: string | null;
@@ -87,7 +87,7 @@ export const serializeUserMe = (
       phone_verified_at: user.phone_verified_at,
       email: user.email,
       email_verified_at: user.email_verified_at,
-      avatar_url: user.avatar_url,
+      avatar_path: user.avatar_path,
       user_type: 'passenger',
       status: user.status,
       two_factor_enabled: user.two_factor_enabled,
@@ -102,7 +102,7 @@ export const serializeUserMe = (
     last_name: user.last_name,
     phone_number: user.phone_number,
     email: user.email,
-    avatar_url: user.avatar_url,
+    avatar_path: user.avatar_path,
     user_type: 'staff',
     status: user.status,
     org_id: user.org_id,
@@ -140,7 +140,7 @@ export const serializeUserForList = (
       ? user.phone_number
       : maskPhone(user.phone_number)
     : null,
-  avatar_url: user.avatar_url,
+  avatar_path: user.avatar_path,
   user_type: user.user_type,
   status: user.status,
   roles: user.user_roles.map((ur) => ur.role.slug),
@@ -164,7 +164,7 @@ export const serializeUserFullProfile = (
   phone_number: user.phone_number,
   phone_verified_at: user.phone_verified_at,
   email_verified_at: user.email_verified_at,
-  avatar_url: user.avatar_url,
+  avatar_path: user.avatar_path,
   user_type: user.user_type,
   status: user.status,
   org_id: user.org_id,
@@ -190,7 +190,7 @@ export interface OrgListItemDto {
   slug: string;
   org_type: OrgType;
   status: OrgStatus;
-  logo_url: string | null;
+  logo_path: string | null;
   contact_email: string;
   contact_phone: string;
   parent_org_id: string | null;
@@ -204,7 +204,7 @@ export const serializeOrgForList = (org: Org): OrgListItemDto => ({
   slug: org.slug,
   org_type: org.org_type,
   status: org.status,
-  logo_url: org.logo_url,
+  logo_path: org.logo_path,
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
   parent_org_id: org.parent_org_id,
@@ -238,7 +238,7 @@ export const serializeOrgFull = (
   slug: org.slug,
   org_type: org.org_type,
   status: org.status,
-  logo_url: org.logo_url,
+  logo_path: org.logo_path,
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
   address: org.address,
