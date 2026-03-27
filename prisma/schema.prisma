@@ -179,6 +179,8 @@ model RefreshToken {
   token_hash  String    @unique // SHA-256 of raw token — never store raw
   user_id     String
   device_name String?   @db.VarChar(200)
+  ip_address  String?   @db.VarChar(45)  // IPv4 or IPv6
+  user_agent  String?   @db.VarChar(500)
   expires_at  DateTime
   revoked_at  DateTime?
   created_at  DateTime  @default(now())

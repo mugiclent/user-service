@@ -46,6 +46,8 @@ export const TokenService = {
   async issueTokenPair(
     user: UserWithRoles,
     device_name?: string,
+    ip_address?: string,
+    user_agent?: string,
   ): Promise<AuthTokens> {
     const access = buildAccessToken(user);
     const rawRefresh = generateRawToken();
@@ -57,6 +59,8 @@ export const TokenService = {
         token_hash: hash,
         user_id: user.id,
         device_name: device_name ?? null,
+        ip_address: ip_address ?? null,
+        user_agent: user_agent ?? null,
         expires_at: expiresAt,
       },
     });

@@ -151,7 +151,7 @@ export const UserController = {
         device_name?: string;
       };
       const { user } = await UserService.acceptInvite(token, password);
-      const tokens = await TokenService.issueTokenPair(user, device_name);
+      const tokens = await TokenService.issueTokenPair(user, device_name, req.ip, req.headers['user-agent']);
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
     } catch (err) {
       next(err);

@@ -12,7 +12,7 @@ export const AuthController = {
         password: string;
         device_name?: string;
       };
-      const result = await AuthService.login(identifier, password, device_name, req.ip);
+      const result = await AuthService.login(identifier, password, device_name, req.ip, req.headers['user-agent']);
 
       if (result.requires_2fa) {
         // Step 1 of 2FA: OTP sent, token issuance deferred
@@ -37,7 +37,7 @@ export const AuthController = {
         otp: string;
         device_name?: string;
       };
-      const { user, tokens } = await AuthService.verify2fa(user_id, otp, device_name, req.ip);
+      const { user, tokens } = await AuthService.verify2fa(user_id, otp, device_name, req.ip, req.headers['user-agent']);
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
     } catch (err) {
       next(err);
@@ -65,7 +65,7 @@ export const AuthController = {
         otp: string;
         device_name?: string;
       };
-      const { user, tokens } = await AuthService.verifyPhone(user_id, otp, device_name);
+      const { user, tokens } = await AuthService.verifyPhone(user_id, otp, device_name, req.ip, req.headers['user-agent']);
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
     } catch (err) {
       next(err);

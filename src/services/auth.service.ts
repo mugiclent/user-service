@@ -49,6 +49,7 @@ export const AuthService = {
     password: string,
     device_name?: string,
     ip?: string,
+    user_agent?: string,
   ): Promise<LoginResult> {
     const user = await prisma.user.findFirst({
       where: isEmail(identifier)
@@ -79,7 +80,7 @@ export const AuthService = {
 
     publishAudit({ actor_id: user.id, action: 'login', resource: 'User', resource_id: user.id, ip });
 
-    const tokens = await TokenService.issueTokenPair(user, device_name);
+    const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
     return { requires_2fa: false, user, tokens };
   },
 
@@ -92,6 +93,7 @@ export const AuthService = {
     otp: string,
     device_name?: string,
     ip?: string,
+    user_agent?: string,
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
     await OtpService.verify(user_id, otp, '2fa');
 
@@ -106,7 +108,7 @@ export const AuthService = {
 
     publishAudit({ actor_id: user.id, action: 'login_2fa', resource: 'User', resource_id: user.id, ip });
 
-    const tokens = await TokenService.issueTokenPair(user, device_name);
+    const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
     return { user, tokens };
   },
 
@@ -163,6 +165,8 @@ export const AuthService = {
     user_id: string,
     otp: string,
     device_name?: string,
+    ip?: string,
+    user_agent?: string,
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
     await OtpService.verify(user_id, otp, 'phone_verification');
 
@@ -174,7 +178,7 @@ export const AuthService = {
 
     publishAudit({ actor_id: user.id, action: 'verify_phone', resource: 'User', resource_id: user.id });
 
-    const tokens = await TokenService.issueTokenPair(user, device_name);
+    const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
     return { user, tokens };
   },
 

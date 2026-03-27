@@ -16,7 +16,7 @@ const schema = Joi.object({
   JWT_PRIVATE_KEY: Joi.string().required(), // PEM RSA private key (-----BEGIN RSA PRIVATE KEY-----)
   JWT_PUBLIC_KEY: Joi.string().required(),  // PEM RSA public key  (-----BEGIN PUBLIC KEY-----)
   JWT_EXPIRES_IN: Joi.string().default('15m'),
-  REFRESH_TOKEN_TTL_DAYS: Joi.number().default(30),
+  REFRESH_TOKEN_TTL_DAYS: Joi.number().default(7),
 
   COOKIE_SECURE: Joi.boolean().default(true),
   TRUST_PROXY: Joi.number().integer().min(0).default(1),
