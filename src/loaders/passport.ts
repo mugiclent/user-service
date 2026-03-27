@@ -13,7 +13,8 @@ const options: StrategyOptionsWithoutRequest = {
     // Mobile: extract from Authorization: Bearer <token>
     ExtractJwt.fromAuthHeaderAsBearerToken(),
   ]),
-  secretOrKey: config.jwt.secret,
+  secretOrKey: config.jwt.publicKey,
+  algorithms: ['RS256'],
 };
 
 export const initPassport = (): void => {

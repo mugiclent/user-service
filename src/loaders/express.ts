@@ -1,3 +1,4 @@
+import { createPublicKey } from 'node:crypto';
 import express from 'express';
 import type { Application, Request, Response } from 'express';
 import cookieParser from 'cookie-parser';
@@ -45,6 +46,13 @@ export const createApp = (): Application => {
   // Health check — unauthenticated, for gateway / load-balancer probes
   app.get('/health', (_req: Request, res: Response) => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
+  // JWKS endpoint — exposes RS256 public key so the API gateway and other
+  // microservices can verify access tokens without contacting this service.
+  const jwk = createPublicKey(config.jwt.publicKey).export({ format: 'jwk' }) as Record<string, unknown>;
+  app.get('/.well-known/jwks.json', (_req: Request, res: Response) => {
+    res.json({ keys: [{ ...jwk, use: 'sig', alg: 'RS256', kid: 'katisha-user-service-1' }] });
   });
 
   // Routes

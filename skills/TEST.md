@@ -12,7 +12,11 @@
 ```
 /tests
   /unit               # Pure logic — all external deps mocked
-    auth.service.test.ts
+    auth.messaging.test.ts
+    user.messaging.test.ts
+    invitation.messaging.test.ts
+    org.messaging.test.ts
+    password.messaging.test.ts
     tokens.test.ts
     sendAuthResponse.test.ts
     AppError.test.ts
@@ -42,23 +46,54 @@ describe('POST /auth/login', () => {
 ## Unit test pattern (mocked deps)
 
 ```ts
-// tests/unit/auth.service.test.ts
+// tests/unit/auth.messaging.test.ts
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 
-vi.mock('../../src/models', () => ({ prisma: { user: { findFirst: vi.fn() } } }));
-vi.mock('../../src/utils/tokens', () => ({ signAccessToken: vi.fn(), signRefreshToken: vi.fn() }));
-vi.mock('../../src/utils/publishers', () => ({ publishAudit: vi.fn(), publishNotification: vi.fn() }));
+// ── Mock all external modules BEFORE importing the service under test ──────
+const publishAudit = vi.fn();
+const publishSms   = vi.fn();
+const publishMail  = vi.fn();
+vi.mock('../../src/utils/publishers.js', () => ({ publishAudit, publishSms, publishMail }));
+
+vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/utils/crypto.js')>();
+  return { ...actual, generateRawToken: vi.fn(() => 'test-token'), hashToken: vi.fn((t) => `hashed:${t}`) };
+});
+
+vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com' } }));
+
+// Always mock s3.js — it creates S3 clients at module load using config.s3.*
+// If s3.js is not mocked, tests will fail with "Cannot read properties of undefined (reading 'accessKey')"
+vi.mock('../../src/utils/s3.js', () => ({
+  deleteFromS3: vi.fn(),
+  keyFromPublicUrl: vi.fn(() => null),
+}));
+
+vi.mock('../../src/models/index.js', () => ({
+  prisma: { user: { findFirst: vi.fn() } },
+  Prisma: {},
+}));
+
+// Import service AFTER all vi.mock() calls
+const { AuthService } = await import('../../src/services/auth.service.js');
+
+beforeEach(() => vi.clearAllMocks());
 
 describe('AuthService.login', () => {
-  beforeEach(() => vi.clearAllMocks());
-
-  it('throws INVALID_CREDENTIALS when user not found', async () => {
-    vi.mocked(prisma.user.findFirst).mockResolvedValue(null);
-    await expect(AuthService.login({ identifier: 'x', password: 'y' }))
-      .rejects.toMatchObject({ code: 'INVALID_CREDENTIALS', status: 401 });
+  it('publishes audit event on successful login', async () => {
+    // ... test body
+    expect(publishAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'login', resource: 'User' }),
+    );
   });
 });
 ```
+
+**Critical rules for unit test mock ordering:**
+1. `vi.mock()` calls are hoisted to the top of the file — put them before all imports
+2. Always mock `../../src/utils/s3.js` in any test file that imports a service using S3
+3. Import the service under test AFTER all `vi.mock()` declarations (use `await import(...)`)
+4. Use `beforeEach(() => vi.clearAllMocks())` — never share mock state between tests
 
 ## Integration test pattern (real DB)
 
@@ -87,28 +122,43 @@ describe('POST /api/v1/auth/login', () => {
       expect.arrayContaining([
         expect.stringContaining('access_token='),
         expect.stringContaining('HttpOnly'),
-        expect.stringContaining('refresh_token='),
       ])
     );
-    expect(res.body).toHaveProperty('user');
-    expect(res.body).not.toHaveProperty('access_token');
   });
 
   it('mobile: returns tokens in body', async () => {
-    await seedUser({ phone_number: '+250788000002', password: 'Test1234!' });
-
     const res = await request(app)
       .post('/api/v1/auth/login')
       .set('X-Client-Type', 'mobile')
-      .send({ identifier: '+250788000002', password: 'Test1234!' });
+      .send({ identifier: '+250788000001', password: 'Test1234!' });
 
-    expect(res.status).toBe(200);
     expect(res.body).toHaveProperty('access_token');
-    expect(res.body).toHaveProperty('refresh_token');
-    expect(res.body.token_type).toBe('Bearer');
     expect(res.headers['set-cookie']).toBeUndefined();
   });
 });
+```
+
+## Mocking $transaction in unit tests
+
+When the service under test calls `prisma.$transaction(async (tx) => ...)`, mock it as:
+
+```ts
+vi.mock('../../src/models/index.js', () => ({
+  prisma: {
+    user: { create: mockUserCreate, findUniqueOrThrow: mockFindUniqueOrThrow },
+    role: { findFirst: mockRoleFindFirst },
+    userRole: { create: mockUserRoleCreate },
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        user:       { create: mockUserCreate, findUniqueOrThrow: mockFindUniqueOrThrow },
+        userRole:   { create: mockUserRoleCreate },
+        invitation: { update: mockInvitationUpdate },
+      };
+      return fn(tx);
+    }),
+  },
+  Prisma: {},
+}));
 ```
 
 ## Coverage configuration (vitest.config.ts)
@@ -123,17 +173,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      thresholds: {
-        lines:     80,
-        functions: 80,
-        branches:  70,
-      },
-      exclude: [
-        'src/loaders/**',   // startup glue — hard to unit test
-        'prisma/**',
-        'skills/**',
-        'docs/**',
-      ],
+      thresholds: { lines: 80, functions: 80, branches: 70 },
+      exclude: ['src/loaders/**', 'prisma/**', 'skills/**', 'docs/**'],
     },
   },
 });
@@ -145,7 +186,7 @@ Run: `vitest run --coverage` — fails CI if thresholds not met.
 
 - **Dual-client test**: every auth endpoint that uses `sendAuthResponse` must have both a web test and a mobile test.
 - **Seed helpers** go in `tests/helpers/seed.ts` — shared across integration tests. Never duplicate seed logic.
-- **Never mock Prisma in integration tests** — use a real test database (separate `DATABASE_URL` env var).
+- **Never mock Prisma in integration tests** — use a real test database (`TEST_DATABASE_URL`).
 - **Never use `setTimeout` or `sleep`** in tests — use `vi.useFakeTimers()` for time-sensitive logic.
 - **Rate limiting** — mock Redis in unit tests with `vi.mock()`. Use real Redis in integration tests.
-- **Test file naming**: `<feature>.<verb>.test.ts` for integration, `<unit>.test.ts` for unit.
+- **Test file naming**: `<feature>.<verb>.test.ts` for integration, `<feature>.messaging.test.ts` for unit messaging tests.

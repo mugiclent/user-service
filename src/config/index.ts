@@ -18,7 +18,8 @@ export const config = {
   },
 
   jwt: {
-    secret: env.JWT_SECRET,
+    privateKey: env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    publicKey: env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n'),
     expiresIn: env.JWT_EXPIRES_IN,
     refreshTtlMs: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   },

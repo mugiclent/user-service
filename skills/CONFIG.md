@@ -21,7 +21,9 @@ const schema = Joi.object({
 
   RABBITMQ_URL:        Joi.string().uri().required(),
 
-  JWT_SECRET:          Joi.string().min(32).required(),
+  // RS256 asymmetric JWT — private key signs, public key verifies
+  JWT_PRIVATE_KEY:     Joi.string().required(), // PEM RSA private key
+  JWT_PUBLIC_KEY:      Joi.string().required(), // PEM RSA public key
   JWT_EXPIRES_IN:      Joi.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: Joi.number().default(30),
 
@@ -29,6 +31,15 @@ const schema = Joi.object({
 
   OTP_TTL_SECONDS:     Joi.number().default(300),
   OTP_LENGTH:          Joi.number().default(6),
+
+  // S3-compatible object storage (SeaweedFS)
+  S3_ENDPOINT:         Joi.string().uri().required(), // internal (Docker) — server-side deletes
+  S3_PUBLIC_ENDPOINT:  Joi.string().uri().required(), // browser-reachable — embedded in presigned URLs
+  S3_ACCESS_KEY:       Joi.string().required(),
+  S3_SECRET_KEY:       Joi.string().required(),
+  S3_BUCKET:           Joi.string().default('katisha'),
+  S3_REGION:           Joi.string().default('us-east-1'),
+  S3_PRESIGNED_EXPIRES_IN: Joi.number().integer().default(300), // seconds
 }).unknown(false); // reject undeclared env vars in strict mode (set to true in prod)
 
 const { error, value } = schema.validate(process.env, { allowUnknown: true });
@@ -57,9 +68,11 @@ export const config = {
   rabbitmq: { url: env.RABBITMQ_URL },
 
   jwt: {
-    secret:     env.JWT_SECRET,
+    // PEM keys — replace literal \n from .env with real newlines
+    privateKey: env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'),
+    publicKey:  env.JWT_PUBLIC_KEY.replace(/\\n/g, '\n'),
     expiresIn:  env.JWT_EXPIRES_IN,
-    refreshTtl: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000, // ms
+    refreshTtlMs: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
   },
 
   cookie: {
@@ -67,8 +80,18 @@ export const config = {
   },
 
   otp: {
-    ttl:    env.OTP_TTL_SECONDS,
-    length: env.OTP_LENGTH,
+    ttlSeconds: env.OTP_TTL_SECONDS,
+    length:     env.OTP_LENGTH,
+  },
+
+  s3: {
+    endpoint:          env.S3_ENDPOINT,
+    publicEndpoint:    env.S3_PUBLIC_ENDPOINT,
+    accessKey:         env.S3_ACCESS_KEY,
+    secretKey:         env.S3_SECRET_KEY,
+    bucket:            env.S3_BUCKET,
+    region:            env.S3_REGION,
+    presignedExpiresIn: env.S3_PRESIGNED_EXPIRES_IN,
   },
 } as const;
 ```
@@ -96,8 +119,11 @@ REDIS_URL=redis://localhost:6379
 # RabbitMQ (audit logs + notification service events)
 RABBITMQ_URL=amqp://guest:guest@localhost:5672
 
-# JWT
-JWT_SECRET=change_me_to_at_least_32_random_characters
+# JWT — RS256 asymmetric signing
+# Generate: openssl genrsa -out private.pem 2048 && openssl rsa -in private.pem -pubout -out public.pem
+# Store PEM as single-line with literal \n separators
+JWT_PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
+JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n...\n-----END PUBLIC KEY-----"
 JWT_EXPIRES_IN=15m
 REFRESH_TOKEN_TTL_DAYS=30
 
@@ -107,6 +133,17 @@ COOKIE_SECURE=true
 # OTP
 OTP_TTL_SECONDS=300
 OTP_LENGTH=6
+
+# S3 / SeaweedFS
+# S3_ENDPOINT = Docker-internal hostname (server-side deletes)
+# S3_PUBLIC_ENDPOINT = browser-reachable hostname (embedded in presigned URLs)
+S3_ENDPOINT=http://seaweedfs:8333
+S3_PUBLIC_ENDPOINT=http://localhost:8333
+S3_ACCESS_KEY=your-access-key
+S3_SECRET_KEY=your-secret-key
+S3_BUCKET=katisha
+S3_REGION=us-east-1
+S3_PRESIGNED_EXPIRES_IN=300
 ```
 
 ## Dockerfile (service only — no docker-compose)
@@ -128,4 +165,4 @@ EXPOSE 3000
 CMD ["node", "dist/index.js"]
 ```
 
-Infrastructure (Postgres, Redis, RabbitMQ) is managed externally — this service only runs its own process.
+Infrastructure (Postgres, Redis, RabbitMQ, SeaweedFS) is managed externally — this service only runs its own process.
