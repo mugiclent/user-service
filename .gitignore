@@ -10,6 +10,9 @@ build/
 .env.local
 .env.*.local
 
+# Production scripts — contain real secrets, never commit
+scripts/*.prod.sh
+
 # Prisma generated client (regenerated via `prisma generate`)
 src/generated/
 
