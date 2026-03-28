@@ -88,9 +88,12 @@ export const UserService = {
     const where: Record<string, any> = { deleted_at: null };
 
     if (!isAdmin) {
-      // Non-admin (org_admin, dispatcher, etc.) can only see users in their org
       if (requestingUser.org_id) {
+        // org-scoped staff: see only their org's users
         where['org_id'] = requestingUser.org_id;
+      } else {
+        // self-scoped (passenger/driver): see only themselves
+        where['id'] = requestingUser.id;
       }
     } else if (query.org_id) {
       where['org_id'] = query.org_id;
@@ -129,9 +132,15 @@ export const UserService = {
     });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
 
-    if (!ability.can('read', 'User')) {
-      // Self-access via CASL conditions — do a simpler ownership check
-      if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
+    if (!isAdmin) {
+      // Object-level scope enforcement (conditions expressed in DB query scoping)
+      if (requestingUser.org_id) {
+        // org-scoped roles (org_admin, dispatcher): users in same org only
+        if (user.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+      } else {
+        // self-scoped roles (passenger, driver): own profile only
+        if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
+      }
     }
 
     return serializeUserFullProfile(user, isAdmin);
@@ -156,8 +165,15 @@ export const UserService = {
     });
     if (!target) throw new AppError('USER_NOT_FOUND', 404);
 
-    if (!ability.can('update', 'User')) {
-      if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
+    if (!isAdmin) {
+      // Object-level scope enforcement
+      if (requestingUser.org_id) {
+        // org-scoped roles: target must be in same org
+        if (target.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+      } else {
+        // self-scoped roles (passenger, driver): own profile only
+        if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
+      }
     }
 
     const { role_slugs, first_name, last_name, status, org_id } = data;
@@ -228,6 +244,12 @@ export const UserService = {
   async deleteUser(requestingUser: AuthenticatedUser, targetId: string): Promise<void> {
     const target = await prisma.user.findUnique({ where: { id: targetId } });
     if (!target || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
+
+    // Org-scoped admins (org_admin) may only delete users within their own org
+    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    if (!isAdmin && requestingUser.org_id && target.org_id !== requestingUser.org_id) {
+      throw new AppError('FORBIDDEN', 403);
+    }
 
     await prisma.$transaction([
       prisma.user.update({ where: { id: targetId }, data: { deleted_at: new Date() } }),

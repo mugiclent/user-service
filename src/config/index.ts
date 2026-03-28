@@ -1,3 +1,4 @@
+// Infrastructure config — excluded from unit test coverage (see vitest.config.ts)
 import { env } from './env.js';
 
 export const config = {

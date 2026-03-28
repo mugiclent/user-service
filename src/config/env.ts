@@ -1,3 +1,4 @@
+// Infrastructure config — excluded from unit test coverage (see vitest.config.ts)
 import Joi from 'joi';
 
 const schema = Joi.object({

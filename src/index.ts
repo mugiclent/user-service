@@ -1,3 +1,4 @@
+// Infrastructure bootstrap — excluded from unit test coverage (see vitest.config.ts)
 import 'dotenv/config';
 import { config } from './config/index.js';
 import { createApp } from './loaders/express.js';

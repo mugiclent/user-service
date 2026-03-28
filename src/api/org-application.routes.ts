@@ -1,3 +1,4 @@
+// Route declarations — excluded from unit test coverage (see vitest.config.ts)
 import { Router } from 'express';
 import { OrgApplicationController } from './org-application.controller.js';
 import { validate } from '../middleware/validate.js';
