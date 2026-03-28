@@ -8,6 +8,7 @@ import { config } from '../config/index.js';
 import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
 import orgRouter from '../api/org.routes.js';
+import orgApplicationRouter from '../api/org-application.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
 import { createSwaggerRouter } from './swagger.js';
 
@@ -54,6 +55,9 @@ export const createApp = (): Application => {
   // Routes
   app.use('/api/v1/auth', authRouter);
   app.use('/api/v1/users', userRouter);
+  // org-application routes must be mounted before orgRouter so /apply and /verify-contact
+  // are matched before the authenticated /:id catch-all in org.routes.ts
+  app.use('/api/v1/organizations', orgApplicationRouter);
   app.use('/api/v1/organizations', orgRouter);
 
   // Global error handler — must be last

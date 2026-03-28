@@ -5,7 +5,7 @@ import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
 import { buildRulesForUser, buildAbilityFromRules, collectPermissions } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
-import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
 
@@ -44,7 +44,7 @@ export const UserService = {
 
   async updateMe(
     requestingUser: AuthenticatedUser,
-    data: { first_name?: string; last_name?: string; email?: string; avatar_path?: string | null },
+    data: { first_name?: string; last_name?: string; email?: string; avatar_path?: string | null; notif_channel?: string },
   ): Promise<Record<string, unknown>> {
     // Passengers cannot have email — only staff can
     if (data.email !== undefined && requestingUser.user_type === 'passenger') {
@@ -58,7 +58,8 @@ export const UserService = {
 
     const user = await prisma.user.update({
       where: { id: requestingUser.id },
-      data,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      data: data as any,
       ...withRoles,
     });
 
@@ -188,6 +189,15 @@ export const UserService = {
       return u;
     });
 
+    // Notify the target user if their account was suspended
+    if (data.status === 'suspended') {
+      notifyUser(updated, {
+        sms: { type: 'security.account_suspended', phone_number: updated.phone_number, first_name: updated.first_name },
+        mail: updated.email ? { type: 'security.account_suspended', email: updated.email, first_name: updated.first_name } : undefined,
+        push: { type: 'security.account_suspended' },
+      });
+    }
+
     return serializeUserFullProfile(updated, isAdmin);
   },
 
@@ -306,6 +316,7 @@ export const UserService = {
           user_type: 'staff',
           status: 'active',
           org_id: invitation.org_id ?? null,
+          notif_channel: 'all',  // staff receive on all channels by default
           phone_verified_at: invitation.phone_number ? new Date() : null,
           email_verified_at: invitation.email ? new Date() : null,
         },
@@ -350,6 +361,14 @@ export const UserService = {
       where: { id: userId },
       data: { two_factor_enabled: enabled },
     });
+
+    const eventType = enabled ? 'security.2fa_enabled' : 'security.2fa_disabled';
+    notifyUser(user, {
+      sms: { type: eventType, phone_number: user.phone_number, first_name: user.first_name },
+      mail: user.email ? { type: eventType, email: user.email, first_name: user.first_name } : undefined,
+      push: { type: eventType },
+    });
+
     publishAudit({
       actor_id: userId,
       action: enabled ? '2fa_enabled' : '2fa_disabled',

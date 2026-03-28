@@ -5,7 +5,7 @@ import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
 import { OtpService } from './otp.service.js';
 import { PasswordService } from './password.service.js';
-import { publishAudit, publishSms } from '../utils/publishers.js';
+import { publishAudit, publishSms, notifyUser } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 
 const withRoles = {
@@ -79,6 +79,26 @@ export const AuthService = {
       .catch((err) => console.error('[auth] Failed to update last_login_at', err));
 
     publishAudit({ actor_id: user.id, action: 'login', resource: 'User', resource_id: user.id, ip });
+
+    // Detect login from a new device: user has existing tokens but none match this user-agent
+    if (user_agent) {
+      prisma.refreshToken.findFirst({
+        where: { user_id: user.id, revoked_at: null, expires_at: { gt: new Date() } },
+      }).then((anyToken) => {
+        if (!anyToken) return; // first ever login — no alert needed
+        return prisma.refreshToken.findFirst({
+          where: { user_id: user.id, user_agent, revoked_at: null, expires_at: { gt: new Date() } },
+        }).then((sameDevice) => {
+          if (!sameDevice) {
+            notifyUser(user, {
+              sms: { type: 'security.login_new_device', phone_number: user.phone_number, first_name: user.first_name, device: device_name },
+              mail: user.email ? { type: 'security.login_new_device', email: user.email, first_name: user.first_name, device: device_name } : undefined,
+              push: { type: 'security.login_new_device', data: device_name ? { device: device_name } : undefined },
+            });
+          }
+        });
+      }).catch((err) => console.error('[auth] Failed to check new device', err));
+    }
 
     const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
     return { requires_2fa: false, user, tokens };

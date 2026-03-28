@@ -10,6 +10,7 @@ import {
   verify2faSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  registerDeviceSchema,
 } from '../middleware/schemas/auth.schema.js';
 
 const router = Router();
@@ -40,5 +41,8 @@ router.post('/logout', AuthController.logout);
 
 // POST /api/v1/auth/logout-all  (requires valid access token)
 router.post('/logout-all', authenticate, AuthController.logoutAll);
+
+// POST /api/v1/auth/register-device  (mobile app: store FCM token, switch notif_channel to 'app')
+router.post('/register-device', authenticate, validate(registerDeviceSchema), AuthController.registerDevice);
 
 export default router;

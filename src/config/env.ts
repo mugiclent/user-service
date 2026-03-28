@@ -40,6 +40,9 @@ const schema = Joi.object({
   S3_BUCKET: Joi.string().default('katisha'),
   S3_REGION: Joi.string().default('us-east-1'),
   S3_PRESIGNED_EXPIRES_IN: Joi.number().integer().default(300),
+
+  // Email address for Katisha admin notifications (org applications, etc.)
+  ADMIN_NOTIFICATION_EMAIL: Joi.string().email().optional(),
 });
 
 const { error, value } = schema.validate(process.env, { allowUnknown: true });
@@ -77,4 +80,5 @@ export const env = value as {
   S3_BUCKET: string;
   S3_REGION: string;
   S3_PRESIGNED_EXPIRES_IN: number;
+  ADMIN_NOTIFICATION_EMAIL?: string;
 };

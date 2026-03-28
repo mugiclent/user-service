@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import { hashPassword } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { OtpService } from './otp.service.js';
-import { publishSms, publishMail, publishAudit } from '../utils/publishers.js';
+import { publishSms, publishMail, publishAudit, notifyUser } from '../utils/publishers.js';
 
 const isEmail = (identifier: string): boolean => identifier.includes('@');
 
@@ -68,6 +68,12 @@ export const PasswordService = {
         data: { revoked_at: new Date() },
       }),
     ]);
+
+    notifyUser(user, {
+      sms: { type: 'security.password_changed', phone_number: user.phone_number, first_name: user.first_name },
+      mail: user.email ? { type: 'security.password_changed', email: user.email, first_name: user.first_name } : undefined,
+      push: { type: 'security.password_changed' },
+    });
 
     publishAudit({
       actor_id: user.id,

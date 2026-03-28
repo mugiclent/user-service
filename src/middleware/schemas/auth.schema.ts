@@ -42,3 +42,7 @@ export const resetPasswordSchema = Joi.object({
   otp: Joi.string().trim().length(6).required(),
   new_password: password.required(),
 });
+
+export const registerDeviceSchema = Joi.object({
+  fcm_token: Joi.string().trim().max(500).required(),
+});

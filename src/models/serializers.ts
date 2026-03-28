@@ -45,6 +45,7 @@ export interface UserMePassengerDto {
   avatar_path: string | null;
   user_type: 'passenger';
   status: string;
+  notif_channel: string;
   two_factor_enabled: boolean;
   created_at: Date;
   updated_at: Date;
@@ -66,6 +67,7 @@ export interface UserMeStaffDto {
   org_id: string | null;
   roles: string[];
   permissions: AppRule[];
+  notif_channel: string;
   two_factor_enabled: boolean;
   driver_license_number: string | null;
   driver_license_verified_at: Date | null;
@@ -90,6 +92,7 @@ export const serializeUserMe = (
       avatar_path: user.avatar_path,
       user_type: 'passenger',
       status: user.status,
+      notif_channel: user.notif_channel,
       two_factor_enabled: user.two_factor_enabled,
       created_at: user.created_at,
       updated_at: user.updated_at,
@@ -108,6 +111,7 @@ export const serializeUserMe = (
     org_id: user.org_id,
     roles: user.user_roles.map((ur) => ur.role.slug),
     permissions: rules,
+    notif_channel: user.notif_channel,
     two_factor_enabled: user.two_factor_enabled,
     driver_license_number: user.driver_license_number,
     driver_license_verified_at: user.driver_license_verified_at,

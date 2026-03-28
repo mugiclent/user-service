@@ -3,6 +3,7 @@ import { AuthService } from '../services/auth.service.js';
 import { serializeUserForAuth } from '../models/serializers.js';
 import { sendAuthResponse, sendRefreshResponse, clearAuthCookies } from '../utils/sendAuthResponse.js';
 import type { AuthenticatedUser } from '../models/index.js';
+import { prisma } from '../models/index.js';
 
 export const AuthController = {
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -141,6 +142,27 @@ export const AuthController = {
       const user = req.user as AuthenticatedUser;
       await AuthService.logoutAll(user.id);
       clearAuthCookies(res);
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * POST /auth/register-device
+   * Store the FCM token for the authenticated user and switch notif_channel to 'app'.
+   * Called by the mobile app after FCM token is obtained.
+   */
+  async registerDevice(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { fcm_token } = req.body as { fcm_token: string };
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { fcm_token, notif_channel: 'app' },
+      });
+
       res.status(204).end();
     } catch (err) {
       next(err);

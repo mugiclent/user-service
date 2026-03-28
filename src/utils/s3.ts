@@ -35,16 +35,23 @@ const publicClient = new S3Client({
 // Content-type validation
 // ---------------------------------------------------------------------------
 
-const ALLOWED_CONTENT_TYPES: Record<string, string> = {
+const ALLOWED_IMAGE_TYPES: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png':  'png',
   'image/webp': 'webp',
   'image/gif':  'gif',
 };
 
-export const isAllowedContentType = (ct: string): boolean => ct in ALLOWED_CONTENT_TYPES;
+const ALLOWED_DOC_TYPES: Record<string, string> = {
+  ...ALLOWED_IMAGE_TYPES,
+  'application/pdf': 'pdf',
+};
 
-const extFor = (ct: string): string => ALLOWED_CONTENT_TYPES[ct] ?? 'bin';
+export const isAllowedContentType = (ct: string): boolean => ct in ALLOWED_IMAGE_TYPES;
+
+export const isAllowedDocContentType = (ct: string): boolean => ct in ALLOWED_DOC_TYPES;
+
+const extFor = (ct: string): string => ALLOWED_DOC_TYPES[ct] ?? 'bin';
 
 // ---------------------------------------------------------------------------
 // Presigned PUT URL
@@ -87,6 +94,9 @@ export const userAvatarKey = (userId: string, contentType: string): string =>
 
 export const orgLogoKey = (orgId: string, contentType: string): string =>
   `logos/${orgId}/${randomUUID()}.${extFor(contentType)}`;
+
+export const orgDocumentKey = (orgId: string, docType: string, contentType: string): string =>
+  `org-docs/${orgId}/${docType}/${randomUUID()}.${extFor(contentType)}`;
 
 // ---------------------------------------------------------------------------
 // Delete

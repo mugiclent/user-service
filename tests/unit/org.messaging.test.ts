@@ -9,7 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const publishAudit = vi.fn();
 const publishSms   = vi.fn();
 const publishMail  = vi.fn();
-vi.mock('../../src/utils/publishers.js', () => ({ publishAudit, publishSms, publishMail }));
+const notifyUser = vi.fn();
+vi.mock('../../src/utils/publishers.js', () => ({ publishAudit, publishSms, publishMail, notifyUser }));
 
 vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/utils/crypto.js')>();

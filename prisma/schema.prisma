@@ -34,6 +34,18 @@ enum OrgStatus {
   rejected
 }
 
+enum NotifChannel {
+  sms
+  email
+  app
+  all
+}
+
+enum OrgDocType {
+  business_certificate
+  rep_id
+}
+
 enum PermissionLevel {
   manage
   write
@@ -59,23 +71,27 @@ model Org {
   status                  OrgStatus @default(pending)
   tin                     String?   @unique @db.VarChar(50)
   license_number          String?   @unique @db.VarChar(100)
-  contact_email           String    @db.VarChar(255)
-  contact_phone           String    @db.VarChar(20)
-  address                 String?   @db.VarChar(500)
-  logo_path               String?
-  parent_org_id           String?
-  approved_by             String?   // user id of the approving Katisha Admin
-  approved_at             DateTime?
-  rejection_reason        String?
-  cooperative_approved_at DateTime? // set by parent cooperative's Org Admin (step 1 of 2)
-  created_at              DateTime  @default(now())
-  updated_at              DateTime  @updatedAt
-  deleted_at              DateTime?
+  contact_email              String    @db.VarChar(255)
+  contact_phone              String    @db.VarChar(20)
+  address                    String?   @db.VarChar(500)
+  logo_path                  String?
+  parent_org_id              String?
+  approved_by                String?   // user id of the approving Katisha Admin
+  approved_at                DateTime?
+  rejection_reason           String?
+  cooperative_approved_at    DateTime? // set by parent cooperative's Org Admin (step 1 of 2)
+  contact_email_verified_at  DateTime?
+  contact_otp_hash           String?   // SHA-256 of the email OTP sent during application
+  contact_otp_expires_at     DateTime?
+  created_at                 DateTime  @default(now())
+  updated_at                 DateTime  @updatedAt
+  deleted_at                 DateTime?
 
-  parent_org Org?  @relation("OrgHierarchy", fields: [parent_org_id], references: [id])
-  child_orgs Org[] @relation("OrgHierarchy")
+  parent_org Org?         @relation("OrgHierarchy", fields: [parent_org_id], references: [id])
+  child_orgs Org[]        @relation("OrgHierarchy")
   users      User[]
   roles      Role[]
+  documents  OrgDocument[]
 
   @@map("orgs")
 }
@@ -107,9 +123,11 @@ model User {
   password_hash              String?    // null for invited staff until they set a password
   user_type                  UserType
   status                     UserStatus @default(pending_verification)
-  two_factor_enabled         Boolean    @default(false)
+  two_factor_enabled         Boolean     @default(false)
   avatar_path                String?
-  org_id                     String?    // null for passengers
+  notif_channel              NotifChannel @default(sms)
+  fcm_token                  String?     // Firebase device token (set when user installs the app)
+  org_id                     String?     // null for passengers
   driver_license_number      String?    @db.VarChar(100)
   driver_license_verified_at DateTime?
   last_login_at              DateTime?
@@ -241,4 +259,18 @@ model Invitation {
   role Role @relation(fields: [role_id], references: [id])
 
   @@map("invitations")
+}
+
+model OrgDocument {
+  id         String     @id @default(uuid())
+  org_id     String
+  doc_type   OrgDocType
+  s3_path    String
+  mime_type  String     @db.VarChar(100)
+  created_at DateTime   @default(now())
+
+  org Org @relation(fields: [org_id], references: [id], onDelete: Cascade)
+
+  @@index([org_id])
+  @@map("org_documents")
 }

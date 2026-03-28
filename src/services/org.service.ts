@@ -217,6 +217,17 @@ export const OrgService = {
       } catch (err) {
         console.error('[org] Failed to set blacklist entry', err);
       }
+      publishSms({ type: 'org.suspended', phone_number: org.contact_phone, org_name: org.name });
+      if (org.contact_email) {
+        publishMail({ type: 'org.suspended', email: org.contact_email, org_name: org.name });
+      }
+    }
+
+    if (data.status === 'rejected') {
+      publishSms({ type: 'org.rejected', phone_number: org.contact_phone, org_name: org.name, reason: data.rejection_reason });
+      if (org.contact_email) {
+        publishMail({ type: 'org.rejected', email: org.contact_email, org_name: org.name, reason: data.rejection_reason });
+      }
     }
 
     publishAudit({ actor_id: requestingUser.id, action: 'update', resource: 'Org', resource_id: orgId });
@@ -250,6 +261,10 @@ export const OrgService = {
         data: { cooperative_approved_at: new Date() },
         ...withRelations,
       });
+
+      // Notify the child org's contact that step 1 of approval is done
+      publishSms({ type: 'org.cooperative_approved', phone_number: updated.contact_phone, org_name: updated.name });
+
       return serializeOrgFull(updated, false);
     }
 

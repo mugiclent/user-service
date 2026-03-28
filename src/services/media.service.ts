@@ -2,7 +2,9 @@ import {
   generatePresignedPutUrl,
   userAvatarKey,
   orgLogoKey,
+  orgDocumentKey,
   isAllowedContentType,
+  isAllowedDocContentType,
   type PresignedResult,
 } from '../utils/s3.js';
 import { AppError } from '../utils/AppError.js';
@@ -45,6 +47,26 @@ export const MediaService = {
       throw new AppError('UNSUPPORTED_MEDIA_TYPE', 415);
     }
     const key = orgLogoKey(orgId, contentType);
+    return generatePresignedPutUrl(key, contentType);
+  },
+
+  // ---------------------------------------------------------------------------
+  // Org application documents (PDF or image, stored under org-docs/)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Generate a presigned PUT URL for an org application document.
+   * doc_type: 'business_certificate' (PDF) or 'rep_id' (image or PDF)
+   */
+  async generateOrgDocumentPresignedUrl(
+    orgId: string,
+    docType: string,
+    contentType: string,
+  ): Promise<PresignedResult> {
+    if (!isAllowedDocContentType(contentType)) {
+      throw new AppError('UNSUPPORTED_MEDIA_TYPE', 415);
+    }
+    const key = orgDocumentKey(orgId, docType, contentType);
     return generatePresignedPutUrl(key, contentType);
   },
 };

@@ -6,6 +6,7 @@ import { buildRulesForUser, collectPermissions } from '../utils/ability.js';
 import { AppError } from '../utils/AppError.js';
 import { config } from '../config/index.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
+import { notifyUser } from '../utils/publishers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -94,6 +95,16 @@ export const TokenService = {
         where: { user_id: stored.user_id, revoked_at: null },
         data: { revoked_at: new Date() },
       });
+
+      // Notify the user that all their sessions were wiped (fire-and-forget)
+      const victim = await prisma.user.findUnique({ where: { id: stored.user_id } });
+      if (victim) {
+        notifyUser(victim, {
+          sms: { type: 'security.all_sessions_revoked', phone_number: victim.phone_number, first_name: victim.first_name },
+          push: { type: 'security.all_sessions_revoked' },
+        });
+      }
+
       throw new AppError('TOKEN_REUSE_DETECTED', 401);
     }
 
