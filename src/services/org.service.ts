@@ -172,7 +172,7 @@ export const OrgService = {
 
     const existing = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
-      select: { id: true, logo_path: true },
+      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true },
     });
     if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
     const oldLogoPath = existing.logo_path;
@@ -247,7 +247,20 @@ export const OrgService = {
       }
     }
 
-    publishAudit({ actor_id: requestingUser.id, action: 'update', resource: 'Org', resource_id: orgId });
+    // Fire audit after response is queued — delta captures what actually changed
+    setImmediate(() => {
+      const delta: Record<string, { from: unknown; to: unknown }> = {};
+      for (const f of ['name', 'contact_email', 'contact_phone', 'address', 'status', 'rejection_reason'] as const) {
+        if (existing[f] !== org[f]) delta[f] = { from: existing[f], to: org[f] };
+      }
+      publishAudit({
+        actor_id: requestingUser.id,
+        action: 'update',
+        resource: 'Org',
+        resource_id: orgId,
+        ...(Object.keys(delta).length > 0 ? { delta } : {}),
+      });
+    });
     return serializeOrgFull(org, admin);
   },
 

@@ -118,6 +118,9 @@ describe('OrgService.createOrg', () => {
   });
 });
 
+// Flush setImmediate callbacks so deferred publishAudit calls fire before assertions
+const flushImmediate = () => new Promise<void>((r) => setImmediate(r));
+
 // ── updateOrg ─────────────────────────────────────────────────────────────────
 
 describe('OrgService.updateOrg', () => {
@@ -129,6 +132,7 @@ describe('OrgService.updateOrg', () => {
 
   it('publishes audit update event', async () => {
     await OrgService.updateOrg(adminUser as never, 'org-1', { contact_phone: '+250788000001' });
+    await flushImmediate();
     expect(publishAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'update', resource: 'Org', resource_id: 'org-1' }),
     );
@@ -136,6 +140,7 @@ describe('OrgService.updateOrg', () => {
 
   it('publishes exactly 1 audit event on normal update', async () => {
     await OrgService.updateOrg(adminUser as never, 'org-1', { contact_phone: '+250788000001' });
+    await flushImmediate();
     expect(publishAudit).toHaveBeenCalledTimes(1);
   });
 

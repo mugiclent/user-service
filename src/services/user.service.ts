@@ -198,6 +198,26 @@ export const UserService = {
       });
     }
 
+    // Fire audit after response is queued — delta captures what actually changed
+    setImmediate(() => {
+      const delta: Record<string, { from: unknown; to: unknown }> = {};
+      for (const f of ['first_name', 'last_name', 'status', 'org_id'] as const) {
+        if (target[f] !== updated[f]) delta[f] = { from: target[f], to: updated[f] };
+      }
+      const beforeRoles = target.user_roles.map((ur) => ur.role.slug).sort();
+      const afterRoles  = updated.user_roles.map((ur) => ur.role.slug).sort();
+      if (JSON.stringify(beforeRoles) !== JSON.stringify(afterRoles)) {
+        delta['roles'] = { from: beforeRoles, to: afterRoles };
+      }
+      publishAudit({
+        actor_id: requestingUser.id,
+        action: 'update',
+        resource: 'User',
+        resource_id: targetId,
+        ...(Object.keys(delta).length > 0 ? { delta } : {}),
+      });
+    });
+
     return serializeUserFullProfile(updated, isAdmin);
   },
 
@@ -369,12 +389,13 @@ export const UserService = {
       push: { type: eventType },
     });
 
-    publishAudit({
+    setImmediate(() => publishAudit({
       actor_id: userId,
       action: enabled ? '2fa_enabled' : '2fa_disabled',
       resource: 'User',
       resource_id: userId,
-    });
+      delta: { two_factor_enabled: { from: !enabled, to: enabled } },
+    }));
     return { two_factor_enabled: user.two_factor_enabled };
   },
 };
