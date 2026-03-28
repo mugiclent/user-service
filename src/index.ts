@@ -4,6 +4,7 @@ import { createApp } from './loaders/express.js';
 import { initPrisma } from './loaders/prisma.js';
 import { initRedis } from './loaders/redis.js';
 import { initRabbitMQ, closeRabbitMQ } from './loaders/rabbitmq.js';
+import { initCleanup } from './loaders/cleanup.js';
 import { prisma } from './models/index.js';
 
 const start = async (): Promise<void> => {
@@ -11,6 +12,7 @@ const start = async (): Promise<void> => {
   await initPrisma();
   initRedis();
   await initRabbitMQ();
+  initCleanup();
 
   const app = createApp();
 

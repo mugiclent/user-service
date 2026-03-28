@@ -65,6 +65,7 @@ const mockFindUnique = vi.fn().mockResolvedValue({ ...baseOrg, parent_org: null,
 const mockUpdate = vi.fn().mockResolvedValue({ ...baseOrg, parent_org: null, child_orgs: [] });
 const mockRoleFindFirst = vi.fn().mockResolvedValue(null);
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
+const mockUserFindMany = vi.fn().mockResolvedValue([]);
 
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
@@ -79,6 +80,9 @@ vi.mock('../../src/models/index.js', () => ({
     },
     invitation: {
       create: mockInvitationCreate,
+    },
+    user: {
+      findMany: mockUserFindMany,
     },
   },
   Prisma: {},

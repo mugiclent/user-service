@@ -4,7 +4,7 @@ import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { slugify } from '../utils/slugify.js';
 import { generateRawToken, hashToken } from '../utils/crypto.js';
-import { publishAudit, publishSms, publishMail } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
 import {
@@ -217,10 +217,27 @@ export const OrgService = {
       } catch (err) {
         console.error('[org] Failed to set blacklist entry', err);
       }
+
+      // Notify the org contact directly (covers the principal contact even if they
+      // have no user account yet, e.g. during early org setup)
       publishSms({ type: 'org.suspended', phone_number: org.contact_phone, org_name: org.name });
       if (org.contact_email) {
         publishMail({ type: 'org.suspended', email: org.contact_email, org_name: org.name });
       }
+
+      // Also fan out to all active org users through their own notif_channel preferences
+      // (covers push for users who have the app installed)
+      prisma.user.findMany({
+        where: { org_id: orgId, deleted_at: null, status: 'active' },
+      }).then((users) => {
+        for (const u of users) {
+          notifyUser(u, {
+            sms:  { type: 'org.suspended', phone_number: u.phone_number, org_name: org.name },
+            mail: u.email ? { type: 'org.suspended', email: u.email, org_name: org.name } : undefined,
+            push: { type: 'org.suspended', data: { org_name: org.name } },
+          });
+        }
+      }).catch((err) => console.error('[org] Failed to notify users on suspension', err));
     }
 
     if (data.status === 'rejected') {

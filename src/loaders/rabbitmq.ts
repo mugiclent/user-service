@@ -13,7 +13,8 @@ let channel: Channel;
  *
  *  notifications exchange (topic)
  *    ├── sms  queue   ←── routing key: sms.notifications  (DLX → notifications.dlx)
- *    └── mail queue   ←── routing key: mail.notifications (DLX → notifications.dlx)
+ *    ├── mail queue   ←── routing key: mail.notifications (DLX → notifications.dlx)
+ *    └── push queue   ←── routing key: push.notifications (DLX → notifications.dlx)
  *
  *  notifications.dlx exchange (fanout) — dead-letter sink
  *    └── notifications.dead queue  ←── all rejected/expired messages land here
@@ -48,6 +49,11 @@ export const initRabbitMQ = async (): Promise<void> => {
     arguments: { 'x-dead-letter-exchange': 'notifications.dlx' },
   });
   await channel.bindQueue('mail', 'notifications', 'mail.notifications');
+  await channel.assertQueue('push', {
+    durable: true,
+    arguments: { 'x-dead-letter-exchange': 'notifications.dlx' },
+  });
+  await channel.bindQueue('push', 'notifications', 'push.notifications');
 };
 
 export const getRabbitMQChannel = (): Channel => {
