@@ -8,14 +8,73 @@ info:
 
     ## Authentication
 
-    All protected endpoints require a valid access token issued by `POST /auth/login` or `POST /auth/verify-phone`.
+    All protected endpoints require a valid JWT access token (15 min TTL by default).
 
-    **Mobile clients** — send `Authorization: Bearer <access_token>` and pass the refresh token the same way.
+    **Mobile clients** — include `X-Client-Type: mobile` and send `Authorization: Bearer <access_token>`.
+    Tokens are returned in the response body.
 
     **Web clients** — the server sets `access_token` and `refresh_token` as `HttpOnly` cookies automatically.
-    Send cookies back; no explicit Authorization header is needed for web.
+    No `Authorization` header is needed; cookies are sent back with every request.
 
-    Use `X-Client-Type: mobile` to signal mobile mode (affects token delivery and refresh/logout token source).
+    ## IAM — Roles & Permissions
+
+    Permissions are stored in the database and packed into the JWT as CASL rules at login time.
+    The `authorize(action, subject)` middleware checks these rules at the route level before the
+    service is called. Object-level scoping (e.g. `org_admin` can only see users in their org)
+    is enforced inside the service layer via Prisma query conditions.
+
+    Pre-set role slugs and their effective permissions:
+
+    | Role | Permissions | Scoping |
+    |---|---|---|
+    | `katisha_super_admin` | `manage:all` | none |
+    | `katisha_admin` | `manage:all` | none |
+    | `katisha_support` | `read:User`, `read:Org` | none |
+    | `org_admin` | `manage:User`, `write:Org` | own org only |
+    | `dispatcher` | `write:User`, `read:Org` | own org only |
+    | `driver` | `read+update:User` | self only (no create) |
+    | `passenger` | `read+update:User` | self only (no create) |
+
+    `write` expands to `create`, `read`, `update` (no delete). `manage` covers everything.
+
+    ## Organization Application Flow (public, no auth)
+
+    New organizations apply through a 3-step self-service flow:
+
+    1. **Get presigned URLs** — `GET /organizations/apply/documents/presigned-url` twice
+       (once per document type) and upload files directly to SeaweedFS.
+    2. **Submit application** — `POST /organizations/apply` with document paths.
+       Creates the org in `pending` status and sends an OTP to `contact_email`.
+    3. **Verify contact** — `POST /organizations/verify-contact` with the OTP.
+       Sets `contact_email_verified_at` and triggers admin review notification.
+
+    Katisha admins then use `POST /organizations/:id/approve` or `PATCH /organizations/:id`
+    (with `status: rejected`) to act on the application.
+
+    ## Presigned URL Upload Pattern
+
+    Avatar, logo, and document uploads never transit the Node.js server:
+
+    1. Call the relevant `presigned-url` endpoint → receive `{ upload_url, path }`.
+    2. `PUT` the file directly to `upload_url` with the **exact same** `Content-Type` header.
+    3. Commit by sending `path` in the subsequent `PATCH` or `POST` body.
+
+    The presigned URL expires in ~5 min (configurable via `S3_PRESIGNED_EXPIRES_IN`).
+    The full CDN URL is never stored — build it client-side: `CDN_BASE_URL + "/" + path`.
+
+    ## Push Notifications
+
+    The mobile app obtains an FCM token from the Firebase SDK and registers it via
+    `POST /auth/register-device`. This switches `notif_channel` to `app`. Subsequent
+    security events (new device login, password change, account suspension) and org lifecycle
+    events are delivered as push notifications based on the user's `notif_channel` preference.
+
+    | `notif_channel` | Delivery |
+    |---|---|
+    | `sms` | SMS only |
+    | `email` | Email only |
+    | `app` | Push (falls back to SMS if no FCM token) |
+    | `all` | SMS + email + push |
 
 servers:
   - url: /api/v1
@@ -23,11 +82,21 @@ servers:
 
 tags:
   - name: Auth
-    description: Registration, login, 2FA, password reset, token management
-  - name: Users
-    description: User profiles, invitations, avatar
+    description: |
+      Registration, login, 2FA, password reset, token lifecycle, device registration.
+      Start here — a valid access token is required by all other sections.
   - name: Organizations
-    description: Organization CRUD, approval, logo
+    description: |
+      Organization CRUD, two-step approval workflow, logo uploads.
+      Understand and create organizations before inviting users into them.
+  - name: Organization Applications
+    description: |
+      Public self-service flow for new organizations to apply for Katisha membership.
+      No authentication required. Three ordered steps: upload documents → submit application → verify contact email.
+  - name: Users
+    description: |
+      User profiles, avatar uploads, staff invitations, 2FA toggle, user administration.
+      Requires an organization to exist before staff can be invited into it.
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -40,7 +109,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
-      description: Access token. Mobile clients only — web uses the `access_token` cookie.
+      description: 'Mobile clients only — send `Authorization: Bearer <access_token>` with `X-Client-Type: mobile`.'
     CookieAuth:
       type: apiKey
       in: cookie
@@ -49,7 +118,7 @@ components:
 
   schemas:
 
-    # ── Error ────────────────────────────────────────────────────────────────
+    # ── Error ─────────────────────────────────────────────────────────────────
 
     Error:
       type: object
@@ -66,37 +135,37 @@ components:
               type: string
               example: Invalid credentials
 
-    # ── Auth ─────────────────────────────────────────────────────────────────
+    # ── Auth ──────────────────────────────────────────────────────────────────
 
     AuthUser:
       type: object
-      description: Minimal user object returned alongside tokens on every auth response.
+      description: Minimal user object returned alongside tokens on every successful auth response.
       properties:
-        id:           { type: string, format: uuid }
-        first_name:   { type: string }
-        last_name:    { type: string }
-        user_type:    { type: string, enum: [passenger, staff] }
-        avatar_path:   { type: string, nullable: true }
-        org_id:       { type: string, format: uuid, nullable: true }
+        id:                 { type: string, format: uuid }
+        first_name:         { type: string }
+        last_name:          { type: string }
+        user_type:          { type: string, enum: [passenger, staff] }
+        avatar_path:        { type: string, nullable: true }
+        org_id:             { type: string, format: uuid, nullable: true }
         roles:
           type: array
           items: { type: string }
           example: [org_admin]
-        status:       { type: string, enum: [active, pending_verification, suspended] }
+        status:             { type: string, enum: [active, pending_verification, suspended] }
         two_factor_enabled: { type: boolean }
 
     Tokens:
       type: object
       description: |
-        For mobile clients (`X-Client-Type: mobile`) these fields are present in the JSON response body.
-        For web clients the tokens are delivered as `HttpOnly` cookies and are **not** present in the body.
+        Present in the JSON body **only** for mobile clients (`X-Client-Type: mobile`).
+        For web clients tokens are delivered as `HttpOnly` cookies and omitted from the body.
       properties:
         access_token:
           type: string
-          description: Short-lived JWT (15 min). Mobile only.
+          description: 'Short-lived JWT (15 min by default). Send as `Authorization: Bearer` on subsequent requests.'
         refresh_token:
           type: string
-          description: Long-lived opaque token. Mobile only.
+          description: Long-lived opaque token. Use with `POST /auth/refresh` to rotate.
 
     AuthResponse:
       type: object
@@ -104,80 +173,122 @@ components:
         user:   { $ref: '#/components/schemas/AuthUser' }
         tokens: { $ref: '#/components/schemas/Tokens' }
 
-    # ── User ─────────────────────────────────────────────────────────────────
+    # ── User ──────────────────────────────────────────────────────────────────
+
+    CaslRule:
+      type: object
+      description: |
+        A single CASL rule packed into the JWT at login. The frontend can use these to gate
+        UI elements without extra API calls. Never rely on client-side rule evaluation for
+        security decisions — the server re-enforces them on every request.
+      properties:
+        action:
+          type: string
+          example: update
+        subject:
+          type: string
+          example: User
+        conditions:
+          type: object
+          nullable: true
+          description: 'Object-level scope, e.g. `{ "org_id": "uuid" }` (org scoping) or `{ "id": "userId" }` (self-only).'
+          example: { org_id: 'uuid' }
+        inverted:
+          type: boolean
+          nullable: true
 
     UserMePassenger:
       type: object
+      description: Profile returned by `GET /users/me` and `PATCH /users/me` for passenger accounts.
+      properties:
+        id:               { type: string, format: uuid }
+        first_name:       { type: string }
+        last_name:        { type: string }
+        phone_number:     { type: string, example: '+250780000001' }
+        phone_verified_at: { type: string, format: date-time, nullable: true }
+        email:
+          type: string
+          format: email
+          nullable: true
+          description: Always null for passengers — email is a staff-only field.
+        email_verified_at: { type: string, format: date-time, nullable: true }
+        avatar_path:      { type: string, nullable: true }
+        user_type:        { type: string, enum: [passenger] }
+        status:           { type: string, enum: [active, pending_verification, suspended] }
+        notif_channel:
+          type: string
+          enum: [sms, email, app, all]
+          description: |
+            Controls which channel(s) are used for security and lifecycle notifications.
+            Defaults to `sms` for passengers. Automatically switches to `app` when an FCM
+            token is registered via `POST /auth/register-device`.
+        two_factor_enabled: { type: boolean }
+        created_at:       { type: string, format: date-time }
+        updated_at:       { type: string, format: date-time }
+
+    UserMeStaff:
+      type: object
+      description: Profile returned by `GET /users/me` and `PATCH /users/me` for staff accounts. Includes roles and packed CASL rules.
       properties:
         id:               { type: string, format: uuid }
         first_name:       { type: string }
         last_name:        { type: string }
         phone_number:     { type: string, nullable: true, example: '+250780000001' }
-        phone_verified_at: { type: string, format: date-time, nullable: true }
         email:            { type: string, format: email, nullable: true }
-        email_verified_at: { type: string, format: date-time, nullable: true }
-        avatar_path:       { type: string, nullable: true }
-        user_type:        { type: string, enum: [passenger] }
-        status:           { type: string }
-        two_factor_enabled: { type: boolean }
-        created_at:       { type: string, format: date-time }
-        updated_at:       { type: string, format: date-time }
-
-    CaslRule:
-      type: object
-      description: A single packed CASL rule. Conditions are subject-specific.
-      properties:
-        action:     { type: string, example: update }
-        subject:    { type: string, example: User }
-        conditions: { type: object, nullable: true, example: { org_id: 'uuid' } }
-        inverted:   { type: boolean, nullable: true }
-
-    UserMeStaff:
-      type: object
-      properties:
-        id:               { type: string, format: uuid }
-        first_name:       { type: string }
-        last_name:        { type: string }
-        phone_number:     { type: string, nullable: true }
-        email:            { type: string, format: email, nullable: true }
-        avatar_path:       { type: string, nullable: true }
+        avatar_path:      { type: string, nullable: true }
         user_type:        { type: string, enum: [staff] }
-        status:           { type: string }
+        status:           { type: string, enum: [active, pending_verification, suspended] }
         org_id:           { type: string, format: uuid, nullable: true }
         roles:
           type: array
           items: { type: string }
+          example: [org_admin]
         permissions:
           type: array
           items: { $ref: '#/components/schemas/CaslRule' }
-          description: Current CASL rules — use these for frontend feature-flag rendering.
+          description: Packed CASL rules derived from this user's DB role-permission assignments. Use for frontend feature-flag rendering.
+        notif_channel:
+          type: string
+          enum: [sms, email, app, all]
+          description: |
+            Controls notification delivery. Defaults to `all` for staff (SMS + email + push).
+            Automatically switches to `app` when an FCM token is registered.
         two_factor_enabled: { type: boolean }
-        driver_license_number:       { type: string, nullable: true }
-        driver_license_verified_at:  { type: string, format: date-time, nullable: true }
+        driver_license_number:      { type: string, nullable: true }
+        driver_license_verified_at: { type: string, format: date-time, nullable: true }
         last_login_at:    { type: string, format: date-time, nullable: true }
         created_at:       { type: string, format: date-time }
         updated_at:       { type: string, format: date-time }
 
     UserListItem:
       type: object
+      description: Compact user row returned by `GET /users`.
       properties:
         id:           { type: string, format: uuid }
         first_name:   { type: string }
         last_name:    { type: string }
         email:        { type: string, format: email, nullable: true }
-        phone_number: { type: string, nullable: true, description: Masked to +250***123 for non-admin callers }
-        avatar_path:   { type: string, nullable: true }
-        user_type:    { type: string }
-        status:       { type: string }
+        phone_number:
+          type: string
+          nullable: true
+          description: Masked to `+250***123` format for non-admin callers. Full number for platform admins.
+        avatar_path:  { type: string, nullable: true }
+        user_type:    { type: string, enum: [passenger, staff] }
+        status:       { type: string, enum: [active, pending_verification, suspended] }
         roles:
           type: array
           items: { type: string }
         org_id:       { type: string, format: uuid, nullable: true }
-        last_login_at: { type: string, format: date-time, nullable: true, description: Admin only }
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Included only for platform admin callers.
         created_at:   { type: string, format: date-time }
 
     UserFullProfile:
       type: object
+      description: Full user profile returned by `GET /users/:id` and `PATCH /users/:id`.
       properties:
         id:               { type: string, format: uuid }
         first_name:       { type: string }
@@ -186,38 +297,56 @@ components:
         phone_number:     { type: string, nullable: true }
         phone_verified_at: { type: string, format: date-time, nullable: true }
         email_verified_at: { type: string, format: date-time, nullable: true }
-        avatar_path:       { type: string, nullable: true }
-        user_type:        { type: string }
-        status:           { type: string }
+        avatar_path:      { type: string, nullable: true }
+        user_type:        { type: string, enum: [passenger, staff] }
+        status:           { type: string, enum: [active, pending_verification, suspended] }
         org_id:           { type: string, format: uuid, nullable: true }
         roles:
           type: array
           items: { type: string }
-        driver_license_number:       { type: string, nullable: true, description: Admin only }
-        driver_license_verified_at:  { type: string, format: date-time, nullable: true, description: Admin only }
-        last_login_at:    { type: string, format: date-time, nullable: true, description: Admin only }
-        created_at:       { type: string, format: date-time }
-        updated_at:       { type: string, format: date-time }
+        driver_license_number:
+          type: string
+          nullable: true
+          description: Admin only — omitted for non-admin callers.
+        driver_license_verified_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Admin only — omitted for non-admin callers.
+        last_login_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Admin only — omitted for non-admin callers.
+        created_at:  { type: string, format: date-time }
+        updated_at:  { type: string, format: date-time }
 
-    PaginationMeta:
+    # ── Organization ──────────────────────────────────────────────────────────
+
+    OrgCreated:
       type: object
+      description: Response body for `POST /organizations`. Lighter shape — logo and approval fields are not set yet.
       properties:
-        total: { type: integer }
-        page:  { type: integer }
-        limit: { type: integer }
-        pages: { type: integer }
-
-    # ── Organization ─────────────────────────────────────────────────────────
+        id:            { type: string, format: uuid }
+        name:          { type: string }
+        slug:          { type: string, description: URL-safe version of name, auto-generated. }
+        org_type:      { type: string, enum: [company, cooperative] }
+        status:        { type: string, enum: [pending, active, suspended, rejected] }
+        contact_email: { type: string, format: email }
+        contact_phone: { type: string }
+        parent_org_id: { type: string, format: uuid, nullable: true }
+        created_at:    { type: string, format: date-time }
 
     OrgListItem:
       type: object
+      description: Compact org row returned by `GET /organizations`.
       properties:
         id:             { type: string, format: uuid }
         name:           { type: string }
         slug:           { type: string }
         org_type:       { type: string, enum: [company, cooperative] }
         status:         { type: string, enum: [pending, active, suspended, rejected] }
-        logo_path:       { type: string, nullable: true }
+        logo_path:      { type: string, nullable: true }
         contact_email:  { type: string, format: email }
         contact_phone:  { type: string }
         parent_org_id:  { type: string, format: uuid, nullable: true }
@@ -226,13 +355,17 @@ components:
 
     OrgFull:
       type: object
+      description: |
+        Full organization detail. Returned by `GET /organizations/:id`, `GET /organizations/me`,
+        `PATCH /organizations/:id`, and `POST /organizations/:id/approve`.
+        Some fields are omitted for non-admin callers (see field descriptions).
       properties:
         id:             { type: string, format: uuid }
         name:           { type: string }
         slug:           { type: string }
         org_type:       { type: string, enum: [company, cooperative] }
         status:         { type: string, enum: [pending, active, suspended, rejected] }
-        logo_path:       { type: string, nullable: true }
+        logo_path:      { type: string, nullable: true }
         contact_email:  { type: string, format: email }
         contact_phone:  { type: string }
         address:        { type: string, nullable: true }
@@ -249,7 +382,7 @@ components:
             status: { type: string }
         child_orgs:
           type: array
-          description: Admin only
+          description: Admin only — omitted for non-admin callers.
           items:
             type: object
             properties:
@@ -257,10 +390,14 @@ components:
               name:   { type: string }
               slug:   { type: string }
               status: { type: string }
-        approved_by:  { type: string, format: uuid, nullable: true, description: Admin only }
-        approved_at:  { type: string, format: date-time, nullable: true }
-        created_at:   { type: string, format: date-time }
-        updated_at:   { type: string, format: date-time }
+        approved_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: Admin only — UUID of the katisha_admin who ran the final approval.
+        approved_at:    { type: string, format: date-time, nullable: true }
+        created_at:     { type: string, format: date-time }
+        updated_at:     { type: string, format: date-time }
 
   responses:
     Unauthorized:
@@ -285,7 +422,7 @@ components:
           example:
             error: { code: NOT_FOUND }
     UnprocessableEntity:
-      description: Validation error
+      description: Request body failed Joi validation
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
@@ -301,22 +438,30 @@ security:
   - CookieAuth: []
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths — ordered by dependency: Auth → Organizations → Org Applications → Users
+#
+# Within each group: creation/discovery first, then operations that depend on
+# the created resource, then deletion/cleanup last.
 # ---------------------------------------------------------------------------
 
 paths:
 
-  # ── Auth ──────────────────────────────────────────────────────────────────
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  AUTH                                                                    ║
+  # ║  Step 1: create an account. Step 2: activate it. Step 3: log in.        ║
+  # ║  Everything else requires a valid access token from one of these flows. ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
 
   /auth/register:
     post:
       tags: [Auth]
-      summary: Register a new passenger
+      summary: Register a new passenger account
       description: |
-        Passengers self-register with phone + password. Staff accounts are created via `POST /users/invite`.
+        Creates a `passenger` account in `pending_verification` status.
+        On success, sends a welcome SMS and a 6-digit OTP to `phone_number`.
+        The account cannot log in until `POST /auth/verify-phone` is called with the OTP.
 
-        On success: sends a welcome SMS and a 6-digit OTP to the provided phone number.
-        The account is in `pending_verification` status until `POST /auth/verify-phone` is called.
+        Staff accounts are provisioned via `POST /users/invite` (admin-only flow).
       security: []
       requestBody:
         required: true
@@ -328,18 +473,24 @@ paths:
               properties:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
-                phone_number: { type: string, pattern: '^\+\d{7,15}$', example: '+250780000001' }
+                phone_number: { type: string, pattern: '^\+\d{7,15}$', example: '+250780000001', description: E.164 format required. }
                 password:     { type: string, minLength: 8, maxLength: 128 }
       responses:
         '201':
-          description: User created — OTP sent to phone
+          description: Account created — OTP sent to phone
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  user_id:    { type: string, format: uuid }
-                  expires_in: { type: integer, description: OTP TTL in seconds, example: 600 }
+                  user_id:
+                    type: string
+                    format: uuid
+                    description: Pass to `POST /auth/verify-phone`.
+                  expires_in:
+                    type: integer
+                    description: OTP TTL in seconds (default 300 = 5 min).
+                    example: 300
         '409':
           description: Phone number already registered
           content:
@@ -351,10 +502,11 @@ paths:
   /auth/verify-phone:
     post:
       tags: [Auth]
-      summary: Verify phone number with OTP
+      summary: Verify phone number and activate account
       description: |
         Activates the account (`pending_verification` → `active`) and issues the first token pair.
         This is the only way a self-registered passenger obtains tokens.
+        The OTP is single-use and deleted on success.
       security: []
       requestBody:
         required: true
@@ -365,8 +517,8 @@ paths:
               required: [user_id, otp]
               properties:
                 user_id:     { type: string, format: uuid }
-                otp:         { type: string, minLength: 6, maxLength: 6 }
-                device_name: { type: string, maxLength: 200 }
+                otp:         { type: string, minLength: 6, maxLength: 6, description: 6-digit code sent to phone. }
+                device_name: { type: string, maxLength: 200, description: 'Optional label stored with the refresh token, e.g. "iPhone 15 Pro".' }
       responses:
         '200':
           description: Phone verified — tokens issued
@@ -374,26 +526,33 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '400':
-          description: Invalid or expired OTP
+          description: Invalid OTP
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: OTP_INVALID } }
+        '410':
+          description: OTP expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_EXPIRED } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /auth/login:
     post:
       tags: [Auth]
-      summary: Login with phone/email + password
+      summary: Login with phone or email + password
       description: |
-        Accepts either `phone_number` (E.164) or `email` as `identifier`.
+        Accepts a phone number in E.164 format or an email address as `identifier`.
 
-        **2FA disabled** → returns `200` with tokens.
+        **2FA disabled** → `200` with full `AuthResponse`.
 
-        **2FA enabled** → returns `202` with `{ requires_2fa: true, user_id, expires_in }`.
-        Client must then call `POST /auth/verify-2fa` with the OTP sent by SMS.
+        **2FA enabled** → `202` with `{ requires_2fa: true, user_id, expires_in }`.
+        An OTP is sent to the user's phone. The client must follow up with `POST /auth/verify-2fa`.
 
-        Rate-limited to 10 attempts per 15 min per IP.
+        Rate-limited to **5 attempts per 15 min per IP** by default.
+        Configurable via `RATE_LIMIT_LOGIN_MAX` and `RATE_LIMIT_LOGIN_WINDOW_SECONDS`.
       security: []
       requestBody:
         required: true
@@ -403,25 +562,25 @@ paths:
               type: object
               required: [identifier, password]
               properties:
-                identifier:  { type: string, example: '+250780000001' }
+                identifier:  { type: string, example: '+250780000001', description: 'Phone number (E.164) or email address.' }
                 password:    { type: string, minLength: 8, maxLength: 128 }
                 device_name: { type: string, maxLength: 200 }
       responses:
         '200':
-          description: Login successful (2FA disabled)
+          description: Login successful — tokens issued
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '202':
-          description: 2FA OTP sent — awaiting verification
+          description: 2FA required — OTP sent to phone
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   requires_2fa: { type: boolean, enum: [true] }
-                  user_id:      { type: string, format: uuid }
-                  expires_in:   { type: integer, example: 600 }
+                  user_id:      { type: string, format: uuid, description: Pass to POST /auth/verify-2fa. }
+                  expires_in:   { type: integer, example: 300, description: OTP TTL in seconds. }
         '401':
           description: Invalid credentials
           content:
@@ -429,23 +588,25 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: INVALID_CREDENTIALS } }
         '403':
-          description: Account suspended or not yet verified
+          description: Account suspended (`ACCOUNT_SUSPENDED`) or phone not yet verified (`PHONE_NOT_VERIFIED`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429':
           description: Rate limit exceeded
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: RATE_LIMIT_EXCEEDED } }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /auth/verify-2fa:
     post:
       tags: [Auth]
       summary: Complete 2FA login
-      description: 'Step 2 when `login` returns `requires_2fa: true`. Verifies the OTP and issues tokens.'
+      description: |
+        Step 2 when `POST /auth/login` returns `requires_2fa: true`.
+        Verifies the OTP sent to the user's phone and issues tokens. The OTP is single-use.
       security: []
       requestBody:
         required: true
@@ -465,22 +626,32 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '400':
-          description: Invalid or expired OTP
+          description: Invalid OTP
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: OTP_INVALID } }
+        '410':
+          description: OTP expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_EXPIRED } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /auth/forgot-password:
     post:
       tags: [Auth]
-      summary: Request a password reset OTP
+      summary: Request a password-reset OTP
       description: |
-        Silently sends a 6-digit OTP to the user's phone/email. Always returns 204 regardless of
-        whether the identifier exists — prevents user enumeration.
+        Sends a 6-digit OTP to the user's phone or email depending on whether `identifier` is
+        a phone number or email address.
 
-        Rate-limited to 5 attempts per 15 min per IP.
+        Always returns `204` regardless of whether the identifier exists — this prevents
+        user enumeration attacks.
+
+        Rate-limited to **3 attempts per hour per IP** by default.
+        Configurable via `RATE_LIMIT_RESET_MAX` and `RATE_LIMIT_RESET_WINDOW_SECONDS`.
       security: []
       requestBody:
         required: true
@@ -490,20 +661,25 @@ paths:
               type: object
               required: [identifier]
               properties:
-                identifier: { type: string, example: '+250780000001' }
+                identifier: { type: string, example: '+250780000001', description: 'Phone number (E.164) or email address.' }
       responses:
         '204': { description: OTP sent (or silently ignored if identifier not found) }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
         '429':
           description: Rate limit exceeded
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: RATE_LIMIT_EXCEEDED } }
 
   /auth/reset-password:
     post:
       tags: [Auth]
-      summary: Reset password using OTP
-      description: Verifies the OTP and sets a new password. Revokes all existing sessions.
+      summary: Reset password with OTP
+      description: |
+        Verifies the OTP issued by `POST /auth/forgot-password` and sets a new password.
+        All existing refresh token sessions are revoked immediately.
+        A `security.password_changed` notification is sent via SMS, email, and push.
       security: []
       requestBody:
         required: true
@@ -513,16 +689,23 @@ paths:
               type: object
               required: [identifier, otp, new_password]
               properties:
-                identifier:   { type: string }
+                identifier:   { type: string, description: Same identifier used for forgot-password. }
                 otp:          { type: string, minLength: 6, maxLength: 6 }
                 new_password: { type: string, minLength: 8, maxLength: 128 }
       responses:
-        '204': { description: Password reset successful — all sessions revoked }
+        '204': { description: Password updated — all sessions revoked }
         '400':
-          description: Invalid or expired OTP
+          description: Invalid OTP
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_INVALID } }
+        '410':
+          description: OTP expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_EXPIRED } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /auth/refresh:
@@ -530,19 +713,20 @@ paths:
       tags: [Auth]
       summary: Rotate refresh token
       description: |
-        Issues a new access token + refresh token and invalidates the old refresh token.
+        Issues a new access + refresh token pair and invalidates the old refresh token.
 
         **Mobile** — send `Authorization: Bearer <refresh_token>` with `X-Client-Type: mobile`.
 
-        **Web** — refresh token is read from the `refresh_token` cookie automatically.
+        **Web** — the refresh token is read from the `refresh_token` cookie automatically.
 
-        Reuse detection: if an already-revoked token is presented, all sessions for that user are wiped.
+        **Reuse detection:** if an already-revoked token is submitted, all sessions for that
+        user are wiped and a `security.all_sessions_revoked` notification is sent via SMS and push.
       security: []
       parameters:
         - in: header
           name: X-Client-Type
           schema: { type: string, enum: [mobile] }
-          description: Required for mobile clients to deliver the token via Authorization header.
+          description: Required for mobile clients.
       responses:
         '200':
           description: New tokens issued
@@ -553,7 +737,7 @@ paths:
                 properties:
                   tokens: { $ref: '#/components/schemas/Tokens' }
         '401':
-          description: Refresh token missing, invalid, or revoked
+          description: Refresh token missing, invalid, expired, or user is suspended
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -561,26 +745,579 @@ paths:
   /auth/logout:
     post:
       tags: [Auth]
-      summary: Logout (revoke current refresh token)
+      summary: Logout — revoke current session
       description: |
-        Revokes the current session. Idempotent — safe to call even if already logged out.
+        Revokes the current session's refresh token. Idempotent — safe to call multiple times.
 
-        **Mobile** — send refresh token via `Authorization: Bearer`.
-        **Web** — read from `refresh_token` cookie. Clears auth cookies on response.
+        **Mobile** — send refresh token via `Authorization: Bearer` with `X-Client-Type: mobile`.
+        **Web** — reads from the `refresh_token` cookie; clears both auth cookies on response.
       security: []
       responses:
-        '204': { description: Logged out }
+        '204': { description: Session revoked }
 
   /auth/logout-all:
     post:
       tags: [Auth]
       summary: Logout all sessions
-      description: Revokes all refresh tokens for the authenticated user. Requires a valid access token.
+      description: |
+        Revokes all refresh tokens for the authenticated user across all devices.
+        Requires a valid access token (not a refresh token).
       responses:
         '204': { description: All sessions revoked }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
-  # ── Users ─────────────────────────────────────────────────────────────────
+  /auth/register-device:
+    post:
+      tags: [Auth]
+      summary: Register FCM push token
+      description: |
+        Stores the Firebase Cloud Messaging (FCM) token for the authenticated user's device
+        and switches `notif_channel` to `app`.
+
+        After this call, security events (new device login, password change, account suspension)
+        and org lifecycle events are delivered as push notifications to this device.
+        If `notif_channel` was previously `all`, push is added on top of SMS and email.
+
+        Call once after the mobile app obtains a token from the Firebase SDK.
+        Re-call whenever Firebase refreshes the token (e.g. after app reinstall).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fcm_token]
+              properties:
+                fcm_token:
+                  type: string
+                  maxLength: 500
+                  description: FCM registration token from the Firebase SDK.
+      responses:
+        '204': { description: FCM token saved — notif_channel switched to app }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  ORGANIZATIONS                                                           ║
+  # ║  Create and understand organizations before inviting users into them.    ║
+  # ║  Order: create → list/read → update → approve → logo uploads            ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  /organizations:
+    post:
+      tags: [Organizations]
+      summary: Create an organization (admin)
+      description: |
+        Creates an organization directly. Use this for orgs provisioned by Katisha staff
+        on behalf of a client. For the self-service public flow, see `POST /organizations/apply`.
+
+        **Required permission:** `create:Org`
+        → `katisha_admin`, `katisha_super_admin`
+
+        The org name is slugified automatically. Duplicate names return `409`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, org_type, contact_email, contact_phone]
+              properties:
+                name:           { type: string, maxLength: 200 }
+                org_type:       { type: string, enum: [company, cooperative] }
+                contact_email:  { type: string, format: email, maxLength: 255 }
+                contact_phone:  { type: string, maxLength: 20, description: 'E.164 format recommended.' }
+                address:        { type: string, maxLength: 500 }
+                tin:            { type: string, maxLength: 50 }
+                license_number: { type: string, maxLength: 100 }
+                parent_org_id:  { type: string, format: uuid, description: Parent cooperative org for member companies. }
+      responses:
+        '201':
+          description: Organization created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgCreated' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Organization name already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ORG_ALREADY_EXISTS } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+    get:
+      tags: [Organizations]
+      summary: List organizations
+      description: |
+        **Required permission:** `read:Org`
+
+        Platform admins see all orgs. `org_admin` and `dispatcher` see only their own org.
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - in: query
+          name: status
+          schema: { type: string, enum: [pending, active, suspended, rejected] }
+        - in: query
+          name: org_type
+          schema: { type: string, enum: [company, cooperative] }
+      responses:
+        '200':
+          description: Paginated org list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrgListItem' }
+                  total: { type: integer, description: Total records matching the filters. }
+                  page:  { type: integer }
+                  limit: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /organizations/me:
+    get:
+      tags: [Organizations]
+      summary: Get own organization
+      description: |
+        Returns the organization the authenticated user belongs to (`org_id` from their JWT).
+        No permission gate — any authenticated user with an `org_id` may call this.
+        Returns `404` for users with no org (passengers, platform admins).
+      responses:
+        '200':
+          description: Own organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: User has no associated organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ORG_NOT_FOUND } }
+
+  /organizations/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [Organizations]
+      summary: Get organization by ID
+      description: |
+        **Required permission:** `read:Org`
+
+        Non-admin callers (`org_admin`, `dispatcher`) may only read their own org.
+        The service returns `403` if the caller's `org_id` does not match the requested `id`.
+      responses:
+        '200':
+          description: Organization detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+    patch:
+      tags: [Organizations]
+      summary: Update organization
+      description: |
+        **Required permission:** `update:Org`
+
+        Field-level rules:
+        - `status` and `rejection_reason` — platform admins only. `org_admin` callers receive `403` if these fields are included.
+        - `logo_path` — use `path` from the logo presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
+        - `status: suspended` — blacklists all active access tokens for this org's users in Redis (15 min TTL). Sends `org.suspended` notifications directly to the org contact and fans out to all active org users via their `notif_channel` preference.
+        - `status: rejected` — sends `org.rejected` notifications to the org contact.
+        - `status: active` — can be used by admins to directly approve without the two-step flow.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name:             { type: string, maxLength: 200 }
+                contact_email:    { type: string, format: email, maxLength: 255 }
+                contact_phone:    { type: string, maxLength: 20 }
+                address:          { type: string, maxLength: 500 }
+                logo_path:        { type: string, maxLength: 500, nullable: true, description: 'S3 path from logo presigned-url. null removes the logo.' }
+                status:
+                  type: string
+                  enum: [active, suspended, rejected]
+                  description: Admin only. suspended triggers token blacklist and notifications.
+                rejection_reason: { type: string, maxLength: 1000, description: Admin only. Include when setting status to rejected. }
+      responses:
+        '200':
+          description: Updated organization
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /organizations/{id}/approve:
+    post:
+      tags: [Organizations]
+      summary: Approve a pending organization (two-step)
+      description: |
+        Handles a **two-step approval** process. Behavior depends on the caller's role:
+
+        ---
+
+        **Step 1 — Cooperative pre-approval** (`org_admin` of the parent cooperative)
+
+        Applies only to `cooperative` child orgs that require parent sign-off.
+        Sets `cooperative_approved_at` on the child org. Org status remains `pending`.
+        Sends an `org.cooperative_approved` SMS to the child org's contact phone.
+        The caller's `org_id` must match the child org's `parent_org_id`, otherwise `403`.
+
+        ---
+
+        **Step 2 — Final Katisha approval** (`katisha_admin` or `katisha_super_admin`)
+
+        Transitions the org from `pending` to `active`. Sets `approved_by` and `approved_at`.
+
+        For `cooperative` orgs, Step 1 must be completed first — attempting Step 2 without
+        `cooperative_approved_at` set returns `400 COOPERATIVE_APPROVAL_REQUIRED`.
+
+        On final approval:
+        - Creates an `Invitation` record for the org contact to register as `org_admin`.
+        - Sends `org_approved.sms` and `org_approved.mail` to the org contact with the invite link (7-day expiry).
+
+        ---
+
+        **Required permission:** `update:Org`
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: |
+            Step 1: Pre-approved (status still `pending`, `cooperative_approved_at` is set).
+            Step 2: Fully approved (status `active`, invite sent to org contact).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrgFull' }
+        '400':
+          description: |
+            Org is not in `pending` status (`ORG_NOT_PENDING`) or
+            cooperative pre-approval has not been completed (`COOPERATIVE_APPROVAL_REQUIRED`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /organizations/me/logo/presigned-url:
+    get:
+      tags: [Organizations]
+      summary: Get presigned PUT URL for own org's logo
+      description: |
+        Returns a short-lived S3 presigned URL for uploading the organization logo directly to SeaweedFS.
+        Intended for `org_admin` users to manage their own org's logo.
+
+        **Required permission:** `update:Org`
+
+        **Upload flow:**
+        1. Call with `?content_type=image/png`.
+        2. `PUT` the image to `upload_url` with the matching `Content-Type` header.
+        3. `PATCH /organizations/:id` with `{ "logo_path": "<path>" }` to persist.
+
+        To **remove** the logo: `PATCH /organizations/:id` with `{ "logo_path": null }`.
+        Build the CDN URL client-side: `CDN_BASE_URL + "/" + logo_path`.
+      parameters:
+        - in: query
+          name: content_type
+          required: true
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp, image/gif]
+      responses:
+        '200':
+          description: Presigned URL ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url: { type: string, format: uri, description: 'PUT the image here. Expires in ~5 min.' }
+                  key:        { type: string, example: 'logos/org-id/uuid.png', description: Same value as path. }
+                  path:       { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id.' }
+        '400':
+          description: |
+            Missing `content_type` query parameter (`MISSING_CONTENT_TYPE`), or the authenticated
+            user has no `org_id` (`NO_ORG` — should not occur for a valid `org_admin`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: UNSUPPORTED_MEDIA_TYPE } }
+
+  /organizations/{id}/logo/presigned-url:
+    get:
+      tags: [Organizations]
+      summary: Get presigned PUT URL for any org's logo (admin)
+      description: |
+        Same upload flow as `GET /organizations/me/logo/presigned-url` but targets a specific
+        org by ID. Intended for platform admins to manage logos for any org.
+
+        **Required permission:** `update:Org`
+        → `katisha_admin`, `katisha_super_admin` in practice
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+        - in: query
+          name: content_type
+          required: true
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp, image/gif]
+      responses:
+        '200':
+          description: Presigned URL ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url: { type: string, format: uri, description: 'PUT the image here. Expires in ~5 min.' }
+                  key:        { type: string, example: 'logos/org-id/uuid.png', description: Same value as path. }
+                  path:       { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id.' }
+        '400':
+          description: Missing content_type query parameter
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: UNSUPPORTED_MEDIA_TYPE } }
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  ORGANIZATION APPLICATIONS                                               ║
+  # ║  Public 3-step flow. No auth required.                                  ║
+  # ║  Order: upload docs → submit application → verify contact email         ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  /organizations/apply/documents/presigned-url:
+    get:
+      tags: [Organization Applications]
+      summary: 'Step 1 — Get presigned PUT URL for an application document'
+      description: |
+        Returns a short-lived S3 presigned URL for uploading org application documents
+        directly to SeaweedFS. **No authentication required.**
+
+        Call this endpoint **twice** before submitting an application — once per document type.
+        Collect both returned `path` values and pass them to `POST /organizations/apply`.
+
+        Accepted content types per document type:
+
+        | `doc_type` | Accepted `content_type` |
+        |---|---|
+        | `business_certificate` | `application/pdf` only |
+        | `rep_id` | `application/pdf`, `image/jpeg`, `image/png`, `image/webp` |
+
+        The presigned URL expires in ~5 min. Upload must complete before expiry.
+      security: []
+      parameters:
+        - in: query
+          name: doc_type
+          required: true
+          schema:
+            type: string
+            enum: [business_certificate, rep_id]
+          description: Type of document being uploaded.
+        - in: query
+          name: content_type
+          required: true
+          schema:
+            type: string
+            enum: [application/pdf, image/jpeg, image/png, image/webp]
+          description: MIME type of the file. Must exactly match the Content-Type header used in the PUT request.
+      responses:
+        '200':
+          description: Presigned URL ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url:
+                    type: string
+                    format: uri
+                    description: 'PUT the document here with the matching Content-Type header. Expires in ~5 min.'
+                  key:
+                    type: string
+                    example: 'org-docs/pending/business_certificate/uuid.pdf'
+                    description: Same value as `path`.
+                  path:
+                    type: string
+                    example: 'org-docs/pending/business_certificate/uuid.pdf'
+                    description: 'Pass as business_certificate_path or rep_id_path in POST /organizations/apply.'
+        '400':
+          description: Missing or invalid query parameters
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Content type not allowed for the given document type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: UNSUPPORTED_MEDIA_TYPE } }
+
+  /organizations/apply:
+    post:
+      tags: [Organization Applications]
+      summary: 'Step 2 — Submit an organization application'
+      description: |
+        Public endpoint — no authentication required.
+
+        Creates an org record in `pending` status with the uploaded document paths and sends
+        a 6-digit OTP to `contact_email` for ownership verification.
+
+        **Prerequisites:** upload both documents using `GET /organizations/apply/documents/presigned-url`
+        and supply the returned `path` values as `business_certificate_path` and `rep_id_path`.
+
+        No admin review is triggered until `POST /organizations/verify-contact` succeeds.
+        The OTP expires after **10 minutes**. If it expires, the application must be resubmitted
+        (duplicate name check will return `409` — applicant should contact support).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, org_type, contact_email, contact_phone, business_certificate_path, rep_id_path]
+              properties:
+                name:           { type: string, maxLength: 200 }
+                org_type:       { type: string, enum: [company, cooperative] }
+                contact_email:  { type: string, format: email, maxLength: 255, description: A 6-digit OTP will be emailed here for verification. }
+                contact_phone:  { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
+                address:        { type: string, maxLength: 500 }
+                tin:            { type: string, maxLength: 50 }
+                license_number: { type: string, maxLength: 100 }
+                parent_org_id:  { type: string, format: uuid, description: ID of the parent cooperative org, if applicable. }
+                business_certificate_path:
+                  type: string
+                  maxLength: 500
+                  description: S3 path from GET /organizations/apply/documents/presigned-url with doc_type=business_certificate.
+                rep_id_path:
+                  type: string
+                  maxLength: 500
+                  description: S3 path from GET /organizations/apply/documents/presigned-url with doc_type=rep_id.
+      responses:
+        '202':
+          description: Application received — OTP sent to contact_email
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  org_id:
+                    type: string
+                    format: uuid
+                    description: Pass to POST /organizations/verify-contact.
+                  message:
+                    type: string
+                    example: 'Application received. Please check your email for a verification code.'
+        '409':
+          description: Organization name or slug already registered
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ORG_ALREADY_EXISTS } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /organizations/verify-contact:
+    post:
+      tags: [Organization Applications]
+      summary: 'Step 3 — Verify org contact email with OTP'
+      description: |
+        Public endpoint — no authentication required.
+
+        Verifies the 6-digit OTP emailed during `POST /organizations/apply`.
+
+        On success:
+        - Sets `contact_email_verified_at` on the org record.
+        - Sends a confirmation SMS + email to the applicant.
+        - Sends an `org.application_received` email to Katisha admins (`ADMIN_NOTIFICATION_EMAIL`
+          env var) to trigger manual review.
+
+        Katisha admins then use `POST /organizations/:id/approve` or
+        `PATCH /organizations/:id` with `status: rejected` to finalize the application.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, otp]
+              properties:
+                org_id: { type: string, format: uuid }
+                otp:    { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '204': { description: Contact verified — admins notified }
+        '400':
+          description: Invalid OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_OTP } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Contact email already verified for this org
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: CONTACT_ALREADY_VERIFIED } }
+        '410':
+          description: OTP expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_EXPIRED } }
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  USERS                                                                   ║
+  # ║  Manage your own profile first, then invite and administer others.       ║
+  # ║  Order: own profile → avatar → security settings → invite → accept →    ║
+  # ║         list all → get/update/delete by ID                               ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
 
   /users/me:
     get:
@@ -607,8 +1344,12 @@ paths:
       tags: [Users]
       summary: Update own profile
       description: |
-        Passengers may update `first_name`, `last_name` only — `email` is rejected for passenger accounts.
-        Staff may also update `email`.
+        Updates the authenticated user's own profile. At least one field must be provided.
+
+        Field notes:
+        - `email` — rejected for passenger accounts (`PASSENGERS_CANNOT_HAVE_EMAIL` 422). Staff only.
+        - `avatar_path` — use the `path` from `GET /users/me/avatar/presigned-url` after uploading. Pass `null` to remove the current avatar (S3 file is deleted asynchronously).
+        - `notif_channel` — controls how notifications are delivered. Setting `app` without a registered FCM token will leave push delivery non-functional until `POST /auth/register-device` is called.
       requestBody:
         required: true
         content:
@@ -617,10 +1358,14 @@ paths:
               type: object
               minProperties: 1
               properties:
-                first_name: { type: string, maxLength: 100 }
-                last_name:  { type: string, maxLength: 100 }
-                email:      { type: string, format: email, maxLength: 255, description: Staff only }
-                avatar_path: { type: string, maxLength: 500, nullable: true, description: 'Use path from GET /users/me/avatar/presigned-url. Pass null to remove.' }
+                first_name:   { type: string, maxLength: 100 }
+                last_name:    { type: string, maxLength: 100 }
+                email:        { type: string, format: email, maxLength: 255, description: Staff only. Rejected with 422 for passengers. }
+                avatar_path:  { type: string, maxLength: 500, nullable: true, description: 'S3 path from the presigned-url endpoint. null removes the avatar.' }
+                notif_channel:
+                  type: string
+                  enum: [sms, email, app, all]
+                  description: Notification delivery preference.
       responses:
         '200':
           description: Updated profile
@@ -633,11 +1378,69 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
+  /users/me/avatar/presigned-url:
+    get:
+      tags: [Users]
+      summary: Get presigned PUT URL for own avatar
+      description: |
+        Returns a short-lived S3 presigned URL for uploading an avatar image directly
+        to SeaweedFS. The user-service never handles the file bytes.
+
+        **Upload flow:**
+        1. Call with `?content_type=image/jpeg` (or `png`/`webp`/`gif`).
+        2. `PUT` the image to `upload_url` with the **exact same** `Content-Type` header.
+        3. `PATCH /users/me` with `{ "avatar_path": "<path>" }` to persist.
+
+        To **remove** the avatar: `PATCH /users/me` with `{ "avatar_path": null }`.
+        Build the full CDN URL client-side: `CDN_BASE_URL + "/" + path`.
+      parameters:
+        - in: query
+          name: content_type
+          required: true
+          schema:
+            type: string
+            enum: [image/jpeg, image/png, image/webp, image/gif]
+      responses:
+        '200':
+          description: Presigned URL ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  upload_url:
+                    type: string
+                    format: uri
+                    description: 'PUT the image file here. Expires in ~5 min.'
+                  key:
+                    type: string
+                    example: 'avatars/user-id/uuid.jpg'
+                    description: Same value as `path`.
+                  path:
+                    type: string
+                    example: 'avatars/user-id/uuid.jpg'
+                    description: 'Use this as avatar_path in PATCH /users/me.'
+        '400':
+          description: Missing content_type query parameter
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '415':
+          description: Unsupported content type
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: UNSUPPORTED_MEDIA_TYPE } }
+
   /users/me/validate-password:
     post:
       tags: [Users]
       summary: Validate current password
-      description: Returns 204 if the supplied password matches the current hash. Used before sensitive operations.
+      description: |
+        Returns `204` if the supplied password matches the user's current hash.
+        Use as a confirmation gate before sensitive operations (e.g. before displaying secrets
+        or allowing 2FA changes).
       requestBody:
         required: true
         content:
@@ -650,15 +1453,20 @@ paths:
       responses:
         '204': { description: Password matches }
         '401':
-          description: Wrong password or unauthenticated
+          description: Wrong password or not authenticated
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_CREDENTIALS } }
 
   /users/me/2fa:
     patch:
       tags: [Users]
       summary: Enable or disable 2FA
+      description: |
+        Toggles two-factor authentication for the authenticated user.
+        On change, a notification is sent via the user's `notif_channel`
+        (`security.2fa_enabled` or `security.2fa_disabled`).
       requestBody:
         required: true
         content:
@@ -679,63 +1487,21 @@ paths:
                   two_factor_enabled: { type: boolean }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
-  /users/me/avatar/presigned-url:
-    get:
-      tags: [Users]
-      summary: Get presigned PUT URL for own avatar
-      description: |
-        Returns a short-lived S3 presigned URL the client uses to upload the avatar
-        directly to SeaweedFS — the user-service never handles the file bytes.
-
-        **Upload flow:**
-        1. Call this endpoint with `?content_type=image/jpeg` (or png/webp/gif).
-        2. `PUT` the image file to `upload_url` with the matching `Content-Type` header.
-        3. `PATCH /users/me` with `{ "avatar_path": "<path>" }` to commit.
-
-        To **remove** an existing avatar, `PATCH /users/me` with `{ "avatar_path": null }`.
-
-        The full CDN URL is never stored in the database. The frontend constructs it as
-        `CDN_URL + "/" + avatar_path` using its own CDN base URL config.
-      parameters:
-        - in: query
-          name: content_type
-          required: true
-          schema:
-            type: string
-            enum: [image/jpeg, image/png, image/webp, image/gif]
-      responses:
-        '200':
-          description: Presigned URL ready
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  upload_url: { type: string, format: uri, description: PUT the file here (expires in 5 min) }
-                  key:        { type: string, example: 'avatars/user-id/uuid.jpg' }
-                  path: { type: string, example: 'avatars/user-id/uuid.jpg', description: 'Send this value as avatar_path in PATCH /users/me. Frontend builds CDN URL as: CDN_URL + "/" + path' }
-        '400':
-          description: Missing or missing content_type
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '415':
-          description: Unsupported content type
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-
   /users/invite:
     post:
       tags: [Users]
       summary: Invite a staff user
       description: |
-        Creates a pending staff account and sends an invitation link by SMS and/or email.
-        At least one of `phone_number` or `email` must be supplied.
+        Creates an `Invitation` record (7-day expiry) and sends an invite link via SMS and/or email.
+        At least one of `phone_number` or `email` must be provided.
+
+        The invitee calls `POST /users/accept-invite` with the raw token to activate their account.
 
         **Required permission:** `create:User`
-        → `katisha_admin`, `org_admin`, `dispatcher`
+        → `katisha_admin`, `katisha_super_admin`, `org_admin`, `dispatcher`
+
+        `org_admin` callers are automatically scoped to their own org — the `org_id` body field
+        is ignored and the caller's `org_id` is used instead.
       requestBody:
         required: true
         content:
@@ -746,10 +1512,10 @@ paths:
               properties:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
-                role_slug:    { type: string, example: dispatcher }
-                org_id:       { type: string, format: uuid }
+                role_slug:    { type: string, example: dispatcher, description: Must match an existing role slug. }
+                org_id:       { type: string, format: uuid, description: Target org. Ignored for org_admin callers. }
                 email:        { type: string, format: email, maxLength: 255 }
-                phone_number: { type: string, pattern: '^\+\d{7,15}$' }
+                phone_number: { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
       responses:
         '201':
           description: Invitation created and sent
@@ -758,19 +1524,30 @@ paths:
               schema:
                 type: object
                 properties:
-                  invitation_id: { type: string, format: uuid }
-                  expires_at:    { type: string, format: date-time }
+                  invite_token:
+                    type: string
+                    description: Raw invite token. Embed in the invite link as `?token=<value>` and send to the invitee.
+                  expires_at: { type: string, format: date-time }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Role slug not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_NOT_FOUND } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users/accept-invite:
     post:
       tags: [Users]
-      summary: Accept an invitation (public)
+      summary: Accept a staff invitation
       description: |
-        Activates a pending staff account with the supplied password. Issues tokens on success.
-        The `token` is the opaque invite token embedded in the invitation link.
+        Activates the pending staff account with the supplied password and issues tokens immediately.
+        The `token` is the raw value from the invitation link (not hashed).
+
+        Staff accounts are created with `notif_channel: all` by default.
+        A welcome SMS and email are sent to the new user.
       security: []
       requestBody:
         required: true
@@ -780,7 +1557,7 @@ paths:
               type: object
               required: [token, password]
               properties:
-                token:       { type: string }
+                token:       { type: string, description: Raw invite token from the invitation link. }
                 password:    { type: string, minLength: 8, maxLength: 128 }
                 device_name: { type: string, maxLength: 200 }
       responses:
@@ -790,10 +1567,17 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '400':
-          description: Token invalid or expired
+          description: Token invalid or already used
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_TOKEN } }
+        '410':
+          description: Invitation expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: TOKEN_EXPIRED } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users:
@@ -803,15 +1587,18 @@ paths:
       description: |
         **Required permission:** `read:User`
 
-        Results are automatically scoped to the calling user's org for `org_admin` and `dispatcher`.
-        Platform admins and support see all users.
+        Scoping rules:
+        - Platform admins (`katisha_admin`, `katisha_support`) see all users and may filter by `org_id`.
+        - `org_admin` and `dispatcher` see only users within their own org (scoped automatically).
+
+        The `phone_number` field is masked to `+250***123` format for non-admin callers.
       parameters:
         - in: query
           name: page
-          schema: { type: integer, default: 1 }
+          schema: { type: integer, default: 1, minimum: 1 }
         - in: query
           name: limit
-          schema: { type: integer, default: 20, maximum: 100 }
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
         - in: query
           name: status
           schema: { type: string, enum: [active, pending_verification, suspended] }
@@ -821,7 +1608,7 @@ paths:
         - in: query
           name: org_id
           schema: { type: string, format: uuid }
-          description: Admin only — filter by org
+          description: Platform admin only — filter by organization.
       responses:
         '200':
           description: Paginated user list
@@ -833,7 +1620,9 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/UserListItem' }
-                  meta: { $ref: '#/components/schemas/PaginationMeta' }
+                  total: { type: integer, description: Total records matching the filters. }
+                  page:  { type: integer }
+                  limit: { type: integer }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -850,8 +1639,9 @@ paths:
       description: |
         **Required permission:** `read:User`
 
-        Passengers and drivers may only read their own profile through this endpoint
-        (condition `{ id: userId }` baked into their JWT rules).
+        For `driver` and `passenger` roles the CASL rule carries condition `{ id: userId }`.
+        The route gate passes (the rule exists), but the service returns `403` for any ID
+        other than the caller's own.
       responses:
         '200':
           description: User profile
@@ -868,8 +1658,13 @@ paths:
       description: |
         **Required permission:** `update:User`
 
-        `role_slugs` can only be set by users with `manage:User` (admins).
-        `status` can be set by admins and `org_admin`.
+        Field notes:
+        - `role_slugs` — full role replacement (all existing roles are deleted and replaced).
+          Requires `manage:User` (platform admins only).
+        - `status: suspended` — immediately blacklists all active access tokens in Redis
+          (15 min TTL matching the JWT TTL) and sends a `security.account_suspended`
+          notification to the target user via their `notif_channel` preference.
+        - `org_id` — reassigns the user to a different org (effective for platform admins only).
       requestBody:
         required: true
         content:
@@ -880,12 +1675,12 @@ paths:
               properties:
                 first_name:  { type: string, maxLength: 100 }
                 last_name:   { type: string, maxLength: 100 }
-                status:      { type: string, enum: [active, suspended] }
+                status:      { type: string, enum: [active, suspended], description: Suspended triggers Redis token blacklist and a push/SMS notification to the user. }
                 org_id:      { type: string, format: uuid }
                 role_slugs:
                   type: array
                   items: { type: string }
-                  description: Requires manage:User
+                  description: Replaces all current roles. Requires manage:User (katisha_admin/super_admin only).
       responses:
         '200':
           description: Updated user profile
@@ -899,271 +1694,15 @@ paths:
 
     delete:
       tags: [Users]
-      summary: Soft-delete user by ID
+      summary: Soft-delete user
       description: |
-        **Required permission:** `delete:User`
+        **Required permission:** `delete:User` → platform admins only.
 
-        Sets `deleted_at` — does not permanently remove the record.
+        Sets `deleted_at` (soft delete) and revokes all active refresh tokens.
+        Active access tokens are blacklisted in Redis for 15 min (matching the JWT TTL)
+        so in-flight sessions cannot be used after deletion.
       responses:
-        '204': { description: User deleted }
+        '204': { description: User soft-deleted — tokens revoked and blacklisted }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-
-  # ── Organizations ─────────────────────────────────────────────────────────
-
-  /organizations:
-    post:
-      tags: [Organizations]
-      summary: Create organization
-      description: |
-        **Required permission:** `create:Org`
-        → `katisha_admin`, `katisha_super_admin`
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [name, org_type, contact_email, contact_phone]
-              properties:
-                name:           { type: string, maxLength: 200 }
-                org_type:       { type: string, enum: [company, cooperative] }
-                contact_email:  { type: string, format: email, maxLength: 255 }
-                contact_phone:  { type: string, maxLength: 20 }
-                address:        { type: string, maxLength: 500 }
-                tin:            { type: string, maxLength: 50 }
-                license_number: { type: string, maxLength: 100 }
-                parent_org_id:  { type: string, format: uuid }
-      responses:
-        '201':
-          description: Organization created
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OrgListItem' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-
-    get:
-      tags: [Organizations]
-      summary: List organizations
-      description: |
-        **Required permission:** `read:Org`
-
-        Platform admins see all orgs. `org_admin` and `dispatcher` see only their own org.
-      parameters:
-        - in: query
-          name: page
-          schema: { type: integer, default: 1 }
-        - in: query
-          name: limit
-          schema: { type: integer, default: 20, maximum: 100 }
-        - in: query
-          name: status
-          schema: { type: string, enum: [pending, active, suspended, rejected] }
-        - in: query
-          name: org_type
-          schema: { type: string, enum: [company, cooperative] }
-      responses:
-        '200':
-          description: Paginated org list
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  data:
-                    type: array
-                    items: { $ref: '#/components/schemas/OrgListItem' }
-                  meta: { $ref: '#/components/schemas/PaginationMeta' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-
-  /organizations/me:
-    get:
-      tags: [Organizations]
-      summary: Get own organization
-      description: Returns the organization the authenticated user belongs to. No permission gate — any authenticated org member can call this.
-      responses:
-        '200':
-          description: Own organization
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OrgFull' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404':
-          description: User has no organization
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-
-  /organizations/{id}:
-    parameters:
-      - in: path
-        name: id
-        required: true
-        schema: { type: string, format: uuid }
-
-    get:
-      tags: [Organizations]
-      summary: Get organization by ID
-      description: |
-        **Required permission:** `read:Org`
-
-        Non-admin callers may only read their own org (object-level check in service).
-      responses:
-        '200':
-          description: Organization detail
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OrgFull' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-    patch:
-      tags: [Organizations]
-      summary: Update organization
-      description: |
-        **Required permission:** `update:Org`
-
-        `status` and `rejection_reason` can only be set by platform admins — `org_admin` with
-        `write:Org` may update name/contact fields but not lifecycle status.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              minProperties: 1
-              properties:
-                name:             { type: string, maxLength: 200 }
-                contact_email:    { type: string, format: email, maxLength: 255 }
-                contact_phone:    { type: string, maxLength: 20 }
-                address:          { type: string, maxLength: 500 }
-                logo_path:         { type: string, maxLength: 500, nullable: true, description: 'Use path from GET /organizations/me/logo/presigned-url. Pass null to remove.' }
-                status:
-                  type: string
-                  enum: [active, suspended, rejected]
-                  description: Admin only
-                rejection_reason: { type: string, maxLength: 1000, description: Admin only }
-      responses:
-        '200':
-          description: Updated organization
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OrgFull' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
-
-  /organizations/{id}/approve:
-    post:
-      tags: [Organizations]
-      summary: Approve a child organization
-      description: |
-        Transitions a `pending` child org to `active` and notifies the org admin.
-
-        **Required permission:** `update:Org`
-        → `katisha_admin`, `katisha_super_admin`, `org_admin` (for their own child orgs)
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string, format: uuid }
-      responses:
-        '200':
-          description: Organization approved
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/OrgFull' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
-  /organizations/me/logo/presigned-url:
-    get:
-      tags: [Organizations]
-      summary: Get presigned PUT URL for own org's logo (org admin)
-      description: |
-        Returns a short-lived S3 presigned URL for uploading the org logo directly to SeaweedFS.
-
-        **Required permission:** `update:Org`
-
-        **Upload flow:**
-        1. Call this endpoint with `?content_type=image/png`.
-        2. `PUT` the image to `upload_url` with the matching `Content-Type` header.
-        3. `PATCH /organizations/:id` with `{ "logo_path": "<path>" }` to commit.
-
-        To **remove** the logo, `PATCH /organizations/:id` with `{ "logo_path": null }`.
-
-        The full CDN URL is never stored in the database. The frontend constructs it as
-        `CDN_URL + "/" + logo_path` using its own CDN base URL config.
-      parameters:
-        - in: query
-          name: content_type
-          required: true
-          schema:
-            type: string
-            enum: [image/jpeg, image/png, image/webp, image/gif]
-      responses:
-        '200':
-          description: Presigned URL ready
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  upload_url: { type: string, format: uri }
-                  key:        { type: string, example: 'logos/org-id/uuid.png' }
-                  path: { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id. Frontend builds CDN URL as: CDN_URL + "/" + path' }
-        '400': { $ref: '#/components/responses/UnprocessableEntity' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '415':
-          description: Unsupported content type
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-
-  /organizations/{id}/logo/presigned-url:
-    get:
-      tags: [Organizations]
-      summary: Get presigned PUT URL for any org's logo (platform admin)
-      description: |
-        Same flow as `/organizations/me/logo/presigned-url` but scoped to a specific org ID.
-
-        **Required permission:** `update:Org`
-        → `katisha_admin`, `katisha_super_admin`
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema: { type: string, format: uuid }
-        - in: query
-          name: content_type
-          required: true
-          schema:
-            type: string
-            enum: [image/jpeg, image/png, image/webp, image/gif]
-      responses:
-        '200':
-          description: Presigned URL ready
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  upload_url: { type: string, format: uri }
-                  key:        { type: string, example: 'logos/org-id/uuid.png' }
-                  path: { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id. Frontend builds CDN URL as: CDN_URL + "/" + path' }
-        '400': { $ref: '#/components/responses/UnprocessableEntity' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '415':
-          description: Unsupported content type
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
