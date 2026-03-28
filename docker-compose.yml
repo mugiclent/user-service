@@ -40,8 +40,6 @@ services:
       S3_BUCKET: ${S3_BUCKET}
       S3_REGION: ${S3_REGION}
       S3_PRESIGNED_EXPIRES_IN: ${S3_PRESIGNED_EXPIRES_IN}
-    ports:
-      - "${PORT:-3001}:${PORT:-3001}"
     networks:
       - katisha-net
 
