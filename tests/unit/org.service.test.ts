@@ -332,6 +332,35 @@ describe('OrgService.updateOrg', () => {
       }),
     );
   });
+
+  it('updates name and slug when name is provided', async () => {
+    const existing = { id: 'org-1', logo_path: null, name: 'Old Name', contact_email: 'a@b.com', contact_phone: '+1', address: null, status: 'active', rejection_reason: null };
+    mockOrgFindUnique.mockResolvedValueOnce(existing);
+    mockOrgUpdate.mockResolvedValueOnce(makeOrg({ name: 'New Name' }));
+    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    await OrgService.updateOrg(authUser as never, 'org-1', { name: 'New Name' });
+    expect(mockOrgUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ name: 'New Name', slug: 'acme' }),
+      }),
+    );
+  });
+
+  it('fans out notifications to active org users on suspension', async () => {
+    const existing = { id: 'org-1', logo_path: null, name: 'Acme', contact_email: 'ops@acme.com', contact_phone: '+250788000001', address: null, status: 'active', rejection_reason: null };
+    mockOrgFindUnique.mockResolvedValueOnce(existing);
+    mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'suspended', contact_email: 'ops@acme.com' }));
+    const activeUser = { id: 'u1', phone_number: '+250788000002', email: null, fcm_token: null, notif_channel: 'sms' };
+    mockUserFindMany.mockResolvedValueOnce([activeUser]);
+    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    await OrgService.updateOrg(authUser as never, 'org-1', { status: 'suspended' });
+    // flush the fire-and-forget promise
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(mockNotifyUser).toHaveBeenCalledWith(
+      activeUser,
+      expect.objectContaining({ sms: expect.objectContaining({ type: 'org.suspended' }) }),
+    );
+  });
 });
 
 // ── approveChildOrg ───────────────────────────────────────────────────────────

@@ -85,6 +85,13 @@ describe('OrgController.listOrgs', () => {
       page: undefined, limit: undefined, status: undefined, org_type: undefined,
     });
   });
+
+  it('calls next(err) on error', async () => {
+    mockListOrgs.mockRejectedValueOnce(new Error('db fail'));
+    const req = { user: authUser, query: {} } as unknown as Request;
+    await OrgController.listOrgs(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── getMyOrg ──────────────────────────────────────────────────────────────────
@@ -173,6 +180,13 @@ describe('OrgController.getLogoPresignedUrl', () => {
     const req = { user: authUser, params: { id: 'org-1' }, query: {} } as unknown as Request;
     await OrgController.getLogoPresignedUrl(req, makeRes(), next);
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ code: 'MISSING_CONTENT_TYPE', status: 400 }));
+  });
+
+  it('calls next(err) when service throws', async () => {
+    mockGenerateOrgLogoPresignedUrl.mockRejectedValueOnce(new Error('s3 fail'));
+    const req = { user: authUser, params: { id: 'org-1' }, query: { content_type: 'image/png' } } as unknown as Request;
+    await OrgController.getLogoPresignedUrl(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 

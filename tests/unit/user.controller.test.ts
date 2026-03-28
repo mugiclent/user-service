@@ -97,6 +97,13 @@ describe('UserController.updateMe', () => {
     expect(mockUpdateMe).toHaveBeenCalledWith(authUser, { first_name: 'Alice' });
     expect(res.status).toHaveBeenCalledWith(200);
   });
+
+  it('calls next(err) on error', async () => {
+    mockUpdateMe.mockRejectedValueOnce(new Error('email not allowed'));
+    const req = { user: authUser, body: { email: 'a@b.com' } } as unknown as Request;
+    await UserController.updateMe(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── getAvatarPresignedUrl ─────────────────────────────────────────────────────
@@ -116,6 +123,13 @@ describe('UserController.getAvatarPresignedUrl', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ uploadUrl: 'https://...', path: 'key' });
   });
+
+  it('calls next(err) when service throws', async () => {
+    mockGenerateUserAvatarPresignedUrl.mockRejectedValueOnce(new Error('s3 fail'));
+    const req = { user: authUser, query: { content_type: 'image/jpeg' } } as unknown as Request;
+    await UserController.getAvatarPresignedUrl(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── validatePassword ──────────────────────────────────────────────────────────
@@ -127,6 +141,13 @@ describe('UserController.validatePassword', () => {
     await UserController.validatePassword(req, res, next);
     expect(mockValidatePassword).toHaveBeenCalledWith('user-1', 'correct');
     expect(res.status).toHaveBeenCalledWith(204);
+  });
+
+  it('calls next(err) on error', async () => {
+    mockValidatePassword.mockRejectedValueOnce(new Error('invalid'));
+    const req = { user: authUser, body: { password: 'wrong' } } as unknown as Request;
+    await UserController.validatePassword(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 
@@ -140,6 +161,13 @@ describe('UserController.toggle2fa', () => {
     expect(mockToggle2fa).toHaveBeenCalledWith('user-1', true);
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ two_factor_enabled: true });
+  });
+
+  it('calls next(err) on error', async () => {
+    mockToggle2fa.mockRejectedValueOnce(new Error('db fail'));
+    const req = { user: authUser, body: { enabled: false } } as unknown as Request;
+    await UserController.toggle2fa(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 
@@ -161,6 +189,13 @@ describe('UserController.listUsers', () => {
       page: undefined, limit: undefined, status: undefined, user_type: undefined, org_id: undefined,
     });
   });
+
+  it('calls next(err) on error', async () => {
+    mockListUsers.mockRejectedValueOnce(new Error('db fail'));
+    const req = { user: authUser, query: {} } as unknown as Request;
+    await UserController.listUsers(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── getUserById ───────────────────────────────────────────────────────────────
@@ -172,6 +207,13 @@ describe('UserController.getUserById', () => {
     await UserController.getUserById(req, res, next);
     expect(mockGetUserById).toHaveBeenCalledWith(authUser, 'user-2');
     expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('calls next(err) on error', async () => {
+    mockGetUserById.mockRejectedValueOnce(new Error('forbidden'));
+    const req = { user: authUser, params: { id: 'user-99' } } as unknown as Request;
+    await UserController.getUserById(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 

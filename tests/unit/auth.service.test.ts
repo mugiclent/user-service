@@ -187,6 +187,30 @@ describe('AuthService.login', () => {
       expect.objectContaining({ action: 'login', resource: 'User', resource_id: 'user-1' }),
     );
   });
+
+  it('notifies user when logging in from a new device (fire-and-forget)', async () => {
+    const user = makeUser();
+    mockUserFindFirst.mockResolvedValueOnce(user);
+    // First findFirst (any token exists) returns a token; second (same device) returns null → new device
+    mockRefreshTokenFindFirst
+      .mockResolvedValueOnce({ id: 'tok-1' })  // anyToken: some tokens exist
+      .mockResolvedValueOnce(null);              // sameDevice: not found → new device
+    await AuthService.login('+250788000001', 'pass', 'iPhone', '1.2.3.4', 'Mozilla/5.0');
+    // Flush the fire-and-forget promise chain
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockNotifyUser).toHaveBeenCalledWith(
+      user,
+      expect.objectContaining({ sms: expect.objectContaining({ type: 'security.login_new_device' }) }),
+    );
+  });
+
+  it('does not notify when no prior tokens exist (first ever login)', async () => {
+    mockUserFindFirst.mockResolvedValueOnce(makeUser());
+    mockRefreshTokenFindFirst.mockResolvedValueOnce(null); // no prior tokens
+    await AuthService.login('+250788000001', 'pass', 'iPhone', '1.2.3.4', 'Mozilla/5.0');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockNotifyUser).not.toHaveBeenCalled();
+  });
 });
 
 // ── verify2fa ─────────────────────────────────────────────────────────────────

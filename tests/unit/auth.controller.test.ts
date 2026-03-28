@@ -154,6 +154,13 @@ describe('AuthController.verifyPhone', () => {
     await AuthController.verifyPhone(req, makeRes(), next);
     expect(mockSendAuthResponse).toHaveBeenCalled();
   });
+
+  it('calls next(err) on error', async () => {
+    mockAuthServiceVerifyPhone.mockRejectedValueOnce(new Error('otp expired'));
+    const req = { body: { user_id: 'user-1', otp: 'bad' }, headers: {} } as unknown as Request;
+    await AuthController.verifyPhone(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── forgotPassword ────────────────────────────────────────────────────────────
@@ -166,6 +173,13 @@ describe('AuthController.forgotPassword', () => {
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.end).toHaveBeenCalled();
   });
+
+  it('calls next(err) on error', async () => {
+    mockAuthServiceForgotPassword.mockRejectedValueOnce(new Error('fail'));
+    const req = { body: { identifier: 'u@e.com' } } as unknown as Request;
+    await AuthController.forgotPassword(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
+  });
 });
 
 // ── resetPassword ─────────────────────────────────────────────────────────────
@@ -177,6 +191,13 @@ describe('AuthController.resetPassword', () => {
     await AuthController.resetPassword(req, res, next);
     expect(mockClearAuthCookies).toHaveBeenCalledWith(res);
     expect(res.status).toHaveBeenCalledWith(204);
+  });
+
+  it('calls next(err) on error', async () => {
+    mockAuthServiceResetPassword.mockRejectedValueOnce(new Error('invalid otp'));
+    const req = { body: { identifier: 'u@e.com', otp: 'bad', new_password: 'p' } } as unknown as Request;
+    await AuthController.resetPassword(req, makeRes(), next);
+    expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });
 
@@ -201,6 +222,16 @@ describe('AuthController.refresh', () => {
     await AuthController.refresh(req, makeRes(), next);
     expect(mockAuthServiceRefresh).toHaveBeenCalledWith('my-refresh-token');
     expect(mockSendRefreshResponse).toHaveBeenCalled();
+  });
+
+  it('returns 401 when mobile Authorization header is not Bearer scheme', async () => {
+    const req = {
+      headers: { 'x-client-type': 'mobile', authorization: 'Basic dXNlcjpwYXNz' },
+      cookies: {},
+    } as unknown as Request;
+    const res = makeRes();
+    await AuthController.refresh(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(401);
   });
 
   it('extracts cookie token for web client', async () => {
@@ -242,6 +273,17 @@ describe('AuthController.logout', () => {
     const res = makeRes();
     await AuthController.logout(req, res, next);
     expect(mockAuthServiceLogout).toHaveBeenCalledWith('tok');
+    expect(res.status).toHaveBeenCalledWith(204);
+  });
+
+  it('skips logout service when mobile Authorization is not Bearer scheme', async () => {
+    const req = {
+      headers: { 'x-client-type': 'mobile', authorization: 'Basic dXNlcjpwYXNz' },
+      cookies: {},
+    } as unknown as Request;
+    const res = makeRes();
+    await AuthController.logout(req, res, next);
+    expect(mockAuthServiceLogout).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(204);
   });
 
