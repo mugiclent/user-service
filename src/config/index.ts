@@ -39,7 +39,6 @@ export const config = {
   },
 
   appUrl: env.APP_URL,
-  adminNotificationEmail: env.ADMIN_NOTIFICATION_EMAIL ?? null,
 
   s3: {
     endpoint: env.S3_ENDPOINT,

@@ -1274,8 +1274,8 @@ paths:
         On success:
         - Sets `contact_email_verified_at` on the org record.
         - Sends a confirmation SMS + email to the applicant.
-        - Sends an `org.application_received` email to Katisha admins (`ADMIN_NOTIFICATION_EMAIL`
-          env var) to trigger manual review.
+        - Notifies all active Katisha admins (users with `katisha_admin` or `katisha_super_admin`
+          role) via email to trigger manual review.
 
         Katisha admins then use `POST /organizations/:id/approve` or
         `PATCH /organizations/:id` with `status: rejected` to finalize the application.

@@ -11,6 +11,10 @@ const mockTxOrgDocCreateMany = vi.fn().mockResolvedValue({ count: 2 });
 const mockOrgFindFirst = vi.fn();
 const mockOrgFindUnique = vi.fn();
 const mockOrgUpdate = vi.fn().mockResolvedValue({});
+const mockUserFindMany = vi.fn().mockResolvedValue([
+  { email: 'admin1@katisha.com' },
+  { email: 'admin2@katisha.com' },
+]);
 const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
   const tx = {
     org: { create: mockTxOrgCreate },
@@ -22,6 +26,7 @@ const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => P
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     org: { findFirst: mockOrgFindFirst, findUnique: mockOrgFindUnique, update: mockOrgUpdate },
+    user: { findMany: mockUserFindMany },
     $transaction: mockTransaction,
   },
 }));
@@ -44,9 +49,6 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishAudit: mockPublishAudit,
 }));
 
-vi.mock('../../src/config/index.js', () => ({
-  config: { adminNotificationEmail: 'admin@katisha.com' },
-}));
 
 const { OrgApplicationService } = await import('../../src/services/org-application.service.js');
 
@@ -199,12 +201,31 @@ describe('OrgApplicationService.verifyContact', () => {
     );
   });
 
-  it('notifies admin when adminNotificationEmail is set', async () => {
+  it('notifies all active Katisha admins by querying their role', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
     await OrgApplicationService.verifyContact('org-1', '123456');
-    expect(mockPublishMail).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'org.application_received', email: 'admin@katisha.com' }),
+    expect(mockUserFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          user_roles: { some: { role: { slug: { in: ['katisha_admin', 'katisha_super_admin'] } } } },
+          status: 'active',
+          deleted_at: null,
+        }),
+      }),
     );
+    expect(mockPublishMail).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.application_received', email: 'admin1@katisha.com' }),
+    );
+    expect(mockPublishMail).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.application_received', email: 'admin2@katisha.com' }),
+    );
+  });
+
+  it('skips admins without an email address', async () => {
+    mockUserFindMany.mockResolvedValueOnce([{ email: null }, { email: 'admin@katisha.com' }]);
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    await OrgApplicationService.verifyContact('org-1', '123456');
+    expect(mockPublishMail).toHaveBeenCalledTimes(2); // contact_verified + 1 admin (not the null one)
   });
 
   it('publishes an audit event', async () => {

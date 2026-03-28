@@ -4,7 +4,6 @@ import { hashToken } from '../utils/crypto.js';
 import { slugify } from '../utils/slugify.js';
 import { AppError } from '../utils/AppError.js';
 import { publishMail, publishSms, publishAudit } from '../utils/publishers.js';
-import { config } from '../config/index.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -100,7 +99,7 @@ export const OrgApplicationService = {
    *   - Sets contact_email_verified_at
    *   - Clears the OTP fields
    *   - Sends confirmation to the applicant (email + SMS)
-   *   - Notifies Katisha admins (email to ADMIN_NOTIFICATION_EMAIL)
+   *   - Notifies Katisha admins (queried by katisha_admin / katisha_super_admin role)
    */
   async verifyContact(orgId: string, otp: string): Promise<void> {
     const org = await prisma.org.findUnique({ where: { id: orgId } });
@@ -138,15 +137,26 @@ export const OrgApplicationService = {
       org_name: org.name,
     });
 
-    // Notify Katisha admins
-    if (config.adminNotificationEmail) {
-      publishMail({
-        type: 'org.application_received',
-        email: config.adminNotificationEmail,
-        org_name: org.name,
-        contact_email: org.contact_email,
-        org_type: org.org_type,
-      });
+    // Notify all active Katisha admins
+    const admins = await prisma.user.findMany({
+      where: {
+        user_roles: { some: { role: { slug: { in: ['katisha_admin', 'katisha_super_admin'] } } } },
+        status: 'active',
+        deleted_at: null,
+      },
+      select: { email: true },
+    });
+
+    for (const admin of admins) {
+      if (admin.email) {
+        publishMail({
+          type: 'org.application_received',
+          email: admin.email,
+          org_name: org.name,
+          contact_email: org.contact_email,
+          org_type: org.org_type,
+        });
+      }
     }
 
     publishAudit({ actor_id: orgId, action: 'verify_contact', resource: 'Org', resource_id: orgId });

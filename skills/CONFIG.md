@@ -146,23 +146,10 @@ S3_REGION=us-east-1
 S3_PRESIGNED_EXPIRES_IN=300
 ```
 
-## Dockerfile (service only — no docker-compose)
+## Dockerfile
 
-```dockerfile
-FROM node:20-alpine AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-
-FROM node:20-alpine
-WORKDIR /app
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY package*.json ./
-EXPOSE 3000
-CMD ["node", "dist/index.js"]
-```
+See [`skills/DEVOPS.md`](DEVOPS.md) for the canonical Dockerfile pattern.
+The short version: two-stage build, `node:22-bookworm-slim` builder,
+`gcr.io/distroless/nodejs22-debian12` production image.
 
 Infrastructure (Postgres, Redis, RabbitMQ, SeaweedFS) is managed externally — this service only runs its own process.

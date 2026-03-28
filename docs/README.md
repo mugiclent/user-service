@@ -6,7 +6,11 @@ API documentation and OpenAPI spec.
 
 | File | Purpose |
 |---|---|
-| _(openapi.yaml — future)_ | OpenAPI 3.1 spec for all endpoints |
+| [`openapi.yaml`](openapi.yaml) | OpenAPI 3.1 spec for all endpoints |
+| [`AUTH.md`](AUTH.md) | Authentication and token lifecycle |
+| [`IAM.md`](IAM.md) | Role-based access control and CASL permissions |
+| [`MEDIA_UPLOAD.md`](MEDIA_UPLOAD.md) | S3 presigned URL upload flow |
+| [`DEVOPS.md`](DEVOPS.md) | Docker, docker-compose, CI/CD pipeline and deployment |
 
 ## Conventions
 
