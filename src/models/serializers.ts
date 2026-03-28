@@ -1,4 +1,4 @@
-import type { User, Org, OrgStatus, OrgType } from '@prisma/client';
+import type { Org, OrgStatus, OrgType } from '@prisma/client';
 import type { UserWithRoles } from './index.js';
 import type { AppRule } from '../utils/ability.js';
 

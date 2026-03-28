@@ -6,7 +6,7 @@ import { prisma } from '../models/index.js';
 // ---------------------------------------------------------------------------
 
 const log = (job: string, deleted: number): void => {
-  if (deleted > 0) console.log(`[cleanup:${job}] Deleted ${deleted} row(s)`);
+  if (deleted > 0) console.warn(`[cleanup:${job}] Deleted ${deleted} row(s)`);
 };
 
 const run = async (name: string, fn: () => Promise<number>): Promise<void> => {
@@ -139,5 +139,5 @@ export const initCleanup = (): void => {
     void deleteExpiredInvitations();
   });
 
-  console.log('[cleanup] Scheduled: OTPs + refresh tokens (hourly), users/orgs/invitations (daily 03:00 UTC)');
+  console.warn('[cleanup] Scheduled: OTPs + refresh tokens (hourly), users/orgs/invitations (daily 03:00 UTC)');
 };

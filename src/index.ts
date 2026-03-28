@@ -18,12 +18,12 @@ const start = async (): Promise<void> => {
   const app = createApp();
 
   const server = app.listen(config.port, () => {
-    console.log(`[server] Listening on port ${config.port} (${config.isProd ? 'production' : 'development'})`);
+    console.warn(`[server] Listening on port ${config.port} (${config.isProd ? 'production' : 'development'})`);
   });
 
   // Graceful shutdown
   const shutdown = async (signal: string): Promise<void> => {
-    console.log(`[server] ${signal} received — shutting down`);
+    console.warn(`[server] ${signal} received — shutting down`);
     server.close(async () => {
       await prisma.$disconnect();
       await closeRabbitMQ();

@@ -3,6 +3,7 @@
  * the correct notification and audit messages.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as CryptoModule from '../../src/utils/crypto.js';
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -15,7 +16,7 @@ vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publi
 
 // Fixed token so we can assert on invite_link contents
 vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/utils/crypto.js')>();
+  const actual = await importOriginal<typeof CryptoModule>();
   return {
     ...actual,
     generateRawToken: vi.fn(() => 'test-raw-token-abc'),

@@ -3,6 +3,7 @@
  * Covers: collectPermissions, buildRulesForUser, buildAbility, buildAbilityFromRules
  */
 import { describe, it, expect } from 'vitest';
+import { packRules } from '@casl/ability/extra';
 import {
   collectPermissions,
   buildRulesForUser,
@@ -199,7 +200,6 @@ describe('buildAbilityFromRules', () => {
 
 describe('buildAbility (packed rules)', () => {
   it('round-trips pack/unpack and produces correct ability', () => {
-    const { packRules } = require('@casl/ability/extra');
     const rawRules = [{ action: 'read', subject: 'Org' }];
     const packed = packRules(rawRules);
     const ability = buildAbility(packed);

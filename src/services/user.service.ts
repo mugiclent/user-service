@@ -1,5 +1,5 @@
-import { prisma, Prisma } from '../models/index.js';
-import type { UserWithRoles, AuthenticatedUser } from '../models/index.js';
+import { prisma } from '../models/index.js';
+import type { Prisma, UserWithRoles, AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
@@ -124,7 +124,6 @@ export const UserService = {
     targetId: string,
   ): Promise<Record<string, unknown>> {
     const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
-    const ability = buildAbilityFromRules(requestingUser.rules);
 
     const user = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },

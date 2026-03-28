@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { config } from '../config/index.js';
 import type { AppRule } from '../utils/ability.js';
@@ -14,7 +15,7 @@ export { Prisma } from '@prisma/client';
 // Composite types
 // ---------------------------------------------------------------------------
 
-export type UserWithRoles = import('@prisma/client').Prisma.UserGetPayload<{
+export type UserWithRoles = Prisma.UserGetPayload<{
   include: {
     user_roles: {
       include: {

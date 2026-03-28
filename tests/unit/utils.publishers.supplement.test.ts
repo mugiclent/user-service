@@ -13,7 +13,7 @@ vi.mock('../../src/loaders/rabbitmq.js', () => ({
   getRabbitMQChannel: () => ({ publish: mockPublish }),
 }));
 
-const { publishSms, publishMail, publishPush, notifyUser } =
+const { publishSms, publishPush, notifyUser } =
   await import('../../src/utils/publishers.js');
 
 beforeEach(() => vi.clearAllMocks());

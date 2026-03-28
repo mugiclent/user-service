@@ -21,10 +21,10 @@ export const signAccessToken = (
 ): string => {
   const { rules, ...rest } = payload;
   const tokenPayload: JwtPayload = { ...rest, rules: packRules(rules) };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return jwt.sign(tokenPayload as object, config.jwt.privateKey, {
     algorithm: 'RS256',
-    expiresIn: config.jwt.expiresIn as any,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    expiresIn: config.jwt.expiresIn as any, // jsonwebtoken v9 uses branded StringValue from ms
   });
 };
 

@@ -3,6 +3,7 @@
  * and approve actions — and publishes org_approved notifications.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as CryptoModule from '../../src/utils/crypto.js';
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -13,7 +14,7 @@ const notifyUser = vi.fn();
 vi.mock('../../src/utils/publishers.js', () => ({ publishAudit, publishSms, publishMail, notifyUser }));
 
 vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/utils/crypto.js')>();
+  const actual = await importOriginal<typeof CryptoModule>();
   return { ...actual, generateRawToken: vi.fn(() => 'org-raw-token'), hashToken: vi.fn((t: string) => `hashed:${t}`) };
 });
 
