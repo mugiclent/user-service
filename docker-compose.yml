@@ -1,7 +1,7 @@
 services:
-  user-service:
+  user-svc:
     image: ${DOCKER_USERNAME}/katisha-user-service:${IMAGE_TAG:-latest}
-    container_name: katisha-user-service
+    container_name: user-svc
     restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV}
