@@ -21,9 +21,9 @@ export const signAccessToken = (
 ): string => {
   const { rules, ...rest } = payload;
   const tokenPayload: JwtPayload = { ...rest, rules: packRules(rules) };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return jwt.sign(tokenPayload as object, config.jwt.privateKey, {
-    algorithm: 'RS256',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    algorithm: 'EdDSA' as any, // @types/jsonwebtoken doesn't include EdDSA yet; library supports it since v9
     expiresIn: config.jwt.expiresIn as any, // jsonwebtoken v9 uses branded StringValue from ms
   });
 };
@@ -33,4 +33,5 @@ export const signAccessToken = (
  * Throws JsonWebTokenError / TokenExpiredError on invalid input.
  */
 export const verifyAccessToken = (token: string): JwtPayload =>
-  jwt.verify(token, config.jwt.publicKey, { algorithms: ['RS256'] }) as JwtPayload;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  jwt.verify(token, config.jwt.publicKey, { algorithms: ['EdDSA' as any] }) as unknown as JwtPayload;

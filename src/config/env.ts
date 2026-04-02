@@ -14,8 +14,7 @@ const schema = Joi.object({
 
   RABBITMQ_URL: Joi.string().uri().required(),
 
-  JWT_PRIVATE_KEY: Joi.string().required(), // PEM RSA private key (-----BEGIN RSA PRIVATE KEY-----)
-  JWT_PUBLIC_KEY: Joi.string().required(),  // PEM RSA public key  (-----BEGIN PUBLIC KEY-----)
+  JWT_PRIVATE_KEY: Joi.string().required(), // PEM Ed25519 private key (-----BEGIN PRIVATE KEY-----)
   JWT_EXPIRES_IN: Joi.string().default('15m'),
   REFRESH_TOKEN_TTL_DAYS: Joi.number().default(7),
 
@@ -58,7 +57,6 @@ export const env = value as {
   REDIS_URL: string;
   RABBITMQ_URL: string;
   JWT_PRIVATE_KEY: string;
-  JWT_PUBLIC_KEY: string;
   JWT_EXPIRES_IN: string;
   REFRESH_TOKEN_TTL_DAYS: number;
   COOKIE_SECURE: boolean;

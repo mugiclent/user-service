@@ -45,11 +45,11 @@ export const createApp = (): Application => {
     res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
   });
 
-  // JWKS endpoint — exposes RS256 public key so the API gateway and other
+  // JWKS endpoint — exposes EdDSA public key so the API gateway and other
   // microservices can verify access tokens without contacting this service.
   const jwk = createPublicKey(config.jwt.publicKey).export({ format: 'jwk' }) as Record<string, unknown>;
   app.get('/.well-known/jwks.json', (_req: Request, res: Response) => {
-    res.json({ keys: [{ ...jwk, use: 'sig', alg: 'RS256', kid: 'katisha-user-service-1' }] });
+    res.json({ keys: [{ ...jwk, use: 'sig', alg: 'EdDSA', kid: 'katisha-user-service-1' }] });
   });
 
   // Routes
