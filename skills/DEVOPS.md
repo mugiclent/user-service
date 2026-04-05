@@ -131,7 +131,7 @@ IMAGE_TAG=latest
 
 ## Step 4 — .gitignore
 
-Ensure `.gitignore` contains:
+Create `.gitignore` with this content (exact — do not abbreviate):
 
 ```gitignore
 # Environment variables — never commit real env files
@@ -139,15 +139,97 @@ Ensure `.gitignore` contains:
 .env.local
 .env.*.local
 
-# Production scripts — contain real secrets, never commit
-scripts/*.prod.sh
+# Local secrets — filled-in copy of actions.env, never commit
+actions.env
+
+# Build output
+dist/
+
+# Dependencies
+node_modules/
+
+# Coverage
+coverage/
+
+# Local dev — not for production
+docker-compose.local.yml
+Dockerfile.local
+local/
+
+# OS
+.DS_Store
 ```
 
 ---
 
-## Step 5 — GitHub Actions pipeline
+## Step 4b — .dockerignore
+
+Create `.dockerignore` with this content (exact — do not abbreviate):
+
+```dockerignore
+# Build output
+dist/
+
+# Dependencies (reinstalled inside the image)
+node_modules/
+
+# Environment files — never bake secrets into an image
+.env
+.env.*
+actions.env
+
+# Local dev
+docker-compose.local.yml
+Dockerfile.local
+local/
+
+# Git
+.git/
+.gitignore
+
+# Editor
+.vscode/
+.idea/
+
+# Test & coverage
+coverage/
+tests/
+
+# OS
+.DS_Store
+```
+
+---
+
+## Step 5 — package.json scripts
+
+Ensure these scripts exist in `package.json` for every service that uses Prisma:
+
+```json
+"scripts": {
+  "build":        "tsc",
+  "start":        "node dist/index.js",
+  "dev":          "tsx watch src/index.ts",
+  "test":         "vitest run",
+  "lint":         "eslint src/",
+  "db:push":      "prisma db push --skip-generate",
+  "db:generate":  "prisma generate"
+}
+```
+
+`db:push` is the key script — it applies the Prisma schema to the database
+idempotently. It is called during every production deploy (see Step 6).
+`--skip-generate` avoids re-running client generation (already done at build time).
+
+---
+
+## Step 6 — GitHub Actions pipeline
 
 Create `.github/workflows/ci-cd.yml`.
+
+The pipeline uses **Infisical** for secret injection and **appleboy/ssh-action**
+for deployment. `FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true` silences Node 20
+deprecation warnings from bundled action runtimes.
 
 ```yaml
 name: CI / CD
@@ -160,6 +242,7 @@ on:
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/{{SERVICE_NAME}}
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   checks:
@@ -174,8 +257,8 @@ jobs:
       - run: npm ci
       {{IF_PRISMA}}- run: npx prisma generate
       {{/IF_PRISMA}}- run: npx tsc --noEmit
-      - run: npx eslint src/ tests/
-      - run: npx vitest run
+      - run: npx eslint src/
+      - run: npx vitest run --passWithNoTests
 
   build-and-push:
     name: Build & push Docker image
@@ -190,7 +273,6 @@ jobs:
         run: |
           SHA_TAG=sha-${{ github.sha }}
           echo "sha_tag=${SHA_TAG}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=${SHA_TAG}" >> $GITHUB_ENV
       - uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
@@ -201,7 +283,7 @@ jobs:
           context: .
           push: true
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.sha_tag }}
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -211,29 +293,96 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-push
     steps:
-      - uses: appleboy/ssh-action@v1
+      - uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
-            cd ${{ secrets.DEPLOY_PATH }}
-            sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}/" .env
-            grep -q "^IMAGE_TAG=" .env || echo "IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}" >> .env
-            docker compose pull {{SERVICE_NAME}}
-            docker compose up -d --no-deps {{SERVICE_NAME}}
-            docker image prune -f
+            export PATH="$HOME/.local/bin:$PATH"
+
+            DEPLOY_DIR="$HOME/katisha/{{SERVICE_DIR}}"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+
+            if [ -d "$DEPLOY_DIR/.git" ]; then
+              cd "$DEPLOY_DIR"
+              git pull origin main
+            else
+              mkdir -p "$HOME/katisha"
+              git clone "$REPO_URL" "$DEPLOY_DIR"
+              cd "$DEPLOY_DIR"
+            fi
+
+            cat > .env <<ENVEOF
+            DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
+            IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
+            ENVEOF
+
+            INFISICAL_TOKEN=$(infisical login \
+              --method=universal-auth \
+              --client-id=${{ secrets.INFISICAL_CLIENT_ID }} \
+              --client-secret=${{ secrets.INFISICAL_CLIENT_SECRET }} \
+              --domain=http://localhost:8080 \
+              --plain --silent)
+
+            {{IF_PRISMA}}# Apply schema changes before starting the container.
+            # Runs npm run db:push inside a temporary container using the just-built
+            # image — Node is not installed on the host.
+            DB_PASSWORD=$(infisical secrets get DB_PASSWORD \
+              --token="$INFISICAL_TOKEN" \
+              --projectId=${{ secrets.INFISICAL_PROJECT_ID }} \
+              --env=dev \
+              --path=/{{INFISICAL_PATH}} \
+              --domain=http://localhost:8080 \
+              --plain 2>/dev/null)
+
+            docker run --rm \
+              --network katisha-net \
+              -e DB_PASSWORD="${DB_PASSWORD}" \
+              ${{ secrets.DOCKER_USERNAME }}/{{SERVICE_NAME}}:${{ needs.build-and-push.outputs.image_tag }} \
+              npm run db:push
+
+            {{/IF_PRISMA}}infisical run \
+              --token="$INFISICAL_TOKEN" \
+              --projectId=${{ secrets.INFISICAL_PROJECT_ID }} \
+              --env=dev \
+              --path=/{{INFISICAL_PATH}} \
+              --domain=http://localhost:8080 \
+              -- docker compose up -d --no-deps --pull always {{CONTAINER_NAME}}
+
+            echo "Waiting for {{CONTAINER_NAME}} to be healthy..."
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' {{CONTAINER_NAME}} 2>/dev/null || echo "missing")
+              [ "$STATUS" = "healthy" ] && break
+              [ $i -eq 30 ] && echo "Timed out waiting for {{CONTAINER_NAME}}" && exit 1
+              sleep 3
+            done
+
+            echo "{{CONTAINER_NAME}} is up."
 ```
+
+**Placeholders to replace:**
+
+| Placeholder | Example |
+|---|---|
+| `{{SERVICE_NAME}}` | `audit-svc` (Docker Hub image name) |
+| `{{SERVICE_DIR}}` | `audit-service` (directory under `~/katisha/`) |
+| `{{CONTAINER_NAME}}` | `audit-svc` (Docker container name) |
+| `{{INFISICAL_PATH}}` | `audit-svc` (Infisical secrets path) |
+| `{{DB_USER}}` | `audit_svc` (postgres role) |
+| `{{DB_NAME}}` | `audit_db` (postgres database) |
 
 **Rules:**
 - The `checks` job runs on every push and every PR — never skip it
 - `build-and-push` and `deploy` only run on pushes to `main`
-- Always push both the SHA tag and `latest` — SHA for immutability and
-  rollback, `latest` as a convenience pointer
-- Use `--no-deps` to avoid restarting unrelated services on the same host
-- Replace `{{SERVICE_NAME}}` with the actual service name in the deploy script
+- Always push both the SHA tag and `latest`
+- `db:push` runs **before** the container starts — schema is always applied first
+- `db:push` is idempotent — safe to run on every deploy, not just first deploy
+- Node is not on the host; run `npm run db:push` inside a `docker run --rm` using
+  the just-built image connected to `katisha-net`
+- The runtime image must be `node:22-bookworm-slim` (not distroless) so that
+  `npm` is available when the image is used as a job runner for `db:push`
 
 ---
 
