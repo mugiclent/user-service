@@ -340,6 +340,7 @@ jobs:
             docker run --rm \
               --network katisha-net \
               -e DB_PASSWORD="${DB_PASSWORD}" \
+              -e DATABASE_URL="postgresql://{{DB_USER}}:${DB_PASSWORD}@pgbouncer:6432/{{DB_NAME}}?pgbouncer=true&connect_timeout=5&pool_timeout=5" \
               ${{ secrets.DOCKER_USERNAME }}/{{SERVICE_NAME}}:${{ needs.build-and-push.outputs.image_tag }} \
               npm run db:push
 
