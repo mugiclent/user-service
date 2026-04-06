@@ -18,24 +18,27 @@ info:
 
     ## IAM — Roles & Permissions
 
-    Permissions are stored in the database and packed into the JWT as CASL rules at login time.
-    The `authorize(action, subject)` middleware checks these rules at the route level before the
-    service is called. Object-level scoping (e.g. `org_admin` can only see users in their org)
-    is enforced inside the service layer via Prisma query conditions.
+    Permissions are stored as **grant patterns** on roles in the database and packed into the JWT
+    as CASL rules at login time. The `authorize(action, subject)` middleware checks rules at the
+    route level; object-level scoping is enforced inside the service layer.
 
-    Pre-set role slugs and their effective permissions:
+    Grant pattern format: `{subject}:{action}:{scope}` — e.g. `user:read:org`, `*:*:platform`.
 
-    | Role | Permissions | Scoping |
-    |---|---|---|
-    | `katisha_super_admin` | `manage:all` | none |
-    | `katisha_admin` | `manage:all` | none |
-    | `katisha_support` | `read:User`, `read:Org` | none |
-    | `org_admin` | `manage:User`, `write:Org` | own org only |
-    | `dispatcher` | `write:User`, `read:Org` | own org only |
-    | `driver` | `read+update:User` | self only (no create) |
-    | `passenger` | `read+update:User` | self only (no create) |
+    | Scope | Meaning |
+    |---|---|
+    | `own` | Caller can only act on their own record |
+    | `org` | Caller can act on any record within their org |
+    | `platform` | Unrestricted — all orgs |
 
-    `write` expands to `create`, `read`, `update` (no delete). `manage` covers everything.
+    Built-in role slugs:
+
+    | Role | Effective scope |
+    |---|---|
+    | `platform-admin` | `*:*:platform` — full access |
+    | `org-admin` | `*:*:org` — full access within their org |
+    | `dispatcher` | `user:invite:org`, `user:read:org`, `audit_log:read:org` |
+    | `driver` | `user:read:own`, `user:update:own` |
+    | `passenger` | `user:read:own`, `user:update:own` |
 
     ## Organization Application Flow (public, no auth)
 
@@ -48,7 +51,7 @@ info:
     3. **Verify contact** — `POST /organizations/verify-contact` with the OTP.
        Sets `contact_email_verified_at` and triggers admin review notification.
 
-    Katisha admins then use `POST /organizations/:id/approve` or `PATCH /organizations/:id`
+    Platform admins then use `POST /organizations/:id/approve` or `PATCH /organizations/:id`
     (with `status: rejected`) to act on the application.
 
     ## Presigned URL Upload Pattern
@@ -97,6 +100,15 @@ tags:
     description: |
       User profiles, avatar uploads, staff invitations, 2FA toggle, user administration.
       Requires an organization to exist before staff can be invited into it.
+  - name: Roles
+    description: |
+      Role and grant management. Roles are collections of grant patterns (`subject:action:scope`).
+      Managed roles (`is_managed: true`) are seeded by the platform and cannot be mutated via API.
+      `platform-admin` can manage all non-managed roles; `org-admin` can only manage roles within their own org.
+  - name: Permissions
+    description: |
+      Read-only catalog of all valid permission subjects and actions.
+      Use `GET /permissions` to build the pattern picker when creating or editing roles.
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -150,7 +162,7 @@ components:
         roles:
           type: array
           items: { type: string }
-          example: [org_admin]
+          example: [org-admin]
         status:             { type: string, enum: [active, pending_verification, suspended] }
         two_factor_enabled: { type: boolean }
 
@@ -242,7 +254,7 @@ components:
         roles:
           type: array
           items: { type: string }
-          example: [org_admin]
+          example: [org-admin]
         permissions:
           type: array
           items: { $ref: '#/components/schemas/CaslRule' }
@@ -394,10 +406,50 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Admin only — UUID of the katisha_admin who ran the final approval.
+          description: Admin only — UUID of the platform-admin who ran the final approval.
         approved_at:    { type: string, format: date-time, nullable: true }
         created_at:     { type: string, format: date-time }
         updated_at:     { type: string, format: date-time }
+
+    # ── IAM ───────────────────────────────────────────────────────────────────
+
+    Grant:
+      type: object
+      description: A single grant pattern assigned to a role.
+      properties:
+        id:           { type: string, format: uuid }
+        pattern:
+          type: string
+          example: 'user:read:org'
+          description: '`{subject}:{action}:{scope}` — e.g. `user:read:org`, `*:*:platform`. Use `GET /permissions` for valid subjects/actions.'
+        is_managed:
+          type: boolean
+          description: Managed grants are seeded by the platform and cannot be deleted via API.
+
+    Role:
+      type: object
+      description: A named collection of grant patterns.
+      properties:
+        id:           { type: string, format: uuid }
+        name:         { type: string, example: 'Document Reviewer' }
+        slug:         { type: string, example: 'document-reviewer' }
+        org_id:       { type: string, format: uuid, nullable: true, description: 'null for platform-wide roles.' }
+        is_managed:   { type: boolean, description: 'Managed roles cannot be renamed or deleted via API.' }
+        grants:
+          type: array
+          items: { $ref: '#/components/schemas/Grant' }
+
+    Permission:
+      type: object
+      description: A single entry from the permission catalog — valid (subject, action) pairs recognized by the platform.
+      properties:
+        id:           { type: string, format: uuid }
+        code:         { type: string, example: 'user:read', description: 'Canonical identifier. Use as the `subject:action` part of a grant pattern.' }
+        action:       { type: string, example: 'read' }
+        subject:      { type: string, example: 'User' }
+        display_name: { type: string, example: 'View users' }
+        description:  { type: string, example: 'Read user profile information', nullable: true }
+        group:        { type: string, example: 'User management' }
 
   responses:
     Unauthorized:
@@ -812,7 +864,7 @@ paths:
         on behalf of a client. For the self-service public flow, see `POST /organizations/apply`.
 
         **Required permission:** `create:Org`
-        → `katisha_admin`, `katisha_super_admin`
+        → `platform-admin`
 
         The org name is slugified automatically. Duplicate names return `409`.
       requestBody:
@@ -853,7 +905,7 @@ paths:
       description: |
         **Required permission:** `read:Org`
 
-        Platform admins see all orgs. `org_admin` and `dispatcher` see only their own org.
+        Platform admins see all orgs. `org-admin` and `dispatcher` see only their own org.
       parameters:
         - in: query
           name: page
@@ -919,7 +971,7 @@ paths:
       description: |
         **Required permission:** `read:Org`
 
-        Non-admin callers (`org_admin`, `dispatcher`) may only read their own org.
+        Non-admin callers (`org-admin`, `dispatcher`) may only read their own org.
         The service returns `403` if the caller's `org_id` does not match the requested `id`.
       responses:
         '200':
@@ -938,7 +990,7 @@ paths:
         **Required permission:** `update:Org`
 
         Field-level rules:
-        - `status` and `rejection_reason` — platform admins only. `org_admin` callers receive `403` if these fields are included.
+        - `status` and `rejection_reason` — platform admins only. `org-admin` callers receive `403` if these fields are included.
         - `logo_path` — use `path` from the logo presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
         - `status: suspended` — blacklists all active access tokens for this org's users in Redis (15 min TTL). Sends `org.suspended` notifications directly to the org contact and fans out to all active org users via their `notif_channel` preference.
         - `status: rejected` — sends `org.rejected` notifications to the org contact.
@@ -981,7 +1033,7 @@ paths:
 
         ---
 
-        **Step 1 — Cooperative pre-approval** (`org_admin` of the parent cooperative)
+        **Step 1 — Cooperative pre-approval** (`org-admin` of the parent cooperative)
 
         Applies only to `cooperative` child orgs that require parent sign-off.
         Sets `cooperative_approved_at` on the child org. Org status remains `pending`.
@@ -990,7 +1042,7 @@ paths:
 
         ---
 
-        **Step 2 — Final Katisha approval** (`katisha_admin` or `katisha_super_admin`)
+        **Step 2 — Final Katisha approval** (`platform-admin`)
 
         Transitions the org from `pending` to `active`. Sets `approved_by` and `approved_at`.
 
@@ -998,7 +1050,7 @@ paths:
         `cooperative_approved_at` set returns `400 COOPERATIVE_APPROVAL_REQUIRED`.
 
         On final approval:
-        - Creates an `Invitation` record for the org contact to register as `org_admin`.
+        - Creates an `Invitation` record for the org contact to register as `org-admin`.
         - Sends `org_approved.sms` and `org_approved.mail` to the org contact with the invite link (7-day expiry).
 
         ---
@@ -1034,7 +1086,7 @@ paths:
       summary: Get presigned PUT URL for own org's logo
       description: |
         Returns a short-lived S3 presigned URL for uploading the organization logo directly to SeaweedFS.
-        Intended for `org_admin` users to manage their own org's logo.
+        Intended for `org-admin` users to manage their own org's logo.
 
         **Required permission:** `update:Org`
 
@@ -1066,7 +1118,7 @@ paths:
         '400':
           description: |
             Missing `content_type` query parameter (`MISSING_CONTENT_TYPE`), or the authenticated
-            user has no `org_id` (`NO_ORG` — should not occur for a valid `org_admin`).
+            user has no `org_id` (`NO_ORG` — should not occur for a valid `org-admin`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1088,7 +1140,7 @@ paths:
         org by ID. Intended for platform admins to manage logos for any org.
 
         **Required permission:** `update:Org`
-        → `katisha_admin`, `katisha_super_admin` in practice
+        → `platform-admin` in practice
       parameters:
         - in: path
           name: id
@@ -1274,8 +1326,7 @@ paths:
         On success:
         - Sets `contact_email_verified_at` on the org record.
         - Sends a confirmation SMS + email to the applicant.
-        - Notifies all active Katisha admins (users with `katisha_admin` or `katisha_super_admin`
-          role) via email to trigger manual review.
+        - Notifies all active platform admins (users with `platform-admin` role) via email to trigger manual review.
 
         Katisha admins then use `POST /organizations/:id/approve` or
         `PATCH /organizations/:id` with `status: rejected` to finalize the application.
@@ -1497,10 +1548,10 @@ paths:
 
         The invitee calls `POST /users/accept-invite` with the raw token to activate their account.
 
-        **Required permission:** `create:User`
-        → `katisha_admin`, `katisha_super_admin`, `org_admin`, `dispatcher`
+        **Required permission:** `invite:User`
+        → `platform-admin`, `org-admin`, `dispatcher`
 
-        `org_admin` callers are automatically scoped to their own org — the `org_id` body field
+        `org-admin` callers are automatically scoped to their own org — the `org_id` body field
         is ignored and the caller's `org_id` is used instead.
       requestBody:
         required: true
@@ -1513,7 +1564,7 @@ paths:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
                 role_slug:    { type: string, example: dispatcher, description: Must match an existing role slug. }
-                org_id:       { type: string, format: uuid, description: Target org. Ignored for org_admin callers. }
+                org_id:       { type: string, format: uuid, description: Target org. Ignored for org-admin callers. }
                 email:        { type: string, format: email, maxLength: 255 }
                 phone_number: { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
       responses:
@@ -1588,8 +1639,8 @@ paths:
         **Required permission:** `read:User`
 
         Scoping rules:
-        - Platform admins (`katisha_admin`, `katisha_support`) see all users and may filter by `org_id`.
-        - `org_admin` and `dispatcher` see only users within their own org (scoped automatically).
+        - `platform-admin` sees all users and may filter by `org_id`.
+        - `org-admin` and `dispatcher` see only users within their own org (scoped automatically).
 
         The `phone_number` field is masked to `+250***123` format for non-admin callers.
       parameters:
@@ -1660,11 +1711,11 @@ paths:
 
         Field notes:
         - `role_slugs` — full role replacement (all existing roles are deleted and replaced).
-          Requires `manage:User` (platform admins only).
+          Requires `assign_role:User` (`platform-admin` only).
         - `status: suspended` — immediately blacklists all active access tokens in Redis
           (15 min TTL matching the JWT TTL) and sends a `security.account_suspended`
           notification to the target user via their `notif_channel` preference.
-        - `org_id` — reassigns the user to a different org (effective for platform admins only).
+        - `org_id` — reassigns the user to a different org (`platform-admin` only).
       requestBody:
         required: true
         content:
@@ -1680,7 +1731,7 @@ paths:
                 role_slugs:
                   type: array
                   items: { type: string }
-                  description: Replaces all current roles. Requires manage:User (katisha_admin/super_admin only).
+                  description: 'Replaces all current roles atomically. Requires `assign_role:User` (`platform-admin` only). To add a role without removing others, fetch the user first and merge.'
       responses:
         '200':
           description: Updated user profile
@@ -1696,7 +1747,7 @@ paths:
       tags: [Users]
       summary: Soft-delete user
       description: |
-        **Required permission:** `delete:User` → platform admins only.
+        **Required permission:** `delete:User` → `platform-admin` only.
 
         Sets `deleted_at` (soft delete) and revokes all active refresh tokens.
         Active access tokens are blacklisted in Redis for 15 min (matching the JWT TTL)
@@ -1706,3 +1757,325 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  ROLES                                                                   ║
+  # ║  Manage role definitions and their grant patterns.                       ║
+  # ║  Order: list → create → read → update → delete → grants                 ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  /roles:
+    get:
+      tags: [Roles]
+      summary: List roles
+      description: |
+        **Required permission:** `read:Role`
+
+        `platform-admin` sees all roles (platform-wide and org-specific).
+        `org-admin` sees only roles belonging to their org plus managed platform roles.
+      responses:
+        '200':
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+    post:
+      tags: [Roles]
+      summary: Create a role
+      description: |
+        **Required permission:** `create:Role`
+
+        Creates a new role with the supplied grant patterns. Patterns must be valid
+        entries from the permission catalog (`GET /permissions`) combined with a valid scope.
+
+        `org-admin` callers may only assign patterns with scope `own` or `org` — not `platform`.
+        The role is scoped to the caller's org automatically.
+
+        `platform-admin` callers may create platform-wide roles (omit `org_id`) or org-scoped
+        roles (include `org_id`).
+
+        Duplicate slug returns `409`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, patterns]
+              properties:
+                name:
+                  type: string
+                  maxLength: 100
+                  example: 'Document Reviewer'
+                slug:
+                  type: string
+                  maxLength: 100
+                  pattern: '^[a-z0-9-]+$'
+                  description: Auto-generated from name if omitted.
+                  example: 'document-reviewer'
+                org_id:
+                  type: string
+                  format: uuid
+                  description: '`platform-admin` only — scope the role to a specific org. Omit for a platform-wide role.'
+                patterns:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[\w*][\w_*]*:[\w*]+:(own|org|platform)$'
+                    example: 'user:read:org'
+                  description: Grant patterns in `subject:action:scope` format. Use `GET /permissions` for valid subjects and actions.
+      responses:
+        '201':
+          description: Role created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden or privilege escalation attempt (scope exceeds caller's max scope)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: GRANT_SCOPE_ESCALATION } }
+        '409':
+          description: Role slug already exists
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_ALREADY_EXISTS } }
+        '422':
+          description: Invalid pattern format or unknown subject/action
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_GRANT_PATTERN, message: '"user:badaction:org" is not a valid grant pattern' } }
+
+  /roles/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    get:
+      tags: [Roles]
+      summary: Get role by ID
+      description: |
+        **Required permission:** `read:Role`
+
+        `org-admin` may only access roles within their own org or managed platform roles.
+      responses:
+        '200':
+          description: Role detail with all grants
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: Role not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_NOT_FOUND } }
+
+    patch:
+      tags: [Roles]
+      summary: Rename a role
+      description: |
+        **Required permission:** `update:Role`
+
+        Only the `name` field is mutable. To change grants, use `POST /roles/{id}/grants`
+        or `DELETE /roles/{id}/grants/{grantId}`.
+
+        Returns `403 MANAGED_ROLE_IMMUTABLE` if the role has `is_managed: true`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100, example: 'Senior Document Reviewer' }
+      responses:
+        '200':
+          description: Updated role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden or managed role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: MANAGED_ROLE_IMMUTABLE } }
+        '404':
+          description: Role not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_NOT_FOUND } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+    delete:
+      tags: [Roles]
+      summary: Delete a role
+      description: |
+        **Required permission:** `delete:Role`
+
+        Returns `403 MANAGED_ROLE_IMMUTABLE` for managed roles.
+        Users currently assigned this role will lose it on their next token refresh.
+      responses:
+        '204': { description: Role deleted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden or managed role
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: MANAGED_ROLE_IMMUTABLE } }
+        '404':
+          description: Role not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_NOT_FOUND } }
+
+  /roles/{id}/grants:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    post:
+      tags: [Roles]
+      summary: Add a grant to a role
+      description: |
+        **Required permission:** `update:Role`
+
+        Adds a single grant pattern to the role. Idempotent — if the pattern already exists,
+        the current role is returned unchanged (no error, no duplicate created).
+
+        Returns `403 MANAGED_ROLE_IMMUTABLE` for managed roles.
+
+        Grant changes take effect on the user's **next token refresh** — not immediately.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [pattern]
+              properties:
+                pattern:
+                  type: string
+                  pattern: '^[\w*][\w_*]*:[\w*]+:(own|org|platform)$'
+                  example: 'audit_log:read:org'
+                  description: 'Grant pattern in `subject:action:scope` format.'
+      responses:
+        '200':
+          description: Role with the new grant added (or unchanged if already present)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Role' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden, managed role, or scope escalation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: Role not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_NOT_FOUND } }
+        '422':
+          description: Invalid pattern
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_GRANT_PATTERN } }
+
+  /roles/{id}/grants/{grantId}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+        description: Role ID
+      - in: path
+        name: grantId
+        required: true
+        schema: { type: string, format: uuid }
+        description: Grant ID (from the role's `grants` array)
+
+    delete:
+      tags: [Roles]
+      summary: Remove a grant from a role
+      description: |
+        **Required permission:** `update:Role`
+
+        Returns `403 MANAGED_GRANT_IMMUTABLE` if the grant has `is_managed: true`.
+        Returns `403 MANAGED_ROLE_IMMUTABLE` if the role itself is managed.
+
+        Changes take effect on the user's **next token refresh**.
+      responses:
+        '204': { description: Grant removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden, managed role, or managed grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: MANAGED_GRANT_IMMUTABLE } }
+        '404':
+          description: Role or grant not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: GRANT_NOT_FOUND } }
+
+  # ╔══════════════════════════════════════════════════════════════════════════╗
+  # ║  PERMISSIONS                                                             ║
+  # ║  Read-only catalog of valid (subject, action) pairs.                    ║
+  # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  /permissions:
+    get:
+      tags: [Permissions]
+      summary: List permission catalog
+      description: |
+        **Required permission:** `read:Role`
+
+        Returns all valid `(subject, action)` pairs recognized by the platform, ordered by
+        `group → subject → action`. Use this to build the pattern picker UI when creating
+        or editing roles — never allow free-text pattern entry.
+
+        The `code` field is the canonical `subject:action` string. Combine it with a scope
+        suffix to form a grant pattern: `"{code}:{scope}"` → e.g. `"user:read:org"`.
+      responses:
+        '200':
+          description: Full permission catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Permission' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }

@@ -29,7 +29,16 @@ export const createSwaggerRouter = (): Router => {
     swaggerOptions: {
       docExpansion: 'list',
       persistAuthorization: true,
+      defaultModelExpandDepth: 2,
+      defaultModelsExpandDepth: -1,
     },
+    customCss: `
+      .swagger-ui .info { margin-bottom: 2rem; }
+      .swagger-ui .info .description { overflow: auto; max-height: none; }
+      .swagger-ui .info table { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.75rem 0; }
+      .swagger-ui .info table th, .swagger-ui .info table td { padding: 6px 12px; border: 1px solid #dde; }
+      .swagger-ui .opblock-tag { margin-top: 0.5rem; }
+    `,
   }));
 
   return router;
