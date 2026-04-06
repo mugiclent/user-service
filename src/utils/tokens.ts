@@ -21,10 +21,9 @@ export const signAccessToken = (
 ): string => {
   const { rules, ...rest } = payload;
   const tokenPayload: JwtPayload = { ...rest, rules: packRules(rules) };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   return jwt.sign(tokenPayload as object, config.jwt.privateKey, {
-    algorithm: 'EdDSA' as any, // @types/jsonwebtoken doesn't include EdDSA yet; library supports it since v9
-    expiresIn: config.jwt.expiresIn as any, // jsonwebtoken v9 uses branded StringValue from ms
+    algorithm: 'EdDSA' as Parameters<typeof jwt.sign>[2] extends { algorithm?: infer A } ? A : never,
+    expiresIn: config.jwt.expiresIn as Parameters<typeof jwt.sign>[2] extends { expiresIn?: infer E } ? E : never,
   });
 };
 
