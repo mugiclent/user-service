@@ -1,5 +1,6 @@
 // Infrastructure config — excluded from unit test coverage (see vitest.config.ts)
 import Joi from 'joi';
+import { stripPhonePlus } from '../utils/phone.js';
 
 const schema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'test', 'production').required(),
@@ -43,6 +44,10 @@ const schema = Joi.object({
   RATE_LIMIT_LOGIN_WINDOW_SECONDS: Joi.number().default(900),
   RATE_LIMIT_RESET_MAX: Joi.number().default(3),
   RATE_LIMIT_RESET_WINDOW_SECONDS: Joi.number().default(3600),
+
+  ADMIN_EMAIL: Joi.string().email().required(),
+  ADMIN_PHONE: Joi.string().trim().custom((v: string) => stripPhonePlus(v)).pattern(/^\d{7,15}$/).required(),
+  ADMIN_PASSWORD: Joi.string().min(12).required(),
 
   APP_URL: Joi.string().uri().required(),
   STAFF_APP_URL: Joi.string().uri().required(),
@@ -90,6 +95,9 @@ export const env = value as {
   RATE_LIMIT_LOGIN_WINDOW_SECONDS: number;
   RATE_LIMIT_RESET_MAX: number;
   RATE_LIMIT_RESET_WINDOW_SECONDS: number;
+  ADMIN_EMAIL: string;
+  ADMIN_PHONE: string;
+  ADMIN_PASSWORD: string;
   APP_URL: string;
   STAFF_APP_URL: string;
   S3_ENDPOINT: string;

@@ -1,8 +1,7 @@
 import Joi from 'joi';
+import { phoneSchema } from '../../utils/phone.js';
 
-const phone = Joi.string().trim().pattern(/^\+\d{7,15}$/).messages({
-  'string.pattern.base': 'Phone number must be in E.164 format (e.g. +250788000000)',
-});
+const phone = phoneSchema;
 
 const password = Joi.string().min(8).max(128);
 

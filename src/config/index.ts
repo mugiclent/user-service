@@ -43,6 +43,12 @@ export const config = {
     windowSeconds: env.OTP_WINDOW_SECONDS,
   },
 
+  admin: {
+    email:    env.ADMIN_EMAIL,
+    phone:    env.ADMIN_PHONE,
+    password: env.ADMIN_PASSWORD,
+  },
+
   appUrl: env.APP_URL,
   staffAppUrl: env.STAFF_APP_URL,
 

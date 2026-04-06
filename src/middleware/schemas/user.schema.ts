@@ -1,4 +1,5 @@
 import Joi from 'joi';
+import { phoneSchema } from '../../utils/phone.js';
 
 const password = Joi.string().min(8).max(128);
 
@@ -24,7 +25,7 @@ export const inviteUserSchema = Joi.object({
   role_slug: Joi.string().trim().required(),
   org_id: Joi.string().uuid().optional(),
   email: Joi.string().trim().email().max(255).optional(),
-  phone_number: Joi.string().trim().pattern(/^\+\d{7,15}$/).optional(),
+  phone_number: phoneSchema.optional(),
 }).or('email', 'phone_number');
 
 export const acceptInviteSchema = Joi.object({

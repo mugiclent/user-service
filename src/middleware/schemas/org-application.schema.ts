@@ -1,10 +1,11 @@
 import Joi from 'joi';
+import { phoneSchema } from '../../utils/phone.js';
 
 export const applyOrgSchema = Joi.object({
   name: Joi.string().trim().max(200).required(),
   org_type: Joi.string().valid('company', 'cooperative').required(),
   contact_email: Joi.string().trim().email().max(255).required(),
-  contact_phone: Joi.string().trim().pattern(/^\+\d{7,15}$/).required(),
+  contact_phone: phoneSchema.required(),
   address: Joi.string().trim().max(500).optional(),
   tin: Joi.string().trim().max(50).optional(),
   license_number: Joi.string().trim().max(100).optional(),

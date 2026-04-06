@@ -14,6 +14,8 @@
  * created via the API (is_managed=false) or here at startup (is_managed=true).
  */
 import { prisma } from '../models/index.js';
+import { config } from '../config/index.js';
+import { hashPassword } from '../utils/crypto.js';
 import type { PermissionAction, PermissionSubject } from '@prisma/client';
 import type { PermissionScope } from '../utils/ability.js';
 
@@ -349,6 +351,40 @@ export const bootstrap = async (): Promise<void> => {
   }
 
   console.warn(`[bootstrap] ${permCount} permissions, ${roleCount} managed roles, ${grantCount} managed grants synced`);
+
+  // ── 3. Default platform-admin user ──────────────────────────────────────
+  const platformAdminRole = await prisma.role.findFirst({
+    where: { slug: 'platform-admin', org_id: null },
+  });
+
+  if (!platformAdminRole) {
+    console.warn('[bootstrap] platform-admin role missing — skipping admin user seed');
+    return;
+  }
+
+  const existing = await prisma.user.findFirst({
+    where: { user_roles: { some: { role: { slug: 'platform-admin' } } } },
+  });
+
+  if (!existing) {
+    const hashed = await hashPassword(config.admin.password);
+    await prisma.user.create({
+      data: {
+        first_name:        'Platform',
+        last_name:         'Admin',
+        email:             config.admin.email,
+        phone_number:      config.admin.phone,
+        password_hash:     hashed,
+        user_type:         'staff',
+        status:            'active',
+        email_verified_at: new Date(),
+        user_roles: {
+          create: { role_id: platformAdminRole.id },
+        },
+      },
+    });
+    console.warn(`[bootstrap] default platform-admin created: ${config.admin.email}`);
+  }
 };
 
 // ---------------------------------------------------------------------------
