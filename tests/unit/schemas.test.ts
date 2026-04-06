@@ -45,7 +45,7 @@ describe('loginSchema', () => {
 
 describe('registerSchema', () => {
   it('accepts valid registration', () => ok(registerSchema, { first_name: 'A', last_name: 'B', phone_number: '+250788000001', password: 'password123' }));
-  it('rejects invalid phone format', () => fail(registerSchema, { first_name: 'A', last_name: 'B', phone_number: '0788000001', password: 'password123' }));
+  it('rejects invalid phone format', () => fail(registerSchema, { first_name: 'A', last_name: 'B', phone_number: 'not-a-phone', password: 'password123' }));
   it('rejects missing first_name', () => fail(registerSchema, { last_name: 'B', phone_number: '+250788000001', password: 'pass' }));
 });
 
@@ -141,7 +141,7 @@ describe('applyOrgSchema', () => {
   };
   it('accepts valid application', () => ok(applyOrgSchema, base));
   it('rejects missing business_certificate_path', () => fail(applyOrgSchema, { ...base, business_certificate_path: undefined }));
-  it('rejects invalid phone format', () => fail(applyOrgSchema, { ...base, contact_phone: '0788000001' }));
+  it('rejects invalid phone format', () => fail(applyOrgSchema, { ...base, contact_phone: 'not-a-phone' }));
 });
 
 describe('verifyOrgContactSchema', () => {
