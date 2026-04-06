@@ -10,6 +10,9 @@ build/
 .env.local
 .env.*.local
 
+# Local secrets — filled-in copy of actions.env, never commit
+actions.env
+
 # Production scripts — contain real secrets, never commit
 scripts/*.prod.sh
 

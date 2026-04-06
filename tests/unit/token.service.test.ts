@@ -37,8 +37,7 @@ vi.mock('../../src/utils/tokens.js', () => ({
 }));
 
 vi.mock('../../src/utils/ability.js', () => ({
-  collectPermissions: vi.fn().mockReturnValue([]),
-  buildRulesForUser: vi.fn().mockReturnValue([]),
+  buildRulesFromGrants: vi.fn().mockReturnValue([]),
   buildAbilityFromRules: vi.fn(),
 }));
 
@@ -67,7 +66,7 @@ const makeUser = (overrides: Record<string, unknown> = {}) => ({
   fcm_token: null,
   notif_channel: 'sms',
   user_roles: [],
-  user_permissions: [],
+  user_grants: [],
   ...overrides,
 });
 

@@ -3,7 +3,7 @@ import type { Prisma, UserWithRoles, AuthenticatedUser } from '../models/index.j
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
-import { buildRulesForUser, buildAbilityFromRules, collectPermissions } from '../utils/ability.js';
+import { buildRulesFromGrants, buildAbilityFromRules } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import { config } from '../config/index.js';
@@ -11,16 +11,8 @@ import { deleteFromS3 } from '../utils/s3.js';
 
 const withRoles = {
   include: {
-    user_roles: {
-      include: {
-        role: {
-          include: {
-            role_permissions: { include: { permission: true } },
-          },
-        },
-      },
-    },
-    user_permissions: { include: { permission: true } },
+    user_roles: { include: { role: { include: { role_grants: true } } } },
+    user_grants: true,
   },
 } as const;
 
@@ -65,8 +57,8 @@ export const UserService = {
 
     if (existing?.avatar_path) deleteFromS3(existing.avatar_path);
 
-    const entries = collectPermissions(user);
-    const rules = buildRulesForUser(user.id, user.org_id, entries);
+    const patterns = [...user.user_roles.flatMap(ur => ur.role.role_grants.map(g => g.pattern)), ...user.user_grants.map(g => g.pattern)];
+    const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
     return serializeUserMe(user, rules) as unknown as Record<string, unknown>;
   },
 
@@ -78,7 +70,7 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
-    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -123,7 +115,7 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     targetId: string,
   ): Promise<Record<string, unknown>> {
-    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
 
     const user = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -154,7 +146,7 @@ export const UserService = {
     targetId: string,
     data: { first_name?: string; last_name?: string; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
-    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
     const ability = buildAbilityFromRules(requestingUser.rules);
     // Role assignment requires unconditioned manage:User (platform admins only)
 
@@ -245,7 +237,7 @@ export const UserService = {
     if (!target || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
 
     // Org-scoped admins (org_admin) may only delete users within their own org
-    const isAdmin = requestingUser.role_slugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
     if (!isAdmin && requestingUser.org_id && target.org_id !== requestingUser.org_id) {
       throw new AppError('FORBIDDEN', 403);
     }
@@ -277,7 +269,7 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
-    const isOrgAdmin = requestingUser.role_slugs.includes('org_admin');
+    const isOrgAdmin = requestingUser.role_slugs.includes('org-admin');
 
     const org_id = isOrgAdmin ? requestingUser.org_id! : (data.org_id ?? null);
 

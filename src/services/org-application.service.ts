@@ -99,7 +99,7 @@ export const OrgApplicationService = {
    *   - Sets contact_email_verified_at
    *   - Clears the OTP fields
    *   - Sends confirmation to the applicant (email + SMS)
-   *   - Notifies Katisha admins (queried by katisha_admin / katisha_super_admin role)
+   *   - Notifies Katisha admins (queried by platform-admin role)
    */
   async verifyContact(orgId: string, otp: string): Promise<void> {
     const org = await prisma.org.findUnique({ where: { id: orgId } });
@@ -140,7 +140,7 @@ export const OrgApplicationService = {
     // Notify all active Katisha admins
     const admins = await prisma.user.findMany({
       where: {
-        user_roles: { some: { role: { slug: { in: ['katisha_admin', 'katisha_super_admin'] } } } },
+        user_roles: { some: { role: { slug: { in: ['platform-admin'] } } } },
         status: 'active',
         deleted_at: null,
       },

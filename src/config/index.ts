@@ -8,15 +8,17 @@ export const config = {
   isTest: env.NODE_ENV === 'test',
 
   db: {
-    url: env.NODE_ENV === 'test' ? env.TEST_DATABASE_URL : env.DATABASE_URL,
+    url: env.NODE_ENV === 'test'
+      ? env.TEST_DATABASE_URL
+      : `postgresql://${env.DB_USER}:${env.DB_PASSWORD}@${env.DB_HOST}:${env.DB_PORT}/${env.DB_NAME}?pgbouncer=true&connect_timeout=5&pool_timeout=5`,
   },
 
   redis: {
-    url: env.REDIS_URL,
+    url: `redis://:${env.REDIS_PASSWORD}@${env.REDIS_HOST}:${env.REDIS_PORT}`,
   },
 
   rabbitmq: {
-    url: env.RABBITMQ_URL,
+    url: `amqp://${env.RABBITMQ_USER}:${env.RABBITMQ_PASSWORD}@${env.RABBITMQ_HOST}:${env.RABBITMQ_PORT}`,
   },
 
   jwt: {
@@ -42,10 +44,10 @@ export const config = {
   },
 
   appUrl: env.APP_URL,
+  staffAppUrl: env.STAFF_APP_URL,
 
   s3: {
     endpoint: env.S3_ENDPOINT,
-    publicEndpoint: env.S3_PUBLIC_ENDPOINT,
     accessKey: env.S3_ACCESS_KEY,
     secretKey: env.S3_SECRET_KEY,
     bucket: env.S3_BUCKET,

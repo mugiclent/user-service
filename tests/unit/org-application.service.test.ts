@@ -207,7 +207,7 @@ describe('OrgApplicationService.verifyContact', () => {
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          user_roles: { some: { role: { slug: { in: ['katisha_admin', 'katisha_super_admin'] } } } },
+          user_roles: { some: { role: { slug: { in: ['platform-admin'] } } } },
           status: 'active',
           deleted_at: null,
         }),

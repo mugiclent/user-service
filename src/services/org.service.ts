@@ -23,8 +23,7 @@ const withRelations = {
   },
 } as const;
 
-const isAdmin = (roleSlugs: string[]): boolean =>
-  roleSlugs.some((r) => ['katisha_super_admin', 'katisha_admin'].includes(r));
+const isAdmin = (roleSlugs: string[]): boolean => roleSlugs.includes('platform-admin');
 
 export const OrgService = {
   // ---------------------------------------------------------------------------
@@ -162,7 +161,7 @@ export const OrgService = {
   ): Promise<Record<string, unknown>> {
     const roleSlugs = requestingUser.role_slugs;
     const admin = isAdmin(roleSlugs);
-    const orgAdmin = roleSlugs.includes('org_admin');
+    const orgAdmin = roleSlugs.includes('org-admin');
 
     if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
     if (orgAdmin && !admin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
@@ -274,7 +273,7 @@ export const OrgService = {
   ): Promise<Record<string, unknown>> {
     const roleSlugs = requestingUser.role_slugs;
     const admin = isAdmin(roleSlugs);
-    const orgAdmin = roleSlugs.includes('org_admin');
+    const orgAdmin = roleSlugs.includes('org-admin');
 
     const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
@@ -311,7 +310,7 @@ export const OrgService = {
 
     // Create an invitation for the org admin account using the org contact details.
     // The contact email/phone belongs to the person who will manage this org.
-    const orgAdminRole = await prisma.role.findFirst({ where: { slug: 'org_admin', org_id: null } });
+    const orgAdminRole = await prisma.role.findFirst({ where: { slug: 'org-admin', org_id: null } });
     if (orgAdminRole) {
       const rawToken = generateRawToken();
       const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -329,7 +328,7 @@ export const OrgService = {
         },
       });
 
-      const inviteLink = `${config.appUrl}/accept-invite?token=${rawToken}`;
+      const inviteLink = `${config.staffAppUrl}/accept-invite?token=${rawToken}`;
       const expiresInSeconds = 7 * 24 * 60 * 60;
       publishSms({
         type: 'org_approved.sms',

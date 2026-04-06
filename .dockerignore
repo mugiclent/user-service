@@ -1,0 +1,30 @@
+# Build output
+dist/
+
+# Dependencies (reinstalled inside the image)
+node_modules/
+
+# Environment files — never bake secrets into an image
+.env
+.env.*
+actions.env
+
+# Local dev
+docker-compose.local.yml
+Dockerfile.local
+local/
+
+# Git
+.git/
+.gitignore
+
+# Editor
+.vscode/
+.idea/
+
+# Test & coverage
+coverage/
+tests/
+
+# OS
+.DS_Store

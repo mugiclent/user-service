@@ -10,16 +10,8 @@ import type { AuthTokens } from '../utils/sendAuthResponse.js';
 
 const withRoles = {
   include: {
-    user_roles: {
-      include: {
-        role: {
-          include: {
-            role_permissions: { include: { permission: true } },
-          },
-        },
-      },
-    },
-    user_permissions: { include: { permission: true } },
+    user_roles: { include: { role: { include: { role_grants: true } } } },
+    user_grants: true,
   },
 } as const;
 

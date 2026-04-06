@@ -5,14 +5,27 @@ const schema = Joi.object({
   NODE_ENV: Joi.string().valid('development', 'test', 'production').required(),
   PORT: Joi.number().default(3000),
 
-  DATABASE_URL: Joi.string().uri().required(),
+  // Database
+  DB_USER: Joi.string().required(),
+  DB_PASSWORD: Joi.string().required(),
+  DB_NAME: Joi.string().required(),
+  DB_HOST: Joi.string().default('pgbouncer'),
+  DB_PORT: Joi.number().default(6432),
+  // Required only in test env — full URL for test runner (no pgbouncer)
   TEST_DATABASE_URL: Joi.string()
     .uri()
     .when('NODE_ENV', { is: 'test', then: Joi.required() }),
 
-  REDIS_URL: Joi.string().uri().required(),
+  // Redis
+  REDIS_PASSWORD: Joi.string().required(),
+  REDIS_HOST: Joi.string().default('redis'),
+  REDIS_PORT: Joi.number().default(6379),
 
-  RABBITMQ_URL: Joi.string().uri().required(),
+  // RabbitMQ
+  RABBITMQ_USER: Joi.string().required(),
+  RABBITMQ_PASSWORD: Joi.string().required(),
+  RABBITMQ_HOST: Joi.string().default('rabbitmq'),
+  RABBITMQ_PORT: Joi.number().default(5672),
 
   JWT_PRIVATE_KEY: Joi.string().required(), // PEM Ed25519 private key (-----BEGIN PRIVATE KEY-----)
   JWT_EXPIRES_IN: Joi.string().default('15m'),
@@ -31,16 +44,15 @@ const schema = Joi.object({
   RATE_LIMIT_RESET_MAX: Joi.number().default(3),
   RATE_LIMIT_RESET_WINDOW_SECONDS: Joi.number().default(3600),
 
-  APP_URL: Joi.string().uri().default('http://localhost:3001'),
+  APP_URL: Joi.string().uri().required(),
+  STAFF_APP_URL: Joi.string().uri().required(),
 
   S3_ENDPOINT: Joi.string().uri().required(),
-  S3_PUBLIC_ENDPOINT: Joi.string().uri().required(),
   S3_ACCESS_KEY: Joi.string().required(),
   S3_SECRET_KEY: Joi.string().required(),
   S3_BUCKET: Joi.string().default('katisha'),
   S3_REGION: Joi.string().default('us-east-1'),
   S3_PRESIGNED_EXPIRES_IN: Joi.number().integer().default(300),
-
 });
 
 const { error, value } = schema.validate(process.env, { allowUnknown: true });
@@ -52,10 +64,19 @@ if (error) {
 export const env = value as {
   NODE_ENV: 'development' | 'test' | 'production';
   PORT: number;
-  DATABASE_URL: string;
+  DB_USER: string;
+  DB_PASSWORD: string;
+  DB_NAME: string;
+  DB_HOST: string;
+  DB_PORT: number;
   TEST_DATABASE_URL: string;
-  REDIS_URL: string;
-  RABBITMQ_URL: string;
+  REDIS_PASSWORD: string;
+  REDIS_HOST: string;
+  REDIS_PORT: number;
+  RABBITMQ_USER: string;
+  RABBITMQ_PASSWORD: string;
+  RABBITMQ_HOST: string;
+  RABBITMQ_PORT: number;
   JWT_PRIVATE_KEY: string;
   JWT_EXPIRES_IN: string;
   REFRESH_TOKEN_TTL_DAYS: number;
@@ -70,8 +91,8 @@ export const env = value as {
   RATE_LIMIT_RESET_MAX: number;
   RATE_LIMIT_RESET_WINDOW_SECONDS: number;
   APP_URL: string;
+  STAFF_APP_URL: string;
   S3_ENDPOINT: string;
-  S3_PUBLIC_ENDPOINT: string;
   S3_ACCESS_KEY: string;
   S3_SECRET_KEY: string;
   S3_BUCKET: string;

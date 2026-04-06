@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import type { UserWithRoles } from '../models/index.js';
 import { hashToken, generateRawToken } from '../utils/crypto.js';
 import { signAccessToken } from '../utils/tokens.js';
-import { buildRulesForUser, collectPermissions } from '../utils/ability.js';
+import { buildRulesFromGrants } from '../utils/ability.js';
 import { AppError } from '../utils/AppError.js';
 import { config } from '../config/index.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
@@ -14,23 +14,25 @@ import { notifyUser } from '../utils/publishers.js';
 
 const withRoles = {
   include: {
-    user_roles: {
-      include: {
-        role: {
-          include: {
-            role_permissions: { include: { permission: true } },
-          },
-        },
-      },
-    },
-    user_permissions: { include: { permission: true } },
+    user_roles: { include: { role: { include: { role_grants: true } } } },
+    user_grants: true,
   },
 } as const;
 
+/** Collect all grant patterns for a user (from roles + direct grants), deduped. */
+const collectPatterns = (user: UserWithRoles): string[] => {
+  const seen = new Set<string>();
+  for (const ur of user.user_roles) {
+    for (const g of ur.role.role_grants) seen.add(g.pattern);
+  }
+  for (const g of user.user_grants) seen.add(g.pattern);
+  return Array.from(seen);
+};
+
 /** Build access token payload and sign it. */
 const buildAccessToken = (user: UserWithRoles): string => {
-  const entries = collectPermissions(user);
-  const rules = buildRulesForUser(user.id, user.org_id, entries);
+  const patterns = collectPatterns(user);
+  const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
   const role_slugs = user.user_roles.map((ur) => ur.role.slug);
   return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules });
 };

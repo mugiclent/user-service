@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/katisha-user-service
+  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/user-svc
 
 jobs:
   # ── 1. Quality checks ────────────────────────────────────────────────────────
@@ -38,10 +38,9 @@ jobs:
         run: npx eslint src/ tests/
 
       - name: Unit tests
-        run: npx vitest run
+        run: npx vitest run --passWithNoTests
 
   # ── 2. Build & push image ────────────────────────────────────────────────────
-  # Runs only on pushes to main (not on PRs)
   build-and-push:
     name: Build & push Docker image
     runs-on: ubuntu-latest
@@ -55,12 +54,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set image tags
+      - name: Set image tag
         id: meta
         run: |
           SHA_TAG=sha-${{ github.sha }}
           echo "sha_tag=${SHA_TAG}" >> $GITHUB_OUTPUT
-          echo "IMAGE_TAG=${SHA_TAG}" >> $GITHUB_ENV
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -76,10 +74,8 @@ jobs:
         with:
           context: .
           push: true
-          # Tag with both the immutable SHA and `latest` so the server can
-          # always pull the newest image with a single `docker compose pull`
           tags: |
-            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.sha_tag }}
             ${{ env.IMAGE_NAME }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -91,27 +87,69 @@ jobs:
     needs: build-and-push
 
     steps:
-      - name: SSH into server and deploy
-        uses: appleboy/ssh-action@v1
+      - uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT }}
-          envs: IMAGE_TAG
+          host:     ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key:      ${{ secrets.SERVER_SSH_KEY }}
           script: |
             set -e
+            export PATH="$HOME/.local/bin:$PATH"
 
-            cd ${{ secrets.DEPLOY_PATH }}
+            DEPLOY_DIR="$HOME/katisha/user-service"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
 
-            # Write the new image tag into the env file so docker compose picks it up
-            sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}/" .env
-            # Append if not present yet (first deploy)
-            grep -q "^IMAGE_TAG=" .env || echo "IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}" >> .env
+            if [ -d "$DEPLOY_DIR/.git" ]; then
+              cd "$DEPLOY_DIR"
+              git pull origin main
+            else
+              mkdir -p "$HOME/katisha"
+              git clone "$REPO_URL" "$DEPLOY_DIR"
+              cd "$DEPLOY_DIR"
+            fi
 
-            # Pull the new image and recreate the container
-            docker compose pull user-service
-            docker compose up -d --no-deps user-service
+            # Minimal .env — only vars needed for docker compose image resolution.
+            # All app secrets come from Infisical.
+            cat > .env <<ENVEOF
+            DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
+            IMAGE_TAG=${{ needs.build-and-push.outputs.image_tag }}
+            ENVEOF
 
-            # Remove dangling images to keep the server clean
-            docker image prune -f
+            INFISICAL_TOKEN=$(infisical login \
+              --method=universal-auth \
+              --client-id=${{ secrets.INFISICAL_CLIENT_ID }} \
+              --client-secret=${{ secrets.INFISICAL_CLIENT_SECRET }} \
+              --domain=http://localhost:8080 \
+              --plain --silent)
+
+            DB_PASSWORD=$(infisical secrets get DB_PASSWORD \
+              --token="$INFISICAL_TOKEN" \
+              --projectId=${{ secrets.INFISICAL_PROJECT_ID }} \
+              --env=dev \
+              --path=/user-svc \
+              --domain=http://localhost:8080 \
+              --plain 2>/dev/null)
+
+            docker run --rm \
+              --network katisha-net \
+              -e DATABASE_URL="postgresql://user_svc:${DB_PASSWORD}@pgbouncer:6432/katisha_users?pgbouncer=true&connect_timeout=5&pool_timeout=5" \
+              ${{ secrets.DOCKER_USERNAME }}/user-svc:${{ needs.build-and-push.outputs.image_tag }} \
+              npm run db:push
+
+            infisical run \
+              --token="$INFISICAL_TOKEN" \
+              --projectId=${{ secrets.INFISICAL_PROJECT_ID }} \
+              --env=dev \
+              --path=/user-svc \
+              --domain=http://localhost:8080 \
+              -- docker compose up -d --no-deps --pull always user-svc
+
+            echo "Waiting for user-svc to be healthy..."
+            for i in $(seq 1 30); do
+              STATUS=$(docker inspect --format='{{.State.Health.Status}}' user-svc 2>/dev/null || echo "missing")
+              [ "$STATUS" = "healthy" ] && break
+              [ $i -eq 30 ] && echo "Timed out waiting for user-svc" && exit 1
+              sleep 3
+            done
+
+            echo "user-svc is up."

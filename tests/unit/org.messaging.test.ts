@@ -18,7 +18,7 @@ vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
   return { ...actual, generateRawToken: vi.fn(() => 'org-raw-token'), hashToken: vi.fn((t: string) => `hashed:${t}`) };
 });
 
-vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com' } }));
+vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com', staffAppUrl: 'https://app.katisha.com' } }));
 
 vi.mock('../../src/utils/s3.js', () => ({
   keyFromPublicUrl: vi.fn(() => null),
@@ -56,7 +56,7 @@ const baseOrg = {
 
 const adminUser = {
   id: 'admin-1',
-  role_slugs: ['katisha_super_admin'],
+  role_slugs: ['platform-admin'],
   org_id: null,
 };
 
@@ -191,7 +191,7 @@ describe('OrgService.approveChildOrg — org_approved notifications', () => {
   beforeEach(() => {
     mockFindUnique.mockResolvedValue({ ...baseOrg, status: 'pending', org_type: 'company', cooperative_approved_at: null });
     mockUpdate.mockResolvedValue(approvedOrg);
-    mockRoleFindFirst.mockResolvedValue({ id: 'role-org-admin', slug: 'org_admin' });
+    mockRoleFindFirst.mockResolvedValue({ id: 'role-org-admin', slug: 'org-admin' });
     mockInvitationCreate.mockResolvedValue({});
   });
 

@@ -74,8 +74,7 @@ const mockAbilityCan = vi.fn().mockReturnValue(false);
 
 vi.mock('../../src/utils/ability.js', () => ({
   buildAbilityFromRules: vi.fn().mockReturnValue({ can: mockAbilityCan }),
-  buildRulesForUser: vi.fn().mockReturnValue([]),
-  collectPermissions: vi.fn().mockReturnValue([]),
+  buildRulesFromGrants: vi.fn().mockReturnValue([]),
 }));
 
 const mockGenerateRawToken = vi.fn().mockReturnValue('raw-invite-token');
@@ -139,7 +138,7 @@ const makeUser = (overrides: Record<string, unknown> = {}) => ({
   avatar_path: null as string | null,
   notif_channel: 'sms',
   user_roles: [] as unknown[],
-  user_permissions: [] as unknown[],
+  user_grants: [] as unknown[],
   ...overrides,
 });
 
@@ -229,7 +228,7 @@ describe('UserService.listUsers', () => {
   });
 
   it('admin can filter by org_id query param', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.listUsers(authUser as never, { org_id: 'org-42' });
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ org_id: 'org-42' }) }),
@@ -237,7 +236,7 @@ describe('UserService.listUsers', () => {
   });
 
   it('applies status and user_type filters', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.listUsers(authUser as never, { status: 'active', user_type: 'staff' });
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -249,7 +248,7 @@ describe('UserService.listUsers', () => {
   it('returns data, total, page, limit', async () => {
     mockUserFindMany.mockResolvedValueOnce([makeUser()]);
     mockUserCount.mockResolvedValueOnce(1);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     const result = await UserService.listUsers(authUser as never, { page: 2, limit: 5 });
     expect(result).toMatchObject({ total: 1, page: 2, limit: 5 });
     expect(result.data).toHaveLength(1);
@@ -261,7 +260,7 @@ describe('UserService.listUsers', () => {
 describe('UserService.getUserById', () => {
   it('throws USER_NOT_FOUND when user does not exist', async () => {
     mockUserFindUnique.mockResolvedValueOnce(null);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.getUserById(authUser as never, 'ghost-id')).rejects.toMatchObject({
       code: 'USER_NOT_FOUND', status: 404,
     });
@@ -270,7 +269,7 @@ describe('UserService.getUserById', () => {
   it('admin can view any user', async () => {
     const user = makeUser({ id: 'other-user', org_id: 'other-org' });
     mockUserFindUnique.mockResolvedValueOnce(user);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.getUserById(authUser as never, 'other-user');
     expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(user, true);
   });
@@ -278,7 +277,7 @@ describe('UserService.getUserById', () => {
   it('org-scoped user can view users in same org', async () => {
     const user = makeUser({ org_id: 'org-1' });
     mockUserFindUnique.mockResolvedValueOnce(user);
-    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org_admin'] });
+    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org-admin'] });
     await UserService.getUserById(authUser as never, 'user-1');
     expect(mockSerializeUserFullProfile).toHaveBeenCalled();
   });
@@ -286,7 +285,7 @@ describe('UserService.getUserById', () => {
   it('org-scoped user cannot view user in different org', async () => {
     const user = makeUser({ org_id: 'other-org' });
     mockUserFindUnique.mockResolvedValueOnce(user);
-    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org_admin'] });
+    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org-admin'] });
     await expect(UserService.getUserById(authUser as never, 'user-1')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -315,7 +314,7 @@ describe('UserService.getUserById', () => {
 describe('UserService.updateUser', () => {
   it('throws USER_NOT_FOUND when target does not exist', async () => {
     mockUserFindUnique.mockResolvedValueOnce(null);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.updateUser(authUser as never, 'ghost-id', {})).rejects.toMatchObject({
       code: 'USER_NOT_FOUND', status: 404,
     });
@@ -323,7 +322,7 @@ describe('UserService.updateUser', () => {
 
   it('org-scoped user cannot update user in different org', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ org_id: 'other-org' }));
-    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org_admin'] });
+    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org-admin'] });
     await expect(UserService.updateUser(authUser as never, 'user-2', {})).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -342,7 +341,7 @@ describe('UserService.updateUser', () => {
     const updated = makeUser({ id: 'user-2', first_name: 'New', org_id: 'org-1', user_roles: [] });
     mockUserFindUnique.mockResolvedValueOnce(target);
     mockTxUserUpdate.mockResolvedValueOnce(updated);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.updateUser(authUser as never, 'user-2', { first_name: 'New' });
     expect(mockTxUserUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ first_name: 'New' }) }),
@@ -357,8 +356,8 @@ describe('UserService.updateUser', () => {
     mockTxRoleFindMany.mockResolvedValueOnce([{ id: 'role-1' }]);
     mockTxUserFindUniqueOrThrow.mockResolvedValueOnce(updated);
     mockAbilityCan.mockReturnValue(true);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
-    await UserService.updateUser(authUser as never, 'user-2', { role_slugs: ['org_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    await UserService.updateUser(authUser as never, 'user-2', { role_slugs: ['org-admin'] });
     expect(mockTxUserRoleDeleteMany).toHaveBeenCalledWith({ where: { user_id: 'user-2' } });
     expect(mockTxUserRoleCreateMany).toHaveBeenCalled();
   });
@@ -368,7 +367,7 @@ describe('UserService.updateUser', () => {
     const updated = makeUser({ id: 'user-2', status: 'suspended', org_id: null, user_roles: [] });
     mockUserFindUnique.mockResolvedValueOnce(target);
     mockTxUserUpdate.mockResolvedValueOnce(updated);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.updateUser(authUser as never, 'user-2', { status: 'suspended' });
     expect(mockNotifyUser).toHaveBeenCalledWith(
       updated,
@@ -382,7 +381,7 @@ describe('UserService.updateUser', () => {
 describe('UserService.deleteUser', () => {
   it('throws USER_NOT_FOUND when user does not exist', async () => {
     mockUserFindUnique.mockResolvedValueOnce(null);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.deleteUser(authUser as never, 'ghost-id')).rejects.toMatchObject({
       code: 'USER_NOT_FOUND', status: 404,
     });
@@ -390,7 +389,7 @@ describe('UserService.deleteUser', () => {
 
   it('throws USER_NOT_FOUND when user is already soft-deleted', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ deleted_at: new Date() }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.deleteUser(authUser as never, 'user-1')).rejects.toMatchObject({
       code: 'USER_NOT_FOUND', status: 404,
     });
@@ -398,7 +397,7 @@ describe('UserService.deleteUser', () => {
 
   it('throws FORBIDDEN for org_admin deleting user outside their org', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ org_id: 'other-org' }));
-    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org_admin'] });
+    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org-admin'] });
     await expect(UserService.deleteUser(authUser as never, 'user-2')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -406,7 +405,7 @@ describe('UserService.deleteUser', () => {
 
   it('soft-deletes and revokes tokens in a transaction', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.deleteUser(authUser as never, 'user-2');
     expect(mockTransaction).toHaveBeenCalled();
     expect(mockUserUpdate).toHaveBeenCalledWith(
@@ -417,7 +416,7 @@ describe('UserService.deleteUser', () => {
 
   it('sets Redis blacklist entry', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.deleteUser(authUser as never, 'user-2');
     expect(mockRedisSet).toHaveBeenCalledWith('blacklist:user:user-2', '1', 'EX', 900);
   });
@@ -425,13 +424,13 @@ describe('UserService.deleteUser', () => {
   it('fails open when Redis throws', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
     mockRedisSet.mockRejectedValueOnce(new Error('redis down'));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.deleteUser(authUser as never, 'user-2')).resolves.toBeUndefined();
   });
 
   it('publishes an audit event', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.deleteUser(authUser as never, 'user-2');
     expect(mockPublishAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'delete', resource: 'User', resource_id: 'user-2' }),
@@ -445,7 +444,7 @@ describe('UserService.inviteUser', () => {
   const base = { first_name: 'Bob', last_name: 'Smith', role_slug: 'dispatcher' };
 
   it('throws VALIDATION_ERROR when neither email nor phone provided', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.inviteUser(authUser as never, base)).rejects.toMatchObject({
       code: 'VALIDATION_ERROR', status: 422,
     });
@@ -453,7 +452,7 @@ describe('UserService.inviteUser', () => {
 
   it('throws ROLE_NOT_FOUND when role does not exist', async () => {
     mockRoleFindFirst.mockResolvedValueOnce(null);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(UserService.inviteUser(authUser as never, { ...base, email: 'bob@acme.com' })).rejects.toMatchObject({
       code: 'ROLE_NOT_FOUND', status: 404,
     });
@@ -461,7 +460,7 @@ describe('UserService.inviteUser', () => {
 
   it('org_admin uses their own org_id', async () => {
     mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1' });
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await UserService.inviteUser(authUser as never, { ...base, email: 'bob@acme.com' });
     expect(mockRoleFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ org_id: 'org-1' }) }),
@@ -470,21 +469,21 @@ describe('UserService.inviteUser', () => {
 
   it('sends SMS when phone_number provided', async () => {
     mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1' });
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.inviteUser(authUser as never, { ...base, phone_number: '+250788000001' });
     expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'invite.sms' }));
   });
 
   it('sends email when email provided', async () => {
     mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1' });
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await UserService.inviteUser(authUser as never, { ...base, email: 'bob@acme.com' });
     expect(mockPublishMail).toHaveBeenCalledWith(expect.objectContaining({ type: 'invite.mail' }));
   });
 
   it('returns invite_token and expires_at', async () => {
     mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1' });
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     const result = await UserService.inviteUser(authUser as never, { ...base, email: 'b@c.com' });
     expect(result.invite_token).toBe('raw-invite-token');
     expect(result.expires_at).toBeInstanceOf(Date);

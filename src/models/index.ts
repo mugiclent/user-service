@@ -8,7 +8,7 @@ const adapter = new PrismaPg({ connectionString: config.db.url });
 export const prisma = new PrismaClient({ adapter });
 
 // Re-export Prisma types used across the service
-export type { User, Org, Role, UserRole, Permission, RolePermission, UserPermission, RefreshToken, Otp, Invitation } from '@prisma/client';
+export type { User, Org, Role, UserRole, RoleGrant, UserGrant, Permission, RefreshToken, Otp, Invitation } from '@prisma/client';
 export { Prisma } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
@@ -20,13 +20,11 @@ export type UserWithRoles = Prisma.UserGetPayload<{
     user_roles: {
       include: {
         role: {
-          include: {
-            role_permissions: { include: { permission: true } };
-          };
+          include: { role_grants: true };
         };
       };
     };
-    user_permissions: { include: { permission: true } };
+    user_grants: true;
   };
 }>;
 
@@ -39,7 +37,7 @@ export interface AuthenticatedUser {
   id: string;
   org_id: string | null;
   user_type: 'passenger' | 'staff';
-  /** Role slugs from the JWT — used for admin/org-scope checks without a DB query. */
+  /** Role slugs from the JWT — used for quick role checks without a DB query. */
   role_slugs: string[];
   /** Unpacked CASL rules from the JWT. */
   rules: AppRule[];

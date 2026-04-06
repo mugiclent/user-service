@@ -9,6 +9,8 @@ import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
 import orgRouter from '../api/org.routes.js';
 import orgApplicationRouter from '../api/org-application.routes.js';
+import roleRouter from '../api/role.routes.js';
+import permissionRouter from '../api/permission.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
 import { createSwaggerRouter } from './swagger.js';
 
@@ -59,6 +61,8 @@ export const createApp = (): Application => {
   // are matched before the authenticated /:id catch-all in org.routes.ts
   app.use('/api/v1/organizations', orgApplicationRouter);
   app.use('/api/v1/organizations', orgRouter);
+  app.use('/api/v1/roles', roleRouter);
+  app.use('/api/v1/permissions', permissionRouter);
 
   // Global error handler — must be last
   app.use(errorHandler);

@@ -84,7 +84,7 @@ const makeAuthUser = (overrides: Record<string, unknown> = {}) => ({
   id: 'user-admin',
   org_id: null as string | null,
   user_type: 'staff',
-  role_slugs: ['katisha_admin'] as string[],
+  role_slugs: ['platform-admin'] as string[],
   rules: [],
   ...overrides,
 });
@@ -149,7 +149,7 @@ describe('OrgService.listOrgs', () => {
   it('admin can see all orgs', async () => {
     mockOrgFindMany.mockResolvedValueOnce([makeOrg()]);
     mockOrgCount.mockResolvedValueOnce(1);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     const result = await OrgService.listOrgs(authUser as never, {});
     const where = mockOrgFindMany.mock.calls[0][0].where;
     expect(where).not.toHaveProperty('id');
@@ -159,7 +159,7 @@ describe('OrgService.listOrgs', () => {
   it('non-admin with org_id sees only their org', async () => {
     mockOrgFindMany.mockResolvedValueOnce([]);
     mockOrgCount.mockResolvedValueOnce(0);
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await OrgService.listOrgs(authUser as never, {});
     expect(mockOrgFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ id: 'org-1' }) }),
@@ -167,7 +167,7 @@ describe('OrgService.listOrgs', () => {
   });
 
   it('applies status and org_type filters', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.listOrgs(authUser as never, { status: 'active', org_type: 'company' });
     expect(mockOrgFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ status: 'active', org_type: 'company' }) }),
@@ -201,7 +201,7 @@ describe('OrgService.getMyOrg', () => {
 
   it('returns serialized org for org member', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
-    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org_admin'] });
+    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org-admin'] });
     const result = await OrgService.getMyOrg(authUser as never);
     expect(result).toMatchObject({ id: 'org-1', full: true });
   });
@@ -219,14 +219,14 @@ describe('OrgService.getOrgById', () => {
 
   it('admin can view any org', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ id: 'org-2' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], org_id: 'org-1' });
     await OrgService.getOrgById(authUser as never, 'org-2');
     expect(mockSerializeOrgFull).toHaveBeenCalledWith(expect.objectContaining({ id: 'org-2' }), true);
   });
 
   it('non-admin cannot view a different org', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ id: 'org-2' }));
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await expect(OrgService.getOrgById(authUser as never, 'org-2')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -234,7 +234,7 @@ describe('OrgService.getOrgById', () => {
 
   it('non-admin can view own org', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ id: 'org-1' }));
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await OrgService.getOrgById(authUser as never, 'org-1');
     expect(mockSerializeOrgFull).toHaveBeenCalled();
   });
@@ -251,14 +251,14 @@ describe('OrgService.updateOrg', () => {
   });
 
   it('throws FORBIDDEN for org_admin updating a different org', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await expect(OrgService.updateOrg(authUser as never, 'org-2', {})).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
   });
 
   it('throws FORBIDDEN when org_admin tries to change status', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'org-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await expect(OrgService.updateOrg(authUser as never, 'org-1', { status: 'active' })).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -266,7 +266,7 @@ describe('OrgService.updateOrg', () => {
 
   it('throws ORG_NOT_FOUND when org does not exist', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(null);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(OrgService.updateOrg(authUser as never, 'org-99', {})).rejects.toMatchObject({
       code: 'ORG_NOT_FOUND', status: 404,
     });
@@ -276,7 +276,7 @@ describe('OrgService.updateOrg', () => {
     const existing = { id: 'org-1', logo_path: null, name: 'Old', contact_email: 'a@b.com', contact_phone: '+250788000001', address: null, status: 'pending', rejection_reason: null };
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'active' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     const result = await OrgService.updateOrg(authUser as never, 'org-1', { status: 'active' });
     expect(result).toMatchObject({ id: 'org-1', full: true });
   });
@@ -285,7 +285,7 @@ describe('OrgService.updateOrg', () => {
     const existing = { id: 'org-1', logo_path: 'logos/old.png', name: 'Acme', contact_email: 'a@b.com', contact_phone: '+1', address: null, status: 'active', rejection_reason: null };
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg());
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.updateOrg(authUser as never, 'org-1', { logo_path: 'logos/new.png' });
     expect(mockDeleteFromS3).toHaveBeenCalledWith('logos/old.png');
   });
@@ -294,7 +294,7 @@ describe('OrgService.updateOrg', () => {
     const existing = { id: 'org-1', logo_path: null, name: 'Acme', contact_email: 'ops@acme.com', contact_phone: '+250788000001', address: null, status: 'active', rejection_reason: null };
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'suspended', contact_email: 'ops@acme.com' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.updateOrg(authUser as never, 'org-1', { status: 'suspended' });
     expect(mockRedisSet).toHaveBeenCalledWith('blacklist:org:org-1', '1', 'EX', 900);
     expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'org.suspended' }));
@@ -306,7 +306,7 @@ describe('OrgService.updateOrg', () => {
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'suspended', contact_email: 'a@b.com' }));
     mockRedisSet.mockRejectedValueOnce(new Error('redis down'));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(OrgService.updateOrg(authUser as never, 'org-1', { status: 'suspended' })).resolves.toBeDefined();
   });
 
@@ -314,7 +314,7 @@ describe('OrgService.updateOrg', () => {
     const existing = { id: 'org-1', logo_path: null, name: 'Acme', contact_email: 'ops@acme.com', contact_phone: '+250788000001', address: null, status: 'pending', rejection_reason: null };
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'rejected', contact_email: 'ops@acme.com' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.updateOrg(authUser as never, 'org-1', { status: 'rejected', rejection_reason: 'Docs invalid' });
     expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'org.rejected' }));
     expect(mockPublishMail).toHaveBeenCalledWith(expect.objectContaining({ type: 'org.rejected' }));
@@ -324,7 +324,7 @@ describe('OrgService.updateOrg', () => {
     const existing = { id: 'org-1', logo_path: null, name: 'Acme', contact_email: 'a@b.com', contact_phone: '+1', address: null, status: 'pending', rejection_reason: null };
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'active' }));
-    const authUser = makeAuthUser({ id: 'admin-user', role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ id: 'admin-user', role_slugs: ['platform-admin'] });
     await OrgService.updateOrg(authUser as never, 'org-1', { status: 'active' });
     expect(mockOrgUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -337,7 +337,7 @@ describe('OrgService.updateOrg', () => {
     const existing = { id: 'org-1', logo_path: null, name: 'Old Name', contact_email: 'a@b.com', contact_phone: '+1', address: null, status: 'active', rejection_reason: null };
     mockOrgFindUnique.mockResolvedValueOnce(existing);
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ name: 'New Name' }));
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.updateOrg(authUser as never, 'org-1', { name: 'New Name' });
     expect(mockOrgUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -352,7 +352,7 @@ describe('OrgService.updateOrg', () => {
     mockOrgUpdate.mockResolvedValueOnce(makeOrg({ status: 'suspended', contact_email: 'ops@acme.com' }));
     const activeUser = { id: 'u1', phone_number: '+250788000002', email: null, fcm_token: null, notif_channel: 'sms' };
     mockUserFindMany.mockResolvedValueOnce([activeUser]);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.updateOrg(authUser as never, 'org-1', { status: 'suspended' });
     // flush the fire-and-forget promise
     await new Promise((resolve) => setImmediate(resolve));
@@ -385,7 +385,7 @@ describe('OrgService.approveChildOrg', () => {
     mockOrgFindUnique.mockResolvedValueOnce(org);
     const updated = makeOrg({ cooperative_approved_at: new Date() });
     mockOrgUpdate.mockResolvedValueOnce(updated);
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'coop-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'coop-1' });
     await OrgService.approveChildOrg(authUser as never, 'org-1');
     expect(mockOrgUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: { cooperative_approved_at: expect.any(Date) } }),
@@ -396,7 +396,7 @@ describe('OrgService.approveChildOrg', () => {
   it('throws FORBIDDEN when org_admin is not the parent cooperative', async () => {
     const org = makeOrg({ parent_org_id: 'other-coop' });
     mockOrgFindUnique.mockResolvedValueOnce(org);
-    const authUser = makeAuthUser({ role_slugs: ['org_admin'], org_id: 'my-coop' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'my-coop' });
     await expect(OrgService.approveChildOrg(authUser as never, 'org-1')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -405,7 +405,7 @@ describe('OrgService.approveChildOrg', () => {
   it('throws COOPERATIVE_APPROVAL_REQUIRED for cooperative without step 1', async () => {
     const org = makeOrg({ org_type: 'cooperative', cooperative_approved_at: null });
     mockOrgFindUnique.mockResolvedValueOnce(org);
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await expect(OrgService.approveChildOrg(authUser as never, 'org-1')).rejects.toMatchObject({
       code: 'COOPERATIVE_APPROVAL_REQUIRED', status: 400,
     });
@@ -417,7 +417,7 @@ describe('OrgService.approveChildOrg', () => {
     const updated = makeOrg({ status: 'active', contact_email: 'ops@acme.com' });
     mockOrgUpdate.mockResolvedValueOnce(updated);
     mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-org-admin' });
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.approveChildOrg(authUser as never, 'org-1');
     expect(mockOrgUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'active' }) }),
@@ -431,7 +431,7 @@ describe('OrgService.approveChildOrg', () => {
     const updated = makeOrg({ status: 'active', contact_email: 'ops@acme.com' });
     mockOrgUpdate.mockResolvedValueOnce(updated);
     mockRoleFindFirst.mockResolvedValueOnce(null); // no org_admin role found (no invitation created)
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.approveChildOrg(authUser as never, 'org-1');
     expect(mockOrgUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ status: 'active', approved_by: 'user-admin' }) }),
@@ -444,7 +444,7 @@ describe('OrgService.approveChildOrg', () => {
     const updated = makeOrg({ status: 'active', contact_email: 'ops@acme.com', contact_phone: '+250788000001' });
     mockOrgUpdate.mockResolvedValueOnce(updated);
     mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-org-admin' });
-    const authUser = makeAuthUser({ role_slugs: ['katisha_admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     await OrgService.approveChildOrg(authUser as never, 'org-1');
     expect(mockInvitationCreate).toHaveBeenCalled();
     expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'org_approved.sms' }));

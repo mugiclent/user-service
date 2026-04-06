@@ -34,14 +34,14 @@ const { signAccessToken, verifyAccessToken } = await import('../../src/utils/tok
 // ── signAccessToken ────────────────────────────────────────────────────────────
 
 describe('signAccessToken', () => {
-  it('calls jwt.sign with RS256 and packed rules', () => {
+  it('calls jwt.sign with EdDSA and packed rules', () => {
     const payload = { sub: 'u-1', org_id: null, user_type: 'staff' as const, role_slugs: ['org_admin'], rules: [] };
     const token = signAccessToken(payload);
     expect(token).toBe('signed.jwt.token');
     expect(mockSign).toHaveBeenCalledWith(
       expect.objectContaining({ sub: 'u-1', rules: [] }),
       'TEST_PRIVATE_KEY',
-      expect.objectContaining({ algorithm: 'RS256' }),
+      expect.objectContaining({ algorithm: 'EdDSA' }),
     );
   });
 
@@ -54,9 +54,9 @@ describe('signAccessToken', () => {
 // ── verifyAccessToken ──────────────────────────────────────────────────────────
 
 describe('verifyAccessToken', () => {
-  it('calls jwt.verify with RS256 and returns payload', () => {
+  it('calls jwt.verify with EdDSA and returns payload', () => {
     const result = verifyAccessToken('some.token.here');
-    expect(mockVerify).toHaveBeenCalledWith('some.token.here', 'TEST_PUBLIC_KEY', { algorithms: ['RS256'] });
+    expect(mockVerify).toHaveBeenCalledWith('some.token.here', 'TEST_PUBLIC_KEY', { algorithms: ['EdDSA'] });
     expect(result).toMatchObject({ sub: 'u-1' });
   });
 
