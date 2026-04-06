@@ -4,7 +4,7 @@ const patternItem = Joi.string()
   .trim()
   .max(80)
   .pattern(/^[\w*][\w_*]*:[\w*]+:(own|org|platform)$/)
-  .message('pattern must be {subject|*}:{action|*}:{own|org|platform}');
+  .message('pattern must be subject:action:scope where scope is own, org, or platform');
 
 export const createRoleSchema = Joi.object({
   name: Joi.string().trim().max(100).required(),
