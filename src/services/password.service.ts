@@ -3,6 +3,7 @@ import { hashPassword } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { OtpService } from './otp.service.js';
 import { publishSms, publishMail, publishAudit, notifyUser } from '../utils/publishers.js';
+import type { Locale } from '../utils/publishers.js';
 
 const isEmail = (identifier: string): boolean => identifier.includes('@');
 
@@ -23,6 +24,7 @@ export const PasswordService = {
 
     const { code, expiresIn } = await OtpService.create(user.id, 'password_reset');
 
+    const locale = user.locale as Locale;
     if (viaEmail && user.email) {
       publishMail({
         type: 'otp.mail',
@@ -31,6 +33,7 @@ export const PasswordService = {
         first_name: user.first_name,
         code,
         expires_in_seconds: expiresIn,
+        locale,
       });
     } else {
       publishSms({
@@ -39,6 +42,7 @@ export const PasswordService = {
         phone_number: user.phone_number,
         code,
         expires_in_seconds: expiresIn,
+        locale,
       });
     }
   },

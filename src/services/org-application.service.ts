@@ -4,6 +4,7 @@ import { hashToken } from '../utils/crypto.js';
 import { slugify } from '../utils/slugify.js';
 import { AppError } from '../utils/AppError.js';
 import { publishMail, publishSms, publishAudit } from '../utils/publishers.js';
+import type { Locale } from '../utils/publishers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,7 +145,7 @@ export const OrgApplicationService = {
         status: 'active',
         deleted_at: null,
       },
-      select: { email: true },
+      select: { email: true, locale: true },
     });
 
     for (const admin of admins) {
@@ -155,6 +156,7 @@ export const OrgApplicationService = {
           org_name: org.name,
           contact_email: org.contact_email,
           org_type: org.org_type,
+          locale: admin.locale as Locale,
         });
       }
     }

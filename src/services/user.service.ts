@@ -267,7 +267,7 @@ export const UserService = {
 
   async inviteUser(
     requestingUser: AuthenticatedUser,
-    data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string },
+    data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string; locale?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
     const isOrgAdmin = requestingUser.role_slugs.includes('org-admin');
 
@@ -282,6 +282,8 @@ export const UserService = {
     const tokenHash = hashToken(rawToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
 
+    const locale = (data.locale as 'rw' | 'en' | 'fr' | undefined) ?? 'rw';
+
     await prisma.invitation.create({
       data: {
         email: data.email ?? null,
@@ -291,6 +293,7 @@ export const UserService = {
         role_id: role.id,
         org_id,
         invited_by: requestingUser.id,
+        locale: data.locale ?? null,
         token_hash: tokenHash,
         expires_at: expiresAt,
       },
@@ -306,6 +309,7 @@ export const UserService = {
         first_name: data.first_name,
         invite_link: inviteLink,
         expires_in_seconds: expiresInSeconds,
+        locale,
       });
     }
     if (data.email) {
@@ -315,6 +319,7 @@ export const UserService = {
         first_name: data.first_name,
         invite_link: inviteLink,
         expires_in_seconds: expiresInSeconds,
+        locale,
       });
     }
     publishAudit({ actor_id: requestingUser.id, action: 'invite', resource: 'User', resource_id: requestingUser.id });
@@ -338,6 +343,8 @@ export const UserService = {
 
     const password_hash = await hashPassword(password);
 
+    const locale = (invitation.locale as 'rw' | 'en' | 'fr' | null) ?? 'rw';
+
     const user = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
         data: {
@@ -350,6 +357,7 @@ export const UserService = {
           status: 'active',
           org_id: invitation.org_id ?? null,
           notif_channel: ['sms', 'email', 'app'],  // staff receive on all channels by default
+          locale,
           phone_verified_at: invitation.phone_number ? new Date() : null,
           email_verified_at: invitation.email ? new Date() : null,
         },
@@ -363,9 +371,9 @@ export const UserService = {
     });
 
     // Welcome notifications for the newly created staff user
-    publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name });
+    publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name, locale });
     if (user.email) {
-      publishMail({ type: 'welcome.mail', email: user.email, first_name: user.first_name });
+      publishMail({ type: 'welcome.mail', email: user.email, first_name: user.first_name, locale });
     }
     publishAudit({ actor_id: user.id, action: 'accept_invite', resource: 'User', resource_id: user.id });
 

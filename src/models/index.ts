@@ -41,4 +41,6 @@ export interface AuthenticatedUser {
   role_slugs: string[];
   /** Unpacked CASL rules from the JWT. */
   rules: AppRule[];
+  /** User's preferred locale from the JWT — forwarded by the gateway as X-User-Locale. */
+  locale: string;
 }

@@ -11,11 +11,13 @@ export const loginSchema = Joi.object({
   device_name: Joi.string().trim().max(200).optional(),
 });
 
-// Passengers only — email is not accepted (staff are created via invite)
+// Passengers only — email is optional (staff are created via invite)
 export const registerSchema = Joi.object({
   first_name: Joi.string().trim().max(100).required(),
   last_name: Joi.string().trim().max(100).required(),
   phone_number: phone.required(),
+  email: Joi.string().trim().email().lowercase().max(255).optional(),
+  locale: Joi.string().valid('rw', 'en', 'fr').optional(),
   password: password.required(),
 });
 
@@ -44,4 +46,8 @@ export const resetPasswordSchema = Joi.object({
 
 export const registerDeviceSchema = Joi.object({
   fcm_token: Joi.string().trim().max(500).required(),
+});
+
+export const resendOtpSchema = Joi.object({
+  user_id: Joi.string().uuid().required(),
 });

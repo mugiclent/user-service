@@ -132,6 +132,7 @@ model User {
   two_factor_enabled         Boolean      @default(false)
   avatar_path                String?
   notif_channel              String[]     @default(["sms", "email"])
+  locale                     String       @default("rw") @db.VarChar(5)
   fcm_token                  String?
   org_id                     String?
   driver_license_number      String?      @db.VarChar(100)
@@ -265,6 +266,7 @@ model Invitation {
   role_id      String
   org_id       String?
   invited_by   String
+  locale       String?   @db.VarChar(5)
   token_hash   String    @unique
   expires_at   DateTime
   accepted_at  DateTime?

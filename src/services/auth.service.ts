@@ -5,7 +5,8 @@ import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
 import { OtpService } from './otp.service.js';
 import { PasswordService } from './password.service.js';
-import { publishAudit, publishSms, notifyUser } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
+import type { Locale } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 
 const withRoles = {
@@ -63,7 +64,7 @@ export const AuthService = {
     // 2FA: send OTP, defer token issuance to verify-2fa step
     if (user.two_factor_enabled) {
       const { code, expiresIn } = await OtpService.create(user.id, '2fa');
-      publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
+      publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
       return { requires_2fa: true, user_id: user.id, expires_in: expiresIn };
     }
 
@@ -126,19 +127,23 @@ export const AuthService = {
 
   /**
    * Register a new passenger account.
-   * Passengers have phone only — no email accepted.
-   * Sends welcome SMS + OTP for phone verification.
+   * Sends a 6-digit OTP to phone_number (always) and to email if provided.
+   * Welcome message is deferred until POST /auth/verify-phone succeeds.
    */
   async register(data: {
     first_name: string;
     last_name: string;
     phone_number: string;
+    email?: string;
+    locale?: string;
     password: string;
   }): Promise<{ user_id: string; expires_in: number }> {
-    const existing = await prisma.user.findUnique({
-      where: { phone_number: data.phone_number },
-    });
-    if (existing) throw new AppError('PHONE_ALREADY_EXISTS', 409);
+    const [existingPhone, existingEmail] = await Promise.all([
+      prisma.user.findUnique({ where: { phone_number: data.phone_number } }),
+      data.email ? prisma.user.findUnique({ where: { email: data.email } }) : null,
+    ]);
+    if (existingPhone) throw new AppError('PHONE_ALREADY_EXISTS', 409);
+    if (existingEmail) throw new AppError('EMAIL_ALREADY_EXISTS', 409);
 
     const password_hash = await hashPassword(data.password);
 
@@ -148,6 +153,9 @@ export const AuthService = {
           first_name: data.first_name,
           last_name: data.last_name,
           phone_number: data.phone_number,
+          ...(data.email ? { email: data.email } : {}),
+          notif_channel: data.email ? ['sms', 'email'] : ['sms'],
+          locale: data.locale ?? 'rw',
           password_hash,
           user_type: 'passenger',
           status: 'pending_verification',
@@ -162,8 +170,11 @@ export const AuthService = {
 
     const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
 
-    publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name });
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn });
+    const locale = (data.locale as 'rw' | 'en' | 'fr' | undefined) ?? 'rw';
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+    if (data.email) {
+      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: data.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+    }
     publishAudit({ actor_id: user.id, action: 'register', resource: 'User', resource_id: user.id });
 
     return { user_id: user.id, expires_in: expiresIn };
@@ -189,6 +200,11 @@ export const AuthService = {
     });
 
     publishAudit({ actor_id: user.id, action: 'verify_phone', resource: 'User', resource_id: user.id });
+
+    notifyUser(user, {
+      sms: { type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name },
+      mail: user.email ? { type: 'welcome.mail', email: user.email, first_name: user.first_name } : undefined,
+    });
 
     const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
     return { user, tokens };
@@ -217,5 +233,26 @@ export const AuthService = {
   /** Revoke all sessions for user. */
   async logoutAll(userId: string): Promise<void> {
     await TokenService.revokeAllForUser(userId);
+  },
+
+  /**
+   * Resend a phone verification OTP to a user still in pending_verification status.
+   * Idempotent — OtpService.create deletes any previous OTP for the same purpose.
+   */
+  async resendOtp(user_id: string): Promise<{ expires_in: number }> {
+    const user = await prisma.user.findUnique({ where: { id: user_id } });
+
+    if (!user || user.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
+    if (user.status !== 'pending_verification') throw new AppError('ALREADY_VERIFIED', 409);
+
+    const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
+
+    const locale = user.locale as Locale;
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+    if (user.email) {
+      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+    }
+
+    return { expires_in: expiresIn };
   },
 };

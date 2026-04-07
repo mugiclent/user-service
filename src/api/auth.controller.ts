@@ -51,6 +51,8 @@ export const AuthController = {
         first_name: string;
         last_name: string;
         phone_number: string;
+        email?: string;
+        locale?: string;
         password: string;
       });
       res.status(201).json(result);
@@ -143,6 +145,16 @@ export const AuthController = {
       await AuthService.logoutAll(user.id);
       clearAuthCookies(res);
       res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async resendOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { user_id } = req.body as { user_id: string };
+      const result = await AuthService.resendOtp(user_id);
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

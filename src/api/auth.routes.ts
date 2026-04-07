@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { AuthController } from './auth.controller.js';
 import { validate } from '../middleware/validate.js';
 import { authenticate } from '../middleware/authenticate.js';
-import { loginRateLimiter, resetRateLimiter } from '../middleware/rateLimiter.js';
+import { loginRateLimiter, resetRateLimiter, resendOtpRateLimiter } from '../middleware/rateLimiter.js';
 import {
   loginSchema,
   registerSchema,
@@ -12,6 +12,7 @@ import {
   forgotPasswordSchema,
   resetPasswordSchema,
   registerDeviceSchema,
+  resendOtpSchema,
 } from '../middleware/schemas/auth.schema.js';
 
 const router = Router();
@@ -42,6 +43,9 @@ router.post('/logout', AuthController.logout);
 
 // POST /api/v1/auth/logout-all  (requires valid access token)
 router.post('/logout-all', authenticate, AuthController.logoutAll);
+
+// POST /api/v1/auth/resend-otp  (resend phone verification OTP to a pending_verification user)
+router.post('/resend-otp', resendOtpRateLimiter, validate(resendOtpSchema), AuthController.resendOtp);
 
 // POST /api/v1/auth/register-device  (mobile app: store FCM token, switch notif_channel to 'app')
 router.post('/register-device', authenticate, validate(registerDeviceSchema), AuthController.registerDevice);

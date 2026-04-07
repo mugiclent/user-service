@@ -10,11 +10,12 @@ import type { AppRule } from '../utils/ability.js';
  * This middleware just deserializes the pre-verified identity into req.user.
  *
  * Expected headers (set by gateway, never by the client):
- *   X-User-ID    — user UUID
- *   X-Org-ID     — org UUID or absent for passengers
- *   X-User-Type  — "passenger" | "staff"
- *   X-User-Roles — JSON array of role slugs, e.g. ["org_admin"]
- *   X-User-Rules — JSON array of packed CASL rules
+ *   X-User-ID     — user UUID
+ *   X-Org-ID      — org UUID or absent for passengers
+ *   X-User-Type   — "passenger" | "staff"
+ *   X-User-Roles  — JSON array of role slugs, e.g. ["org_admin"]
+ *   X-User-Rules  — JSON array of packed CASL rules
+ *   X-User-Locale — user's preferred locale, e.g. "rw" | "en" | "fr"
  */
 export const authenticate = (req: Request, _res: Response, next: NextFunction): void => {
   const userId = req.headers['x-user-id'] as string | undefined;
@@ -33,6 +34,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
         (req.headers['x-user-roles'] as string | undefined) ?? '[]',
       ) as string[],
       rules: unpackRules(packedRules),
+      locale: (req.headers['x-user-locale'] as string | undefined) ?? 'rw',
     };
     next();
   } catch {

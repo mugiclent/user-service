@@ -26,6 +26,7 @@ export const inviteUserSchema = Joi.object({
   org_id: Joi.string().uuid().optional(),
   email: Joi.string().trim().email().max(255).optional(),
   phone_number: phoneSchema.optional(),
+  locale: Joi.string().valid('rw', 'en', 'fr').optional(),
 }).or('email', 'phone_number');
 
 export const acceptInviteSchema = Joi.object({

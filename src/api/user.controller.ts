@@ -136,6 +136,7 @@ export const UserController = {
         last_name: string;
         role_slug: string;
         org_id?: string;
+        locale?: string;
       });
       res.status(201).json(result);
     } catch (err) {

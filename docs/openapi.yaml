@@ -128,6 +128,18 @@ components:
       name: access_token
       description: Web clients only — set automatically by the server.
 
+  parameters:
+    ClientType:
+      in: header
+      name: X-Client-Type
+      required: false
+      schema:
+        type: string
+        enum: [mobile]
+      description: |
+        Omit for web clients (tokens returned as `HttpOnly` cookies).
+        Send `mobile` to receive tokens in the JSON response body instead.
+
   schemas:
 
     # ── Error ─────────────────────────────────────────────────────────────────
@@ -510,8 +522,12 @@ paths:
       summary: Register a new passenger account
       description: |
         Creates a `passenger` account in `pending_verification` status.
-        On success, sends a welcome SMS and a 6-digit OTP to `phone_number`.
-        The account cannot log in until `POST /auth/verify-phone` is called with the OTP.
+        On success, sends a 6-digit OTP to `phone_number`. If `email` is also provided,
+        the same OTP is sent there too. The account cannot log in until
+        `POST /auth/verify-phone` is called with the OTP.
+
+        On successful phone verification, a welcome message is sent via the
+        channels matching the user's `notif_channel` preference.
 
         Staff accounts are provisioned via `POST /users/invite` (admin-only flow).
       security: []
@@ -526,10 +542,16 @@ paths:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
                 phone_number: { type: string, pattern: '^\+\d{7,15}$', example: '+250780000001', description: E.164 format required. }
+                email:        { type: string, format: email, maxLength: 255, description: 'Optional. If provided, the OTP is also delivered here and `notif_channel` defaults to `[sms, email]`.' }
+                locale:
+                  type: string
+                  enum: [rw, en, fr]
+                  default: rw
+                  description: 'Language preference for notifications. Defaults to `rw` (Kinyarwanda).'
                 password:     { type: string, minLength: 8, maxLength: 128 }
       responses:
         '201':
-          description: Account created — OTP sent to phone
+          description: Account created — OTP sent to phone (and email if provided)
           content:
             application/json:
               schema:
@@ -544,17 +566,21 @@ paths:
                     description: OTP TTL in seconds (default 300 = 5 min).
                     example: 300
         '409':
-          description: Phone number already registered
+          description: Phone number or email already registered
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: PHONE_ALREADY_EXISTS } }
+              examples:
+                phone_exists: { value: { error: { code: PHONE_ALREADY_EXISTS } } }
+                email_exists: { value: { error: { code: EMAIL_ALREADY_EXISTS } } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /auth/verify-phone:
     post:
       tags: [Auth]
       summary: Verify phone number and activate account
+      parameters:
+        - $ref: '#/components/parameters/ClientType'
       description: |
         Activates the account (`pending_verification` → `active`) and issues the first token pair.
         This is the only way a self-registered passenger obtains tokens.
@@ -595,6 +621,8 @@ paths:
     post:
       tags: [Auth]
       summary: Login with phone or email + password
+      parameters:
+        - $ref: '#/components/parameters/ClientType'
       description: |
         Accepts a phone number in E.164 format or an email address as `identifier`.
 
@@ -656,6 +684,8 @@ paths:
     post:
       tags: [Auth]
       summary: Complete 2FA login
+      parameters:
+        - $ref: '#/components/parameters/ClientType'
       description: |
         Step 2 when `POST /auth/login` returns `requires_2fa: true`.
         Verifies the OTP sent to the user's phone and issues tokens. The OTP is single-use.
@@ -775,10 +805,7 @@ paths:
         user are wiped and a `security.all_sessions_revoked` notification is sent via SMS and push.
       security: []
       parameters:
-        - in: header
-          name: X-Client-Type
-          schema: { type: string, enum: [mobile] }
-          description: Required for mobile clients.
+        - $ref: '#/components/parameters/ClientType'
       responses:
         '200':
           description: New tokens issued
@@ -817,6 +844,53 @@ paths:
       responses:
         '204': { description: All sessions revoked }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/resend-otp:
+    post:
+      tags: [Auth]
+      summary: Resend phone verification OTP
+      description: |
+        Issues a fresh 6-digit OTP to a user who is still in `pending_verification` status
+        (e.g. the original OTP expired before they could enter it).
+
+        - Sends OTP via SMS always; also via email if the user registered with one.
+        - The previous OTP for `phone_verification` is invalidated automatically.
+        - Rate-limited to 3 requests per 10 minutes per `user_id`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id:
+                  type: string
+                  format: uuid
+      responses:
+        '200':
+          description: OTP resent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expires_in: { type: integer, description: OTP TTL in seconds }
+        '404':
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: User is already verified (`ALREADY_VERIFIED`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429': { $ref: '#/components/responses/TooManyRequests' }
+        '422': { $ref: '#/components/responses/ValidationError' }
 
   /auth/register-device:
     post:
@@ -1567,6 +1641,11 @@ paths:
                 org_id:       { type: string, format: uuid, description: Target org. Ignored for org-admin callers. }
                 email:        { type: string, format: email, maxLength: 255 }
                 phone_number: { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
+                locale:
+                  type: string
+                  enum: [rw, en, fr]
+                  default: rw
+                  description: 'Language preference for the invitee. Stored on the invitation and applied to the user account when the invite is accepted. Defaults to `rw`.'
       responses:
         '201':
           description: Invitation created and sent

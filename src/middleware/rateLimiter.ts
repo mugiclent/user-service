@@ -84,3 +84,28 @@ export const otpRateLimiter = async (
 
   next();
 };
+
+/**
+ * Rate limiter for OTP resend — keyed by user_id.
+ * Same thresholds as OTP send.
+ */
+export const resendOtpRateLimiter = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const userId = (req.body as { user_id?: string }).user_id;
+  if (!userId) return next();
+
+  const key = `ratelimit:resend-otp:${userId}`;
+  const { maxAttempts: max, windowSeconds } = config.otp;
+
+  try {
+    const count = await increment(key, windowSeconds);
+    if (count > max) return next(new AppError('TOO_MANY_ATTEMPTS', 429));
+  } catch {
+    // Redis failure — fail open
+  }
+
+  next();
+};

@@ -30,11 +30,11 @@ const collectPatterns = (user: UserWithRoles): string[] => {
 };
 
 /** Build access token payload and sign it. */
-const buildAccessToken = (user: UserWithRoles): string => {
+const buildAccessToken = async (user: UserWithRoles): Promise<string> => {
   const patterns = collectPatterns(user);
   const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
   const role_slugs = user.user_roles.map((ur) => ur.role.slug);
-  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules });
+  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules, locale: user.locale });
 };
 
 // ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ export const TokenService = {
     ip_address?: string,
     user_agent?: string,
   ): Promise<AuthTokens> {
-    const access = buildAccessToken(user);
+    const access = await buildAccessToken(user);
     const rawRefresh = generateRawToken();
     const hash = hashToken(rawRefresh);
     const expiresAt = new Date(Date.now() + config.jwt.refreshTtlMs);

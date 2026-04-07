@@ -43,7 +43,9 @@ export const publishAudit = (event: AuditEvent): void =>
 // Routed to the `sms` queue.
 // ---------------------------------------------------------------------------
 
-export type SmsEvent =
+export type Locale = 'rw' | 'en' | 'fr';
+
+export type SmsEvent = (
   // ── OTP delivery ──────────────────────────────────────────────────────────
   | {
       type: 'otp.sms';
@@ -67,7 +69,8 @@ export type SmsEvent =
   | { type: 'org.suspended'; phone_number: string; org_name: string }
   | { type: 'org.rejected'; phone_number: string; org_name: string; reason?: string }
   | { type: 'org.cooperative_approved'; phone_number: string; org_name: string }
-  | { type: 'org.contact_verified'; phone_number: string; org_name: string };
+  | { type: 'org.contact_verified'; phone_number: string; org_name: string }
+) & { locale?: Locale };
 
 export const publishSms = (event: SmsEvent): void =>
   publish('notifications', 'sms.notifications', event);
@@ -77,11 +80,11 @@ export const publishSms = (event: SmsEvent): void =>
 // Routed to the `mail` queue.
 // ---------------------------------------------------------------------------
 
-export type MailEvent =
+export type MailEvent = (
   // ── OTP delivery ──────────────────────────────────────────────────────────
   | {
       type: 'otp.mail';
-      purpose: 'password_reset';
+      purpose: 'password_reset' | 'email_verification';
       email: string;
       first_name: string;
       code: string;
@@ -103,7 +106,8 @@ export type MailEvent =
   // ── Org application flow ──────────────────────────────────────────────────
   | { type: 'org.contact_otp'; email: string; first_name: string; org_name: string; code: string; expires_in_seconds: number }
   | { type: 'org.contact_verified'; email: string; org_name: string; first_name: string }
-  | { type: 'org.application_received'; email: string; org_name: string; contact_email: string; org_type: string };
+  | { type: 'org.application_received'; email: string; org_name: string; contact_email: string; org_type: string }
+) & { locale?: Locale };
 
 export const publishMail = (event: MailEvent): void =>
   publish('notifications', 'mail.notifications', event);
@@ -155,6 +159,7 @@ export interface NotifiableUser {
   email: string | null;
   fcm_token: string | null;
   notif_channel: string[];
+  locale?: string;
 }
 
 export const notifyUser = (
@@ -168,12 +173,13 @@ export const notifyUser = (
   const ch = user.notif_channel;
   const hasFcm = !!user.fcm_token;
   const hasEmail = !!user.email;
+  const locale = (user.locale as Locale | undefined) ?? 'rw';
 
   const shouldSms  = ch.includes('sms') || (ch.includes('app') && !hasFcm);
   const shouldMail = ch.includes('email') && hasEmail;
   const shouldPush = ch.includes('app') && hasFcm;
 
-  if (shouldSms  && opts.sms)  publishSms(opts.sms);
-  if (shouldMail && opts.mail) publishMail(opts.mail);
+  if (shouldSms  && opts.sms)  publishSms({ ...opts.sms, locale });
+  if (shouldMail && opts.mail) publishMail({ ...opts.mail, locale });
   if (shouldPush && opts.push) publishPush({ ...opts.push, fcm_token: user.fcm_token! });
 };
