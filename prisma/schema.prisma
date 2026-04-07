@@ -34,12 +34,6 @@ enum OrgStatus {
   rejected
 }
 
-enum NotifChannel {
-  sms
-  email
-  app
-  all
-}
 
 enum OrgDocType {
   business_certificate
@@ -137,7 +131,7 @@ model User {
   status                     UserStatus   @default(pending_verification)
   two_factor_enabled         Boolean      @default(false)
   avatar_path                String?
-  notif_channel              NotifChannel @default(sms)
+  notif_channel              String[]     @default(["sms"])
   fcm_token                  String?
   org_id                     String?
   driver_license_number      String?      @db.VarChar(100)

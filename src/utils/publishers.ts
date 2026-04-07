@@ -141,11 +141,9 @@ export const publishPush = (event: PushEvent): void =>
 // ---------------------------------------------------------------------------
 // notifyUser — preference-aware dispatcher
 //
-// Routes to the correct channel(s) based on user.notif_channel:
-//   'sms'   → SMS only
-//   'email' → email only (requires user.email)
-//   'app'   → push if fcm_token present, else SMS fallback
-//   'all'   → SMS + email (if user.email) + push (if fcm_token)
+// Routes to the correct channel(s) based on user.notif_channel array.
+// Any combination of 'sms', 'email', 'app' is valid.
+// 'app' falls back to SMS when no fcm_token is present.
 //
 // Callers provide the full event objects (with phone_number/email already set)
 // for SMS and mail. For push, the caller provides the type + optional data;
@@ -156,7 +154,7 @@ export interface NotifiableUser {
   phone_number: string;
   email: string | null;
   fcm_token: string | null;
-  notif_channel: 'sms' | 'email' | 'app' | 'all';
+  notif_channel: string[];
 }
 
 export const notifyUser = (
@@ -171,9 +169,9 @@ export const notifyUser = (
   const hasFcm = !!user.fcm_token;
   const hasEmail = !!user.email;
 
-  const shouldSms  = ch === 'sms' || ch === 'all' || (ch === 'app' && !hasFcm);
-  const shouldMail = (ch === 'email' || ch === 'all') && hasEmail;
-  const shouldPush = (ch === 'app'   || ch === 'all') && hasFcm;
+  const shouldSms  = ch.includes('sms') || (ch.includes('app') && !hasFcm);
+  const shouldMail = ch.includes('email') && hasEmail;
+  const shouldPush = ch.includes('app') && hasFcm;
 
   if (shouldSms  && opts.sms)  publishSms(opts.sms);
   if (shouldMail && opts.mail) publishMail(opts.mail);

@@ -45,7 +45,7 @@ export interface UserMePassengerDto {
   avatar_path: string | null;
   user_type: 'passenger';
   status: string;
-  notif_channel: string;
+  notif_channel: string[];
   two_factor_enabled: boolean;
   created_at: Date;
   updated_at: Date;
@@ -67,7 +67,7 @@ export interface UserMeStaffDto {
   org_id: string | null;
   roles: string[];
   permissions: AppRule[];
-  notif_channel: string;
+  notif_channel: string[];
   two_factor_enabled: boolean;
   driver_license_number: string | null;
   driver_license_verified_at: Date | null;

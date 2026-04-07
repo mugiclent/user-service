@@ -63,7 +63,7 @@ const baseOpts = {
 
 describe('notifyUser — sms channel', () => {
   it('sends SMS only', () => {
-    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: null, notif_channel: 'sms' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: null, notif_channel: ['sms'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).toContain('sms.notifications');
     expect(keys).not.toContain('mail.notifications');
@@ -73,37 +73,37 @@ describe('notifyUser — sms channel', () => {
 
 describe('notifyUser — email channel', () => {
   it('sends mail only when user has email', () => {
-    notifyUser({ phone_number: '+250788000001', email: 'a@b.com', fcm_token: null, notif_channel: 'email' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: 'a@b.com', fcm_token: null, notif_channel: ['email'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).toContain('mail.notifications');
     expect(keys).not.toContain('sms.notifications');
   });
 
   it('sends nothing when user has no email', () => {
-    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: null, notif_channel: 'email' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: null, notif_channel: ['email'] }, baseOpts);
     expect(mockPublish).not.toHaveBeenCalled();
   });
 });
 
 describe('notifyUser — app channel', () => {
   it('sends push when fcm_token present', () => {
-    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: 'fcm-1', notif_channel: 'app' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: 'fcm-1', notif_channel: ['app'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).toContain('push.notifications');
     expect(keys).not.toContain('sms.notifications');
   });
 
   it('falls back to SMS when no fcm_token', () => {
-    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: null, notif_channel: 'app' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: null, notif_channel: ['app'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).toContain('sms.notifications');
     expect(keys).not.toContain('push.notifications');
   });
 });
 
-describe('notifyUser — all channel', () => {
+describe('notifyUser — all channels selected', () => {
   it('sends SMS + mail + push when user has email and fcm_token', () => {
-    notifyUser({ phone_number: '+250788000001', email: 'a@b.com', fcm_token: 'fcm-1', notif_channel: 'all' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: 'a@b.com', fcm_token: 'fcm-1', notif_channel: ['sms', 'email', 'app'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).toContain('sms.notifications');
     expect(keys).toContain('mail.notifications');
@@ -111,13 +111,13 @@ describe('notifyUser — all channel', () => {
   });
 
   it('skips mail when user has no email', () => {
-    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: 'fcm-1', notif_channel: 'all' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: 'fcm-1', notif_channel: ['sms', 'email', 'app'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).not.toContain('mail.notifications');
   });
 
   it('skips push when no fcm_token', () => {
-    notifyUser({ phone_number: '+250788000001', email: 'a@b.com', fcm_token: null, notif_channel: 'all' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: 'a@b.com', fcm_token: null, notif_channel: ['sms', 'email', 'app'] }, baseOpts);
     const keys = mockPublish.mock.calls.map((c) => c[1]);
     expect(keys).not.toContain('push.notifications');
   });
@@ -125,7 +125,7 @@ describe('notifyUser — all channel', () => {
 
 describe('notifyUser — fills fcm_token from user object on push', () => {
   it('includes user.fcm_token in push payload', () => {
-    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: 'device-tok', notif_channel: 'app' }, baseOpts);
+    notifyUser({ phone_number: '+250788000001', email: null, fcm_token: 'device-tok', notif_channel: ['app'] }, baseOpts);
     const pushCall = mockPublish.mock.calls.find((c) => c[1] === 'push.notifications');
     const body = JSON.parse((pushCall![2] as Buffer).toString());
     expect(body.fcm_token).toBe('device-tok');

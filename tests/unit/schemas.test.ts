@@ -80,8 +80,8 @@ describe('updateMeSchema', () => {
   it('accepts partial update', () => ok(updateMeSchema, { first_name: 'Alice' }));
   it('accepts null avatar_path', () => ok(updateMeSchema, { avatar_path: null }));
   it('rejects empty object (min 1)', () => fail(updateMeSchema, {}));
-  it('accepts valid notif_channel', () => ok(updateMeSchema, { notif_channel: 'all' }));
-  it('rejects invalid notif_channel', () => fail(updateMeSchema, { notif_channel: 'carrier_pigeon' }));
+  it('accepts valid notif_channel', () => ok(updateMeSchema, { notif_channel: ['sms', 'email'] }));
+  it('rejects invalid notif_channel', () => fail(updateMeSchema, { notif_channel: ['carrier_pigeon'] }));
 });
 
 describe('updateUserSchema', () => {

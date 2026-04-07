@@ -36,7 +36,7 @@ export const UserService = {
 
   async updateMe(
     requestingUser: AuthenticatedUser,
-    data: { first_name?: string; last_name?: string; email?: string; avatar_path?: string | null; notif_channel?: string },
+    data: { first_name?: string; last_name?: string; email?: string; avatar_path?: string | null; notif_channel?: string[] },
   ): Promise<Record<string, unknown>> {
     // Passengers cannot have email — only staff can
     if (data.email !== undefined && requestingUser.user_type === 'passenger') {
@@ -349,7 +349,7 @@ export const UserService = {
           user_type: 'staff',
           status: 'active',
           org_id: invitation.org_id ?? null,
-          notif_channel: 'all',  // staff receive on all channels by default
+          notif_channel: ['sms', 'email', 'app'],  // staff receive on all channels by default
           phone_verified_at: invitation.phone_number ? new Date() : null,
           email_verified_at: invitation.email ? new Date() : null,
         },

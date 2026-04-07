@@ -330,7 +330,7 @@ describe('AuthController.registerDevice', () => {
     await AuthController.registerDevice(req, res, next);
     expect(mockPrismaUserUpdate).toHaveBeenCalledWith({
       where: { id: 'user-1' },
-      data: { fcm_token: 'fcm-abc-123', notif_channel: 'app' },
+      data: { fcm_token: 'fcm-abc-123', notif_channel: ['app'] },
     });
     expect(res.status).toHaveBeenCalledWith(204);
   });

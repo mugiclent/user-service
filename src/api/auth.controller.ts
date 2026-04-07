@@ -160,7 +160,7 @@ export const AuthController = {
 
       await prisma.user.update({
         where: { id: user.id },
-        data: { fcm_token, notif_channel: 'app' },
+        data: { fcm_token, notif_channel: ['app'] },
       });
 
       res.status(204).end();
