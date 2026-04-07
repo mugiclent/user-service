@@ -378,6 +378,7 @@ export const bootstrap = async (): Promise<void> => {
         user_type:         'staff',
         status:            'active',
         email_verified_at: new Date(),
+        notif_channel:     ['sms', 'email'],
         user_roles: {
           create: { role_id: platformAdminRole.id },
         },
