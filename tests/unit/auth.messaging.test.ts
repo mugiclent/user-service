@@ -111,13 +111,6 @@ describe('AuthService.register', () => {
     );
   });
 
-  it('publishes welcome.sms to notifications/sms.notifications', async () => {
-    await AuthService.register(registerData);
-    expect(publishSms).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'welcome.sms', phone_number: '+250780000001' }),
-    );
-  });
-
   it('publishes otp.sms with purpose phone_verification', async () => {
     await AuthService.register(registerData);
     expect(publishSms).toHaveBeenCalledWith(
@@ -138,9 +131,9 @@ describe('AuthService.register', () => {
     );
   });
 
-  it('publishes exactly 2 SMS messages and 1 audit event', async () => {
+  it('publishes exactly 1 SMS (OTP) and 1 audit event', async () => {
     await AuthService.register(registerData);
-    expect(publishSms).toHaveBeenCalledTimes(2);
+    expect(publishSms).toHaveBeenCalledTimes(1);
     expect(publishMail).not.toHaveBeenCalled();
     expect(publishAudit).toHaveBeenCalledTimes(1);
   });

@@ -6,12 +6,22 @@ import { describe, it, expect, vi } from 'vitest';
 
 // ── mocks ──────────────────────────────────────────────────────────────────────
 
-const mockSign = vi.fn().mockReturnValue('signed.jwt.token');
-const mockVerify = vi.fn().mockReturnValue({ sub: 'u-1', org_id: null, user_type: 'staff', role_slugs: [], rules: [] });
+const mockSign = vi.fn().mockResolvedValue('signed.jwt.token');
+const mockVerify = vi.fn().mockResolvedValue({ payload: { sub: 'u-1', org_id: null, user_type: 'staff', role_slugs: [], rules: [], locale: 'rw' } });
 const mockPackRules = vi.fn().mockReturnValue([]);
+const mockImportPKCS8 = vi.fn().mockResolvedValue('mock-private-key');
+const mockImportSPKI = vi.fn().mockResolvedValue('mock-public-key');
 
-vi.mock('jsonwebtoken', () => ({
-  default: { sign: mockSign, verify: mockVerify },
+vi.mock('jose', () => ({
+  SignJWT: vi.fn().mockImplementation(() => ({
+    setProtectedHeader: vi.fn().mockReturnThis(),
+    setIssuedAt: vi.fn().mockReturnThis(),
+    setExpirationTime: vi.fn().mockReturnThis(),
+    sign: mockSign,
+  })),
+  jwtVerify: mockVerify,
+  importPKCS8: mockImportPKCS8,
+  importSPKI: mockImportSPKI,
 }));
 
 vi.mock('@casl/ability/extra', () => ({
@@ -34,34 +44,34 @@ const { signAccessToken, verifyAccessToken } = await import('../../src/utils/tok
 // ── signAccessToken ────────────────────────────────────────────────────────────
 
 describe('signAccessToken', () => {
-  it('calls jwt.sign with EdDSA and packed rules', () => {
-    const payload = { sub: 'u-1', org_id: null, user_type: 'staff' as const, role_slugs: ['org_admin'], rules: [] };
-    const token = signAccessToken(payload);
+  it('returns a signed token string', async () => {
+    const payload = { sub: 'u-1', org_id: null, user_type: 'staff' as const, role_slugs: ['org_admin'], rules: [], locale: 'rw' };
+    const token = await signAccessToken(payload);
     expect(token).toBe('signed.jwt.token');
-    expect(mockSign).toHaveBeenCalledWith(
-      expect.objectContaining({ sub: 'u-1', rules: [] }),
-      'TEST_PRIVATE_KEY',
-      expect.objectContaining({ algorithm: 'EdDSA' }),
-    );
+    expect(mockSign).toHaveBeenCalled();
   });
 
-  it('packs rules before signing', () => {
-    signAccessToken({ sub: 'u-1', org_id: 'o-1', user_type: 'staff', role_slugs: [], rules: [{ action: 'read', subject: 'User' }] });
+  it('packs rules before signing', async () => {
+    await signAccessToken({ sub: 'u-1', org_id: 'o-1', user_type: 'staff', role_slugs: [], rules: [{ action: 'read', subject: 'User' }], locale: 'en' });
     expect(mockPackRules).toHaveBeenCalled();
+  });
+
+  it('imports the private key on first call', async () => {
+    expect(mockImportPKCS8).toHaveBeenCalledWith('TEST_PRIVATE_KEY', 'EdDSA');
   });
 });
 
 // ── verifyAccessToken ──────────────────────────────────────────────────────────
 
 describe('verifyAccessToken', () => {
-  it('calls jwt.verify with EdDSA and returns payload', () => {
-    const result = verifyAccessToken('some.token.here');
-    expect(mockVerify).toHaveBeenCalledWith('some.token.here', 'TEST_PUBLIC_KEY', { algorithms: ['EdDSA'] });
+  it('returns the decoded payload', async () => {
+    const result = await verifyAccessToken('some.token.here');
+    expect(mockVerify).toHaveBeenCalledWith('some.token.here', 'mock-public-key', { algorithms: ['EdDSA'] });
     expect(result).toMatchObject({ sub: 'u-1' });
   });
 
-  it('propagates errors from jwt.verify', () => {
-    mockVerify.mockImplementationOnce(() => { throw new Error('invalid token'); });
-    expect(() => verifyAccessToken('bad.token')).toThrow('invalid token');
+  it('propagates errors from jwtVerify', async () => {
+    mockVerify.mockRejectedValueOnce(new Error('invalid token'));
+    await expect(verifyAccessToken('bad.token')).rejects.toThrow('invalid token');
   });
 });

@@ -284,13 +284,13 @@ describe('AuthService.register', () => {
     expect(mockTxUserRoleCreate).not.toHaveBeenCalled();
   });
 
-  it('sends welcome SMS and OTP SMS', async () => {
+  it('sends OTP SMS for phone verification (welcome is sent after verifyPhone)', async () => {
     mockUserFindUnique.mockResolvedValueOnce(null);
     mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user', phone_number: '+250788000001', first_name: 'Jane' });
     mockTxRoleFindFirst.mockResolvedValueOnce(null);
     await AuthService.register(regData);
-    expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'welcome.sms' }));
     expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'otp.sms', purpose: 'phone_verification' }));
+    expect(mockPublishSms).toHaveBeenCalledTimes(1);
   });
 
   it('publishes an audit event', async () => {
