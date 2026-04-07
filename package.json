@@ -13,7 +13,7 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/ tests/",
     "lint:fix": "eslint src/ tests/ --fix",
-    "db:push": "prisma db push --skip-generate",
+    "db:push": "prisma db push --skip-generate --accept-data-loss",
     "db:migrate": "prisma migrate dev",
     "db:generate": "prisma generate",
     "db:seed": "tsx prisma/seed.ts"
