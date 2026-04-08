@@ -175,8 +175,9 @@ describe('AuthService.login', () => {
   it('looks up by phone when identifier has no @', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
     await AuthService.login('+250788000001', 'pass');
+    // identifier is normalized to digits-only before DB lookup
     expect(mockUserFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { phone_number: '+250788000001' } }),
+      expect.objectContaining({ where: { phone_number: '250788000001' } }),
     );
   });
 

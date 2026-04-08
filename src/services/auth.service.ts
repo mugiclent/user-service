@@ -8,6 +8,7 @@ import { PasswordService } from './password.service.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
+import { normalizePhone } from '../utils/phone.js';
 
 const withRoles = {
   include: {
@@ -44,10 +45,15 @@ export const AuthService = {
     ip?: string,
     user_agent?: string,
   ): Promise<LoginResult> {
+    let phoneQuery = identifier;
+    if (!isEmail(identifier)) {
+      try { phoneQuery = normalizePhone(identifier); } catch { /* invalid format — will not match */ }
+    }
+
     const user = await prisma.user.findFirst({
       where: isEmail(identifier)
         ? { email: identifier }
-        : { phone_number: identifier },
+        : { phone_number: phoneQuery },
       ...withRoles,
     });
 

@@ -1,6 +1,7 @@
 import type { Org, OrgStatus, OrgType } from '@prisma/client';
 import type { UserWithRoles } from './index.js';
 import type { AppRule } from '../utils/ability.js';
+import { displayPhone } from '../utils/phone.js';
 
 // ---------------------------------------------------------------------------
 // Auth response user (login, verify-phone responses)
@@ -85,7 +86,7 @@ export const serializeUserMe = (
       id: user.id,
       first_name: user.first_name,
       last_name: user.last_name,
-      phone_number: user.phone_number,
+      phone_number: user.phone_number ? displayPhone(user.phone_number) : null,
       phone_verified_at: user.phone_verified_at,
       email: user.email,
       email_verified_at: user.email_verified_at,
@@ -103,7 +104,7 @@ export const serializeUserMe = (
     id: user.id,
     first_name: user.first_name,
     last_name: user.last_name,
-    phone_number: user.phone_number,
+    phone_number: user.phone_number ? displayPhone(user.phone_number) : null,
     email: user.email,
     avatar_path: user.avatar_path,
     user_type: 'staff',
@@ -125,10 +126,10 @@ export const serializeUserMe = (
 // GET /users list item
 // ---------------------------------------------------------------------------
 
-/** Mask phone to +250788***123 format */
+/** Mask stored phone to +250788***001 format */
 export const maskPhone = (phone: string): string => {
-  if (phone.length <= 6) return phone;
-  return `${phone.slice(0, 4)}***${phone.slice(-3)}`;
+  if (phone.length <= 6) return displayPhone(phone);
+  return `+${phone.slice(0, 3)}${phone.slice(3, 6)}***${phone.slice(-3)}`;
 };
 
 export const serializeUserForList = (
@@ -141,7 +142,7 @@ export const serializeUserForList = (
   email: user.email,
   phone_number: user.phone_number
     ? isAdmin
-      ? user.phone_number
+      ? displayPhone(user.phone_number)
       : maskPhone(user.phone_number)
     : null,
   avatar_path: user.avatar_path,
@@ -165,7 +166,7 @@ export const serializeUserFullProfile = (
   first_name: user.first_name,
   last_name: user.last_name,
   email: user.email,
-  phone_number: user.phone_number,
+  phone_number: user.phone_number ? displayPhone(user.phone_number) : null,
   phone_verified_at: user.phone_verified_at,
   email_verified_at: user.email_verified_at,
   avatar_path: user.avatar_path,

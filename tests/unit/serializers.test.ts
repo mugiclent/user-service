@@ -21,7 +21,7 @@ const makeUser = (overrides: Record<string, unknown> = {}) => ({
   id: 'user-1',
   first_name: 'Jane',
   last_name: 'Doe',
-  phone_number: '+250788123456',
+  phone_number: '250788123456',
   phone_verified_at: now,
   email: 'jane@example.com',
   email_verified_at: now,
@@ -126,13 +126,12 @@ describe('serializeUserMe — staff', () => {
 // ── maskPhone ─────────────────────────────────────────────────────────────────
 
 describe('maskPhone', () => {
-  it('masks to +250***456 format', () => {
-    expect(maskPhone('+250788123456')).toBe('+250***456');
+  it('masks middle digits and adds + prefix', () => {
+    expect(maskPhone('250788123456')).toBe('+250788***456');
   });
 
-  it('returns phone unchanged when 6 chars or fewer', () => {
-    expect(maskPhone('+1234')).toBe('+1234');
-    expect(maskPhone('123456')).toBe('123456');
+  it('returns phone with + prefix when 6 chars or fewer', () => {
+    expect(maskPhone('123456')).toBe('+123456');
   });
 });
 
@@ -141,7 +140,7 @@ describe('maskPhone', () => {
 describe('serializeUserForList', () => {
   it('masks phone for non-admin', () => {
     const dto = serializeUserForList(makeUser() as never, false) as Record<string, unknown>;
-    expect(dto.phone_number).toBe(maskPhone('+250788123456'));
+    expect(dto.phone_number).toBe('+250788***456');
   });
 
   it('shows full phone for admin', () => {
