@@ -1,4 +1,4 @@
-import { prisma } from '../models/index.js';
+import { prisma, Prisma } from '../models/index.js';
 import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
@@ -47,19 +47,27 @@ export const OrgService = {
     const existing = await prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] } });
     if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
 
-    const org = await prisma.org.create({
-      data: {
-        name: data.name,
-        slug,
-        org_type: data.org_type as 'company' | 'cooperative',
-        contact_email: data.contact_email,
-        contact_phone: data.contact_phone,
-        address: data.address ?? null,
-        tin: data.tin ?? null,
-        license_number: data.license_number ?? null,
-        parent_org_id: data.parent_org_id ?? null,
-      },
-    });
+    let org;
+    try {
+      org = await prisma.org.create({
+        data: {
+          name: data.name,
+          slug,
+          org_type: data.org_type as 'company' | 'cooperative',
+          contact_email: data.contact_email,
+          contact_phone: data.contact_phone,
+          address: data.address ?? null,
+          tin: data.tin ?? null,
+          license_number: data.license_number ?? null,
+          parent_org_id: data.parent_org_id ?? null,
+        },
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
+        throw new AppError('PARENT_ORG_NOT_FOUND', 404);
+      }
+      throw err;
+    }
 
     publishAudit({ actor_id: requestingUser.id, action: 'create', resource: 'Org', resource_id: org.id });
     return serializeOrgCreated(org);
