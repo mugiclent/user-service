@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { AuthService } from '../services/auth.service.js';
+import { UserService } from '../services/user.service.js';
 import { serializeUserForAuth } from '../models/serializers.js';
 import { sendAuthResponse, sendRefreshResponse, clearAuthCookies } from '../utils/sendAuthResponse.js';
 import type { AuthenticatedUser } from '../models/index.js';
@@ -14,6 +15,17 @@ export const AuthController = {
         device_name?: string;
       };
       const result = await AuthService.login(identifier, password, device_name, req.ip, req.headers['user-agent']);
+
+      if (result.requires_verification) {
+        // Account not yet verified — OTP sent to entered channel
+        res.status(202).json({
+          requires_verification: true,
+          user_id: result.user_id,
+          channel: result.channel,
+          expires_in: result.expires_in,
+        });
+        return;
+      }
 
       if (result.requires_2fa) {
         // Step 1 of 2FA: OTP sent, token issuance deferred
@@ -63,13 +75,54 @@ export const AuthController = {
 
   async verifyPhone(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { user_id, otp, device_name } = req.body as {
+      const { user_id, otp } = req.body as { user_id: string; otp: string };
+      const { login_identifier } = await AuthService.verifyPhone(user_id, otp);
+      res.status(200).json({
+        message: 'Phone verified. Please log in with your phone number.',
+        login_identifier,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verifyEmail(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { user_id, otp } = req.body as { user_id: string; otp: string };
+      const { login_identifier } = await AuthService.verifyEmail(user_id, otp);
+      res.status(200).json({
+        message: 'Email verified. Please log in with your email.',
+        login_identifier,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async verifyLogin(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { user_id, otp, channel, device_name } = req.body as {
         user_id: string;
         otp: string;
+        channel: 'phone' | 'email';
         device_name?: string;
       };
-      const { user, tokens } = await AuthService.verifyPhone(user_id, otp, device_name, req.ip, req.headers['user-agent']);
+      const { user, tokens } = await AuthService.verifyLogin(user_id, otp, channel, device_name, req.ip, req.headers['user-agent']);
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async validateInviteToken(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const token = req.query['token'] as string;
+      if (!token) {
+        res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'token query param is required' } });
+        return;
+      }
+      const result = await UserService.validateInviteToken(token);
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }
@@ -152,8 +205,8 @@ export const AuthController = {
 
   async resendOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { user_id } = req.body as { user_id: string };
-      const result = await AuthService.resendOtp(user_id);
+      const { user_id, channel } = req.body as { user_id: string; channel?: 'phone' | 'email' };
+      const result = await AuthService.resendOtp(user_id, channel);
       res.status(200).json(result);
     } catch (err) {
       next(err);

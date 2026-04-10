@@ -22,6 +22,11 @@ enum UserStatus {
   suspended
 }
 
+enum LoginChannel {
+  phone
+  email
+}
+
 enum OrgType {
   company
   cooperative
@@ -129,6 +134,7 @@ model User {
   password_hash              String?
   user_type                  UserType
   status                     UserStatus   @default(pending_verification)
+  login_channel              LoginChannel?
   two_factor_enabled         Boolean      @default(false)
   avatar_path                String?
   notif_channel              String[]     @default(["sms", "email"])

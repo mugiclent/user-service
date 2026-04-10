@@ -42,3 +42,12 @@ export const validatePasswordSchema = Joi.object({
 export const toggle2faSchema = Joi.object({
   enabled: Joi.boolean().required(),
 });
+
+export const loginChannelSchema = Joi.object({
+  channel: Joi.string().valid('phone', 'email').required(),
+});
+
+export const loginChannelConfirmSchema = Joi.object({
+  channel: Joi.string().valid('phone', 'email').required(),
+  otp: Joi.string().trim().length(6).required(),
+});

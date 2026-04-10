@@ -30,6 +30,12 @@ vi.mock('../../src/services/auth.service.js', () => ({
   },
 }));
 
+vi.mock('../../src/services/user.service.js', () => ({
+  UserService: {
+    validateInviteToken: vi.fn(),
+  },
+}));
+
 const mockSerializeUserForAuth = vi.fn().mockReturnValue({ id: 'user-1', serialized: true });
 
 vi.mock('../../src/models/serializers.js', () => ({
@@ -87,7 +93,7 @@ describe('AuthController.login', () => {
 
   it('calls sendAuthResponse for normal login', async () => {
     const user = makeUser();
-    mockAuthServiceLogin.mockResolvedValueOnce({ requires_2fa: false, user, tokens: { access: 'a', refresh: 'r' } });
+    mockAuthServiceLogin.mockResolvedValueOnce({ requires_2fa: false, requires_verification: false, user, tokens: { access: 'a', refresh: 'r' } });
     const req = { body: { identifier: 'u@e.com', password: 'pass' }, headers: {}, ip: '1.1.1.1' } as unknown as Request;
     const res = makeRes();
     await AuthController.login(req, res, next);
@@ -147,12 +153,14 @@ describe('AuthController.register', () => {
 // ── verifyPhone ───────────────────────────────────────────────────────────────
 
 describe('AuthController.verifyPhone', () => {
-  it('calls sendAuthResponse on success', async () => {
-    const user = makeUser();
-    mockAuthServiceVerifyPhone.mockResolvedValueOnce({ user, tokens: { access: 'a', refresh: 'r' } });
+  it('returns 200 with message and login_identifier (no tokens)', async () => {
+    mockAuthServiceVerifyPhone.mockResolvedValueOnce({ login_identifier: '+250788000001' });
     const req = { body: { user_id: 'user-1', otp: '123456' }, headers: {}, ip: '1.1.1.1' } as unknown as Request;
-    await AuthController.verifyPhone(req, makeRes(), next);
-    expect(mockSendAuthResponse).toHaveBeenCalled();
+    const res = makeRes();
+    await AuthController.verifyPhone(req, res, next);
+    expect(mockSendAuthResponse).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ login_identifier: '+250788000001' }));
   });
 
   it('calls next(err) on error', async () => {

@@ -24,6 +24,17 @@ export const registerSchema = Joi.object({
 export const verifyPhoneSchema = Joi.object({
   user_id: Joi.string().uuid().required(),
   otp: Joi.string().trim().length(6).required(),
+});
+
+export const verifyEmailSchema = Joi.object({
+  user_id: Joi.string().uuid().required(),
+  otp: Joi.string().trim().length(6).required(),
+});
+
+export const verifyLoginSchema = Joi.object({
+  user_id: Joi.string().uuid().required(),
+  otp: Joi.string().trim().length(6).required(),
+  channel: Joi.string().valid('phone', 'email').required(),
   device_name: Joi.string().trim().max(200).optional(),
 });
 
@@ -50,4 +61,5 @@ export const registerDeviceSchema = Joi.object({
 
 export const resendOtpSchema = Joi.object({
   user_id: Joi.string().uuid().required(),
+  channel: Joi.string().valid('phone', 'email').default('phone'),
 });

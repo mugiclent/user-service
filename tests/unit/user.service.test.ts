@@ -110,6 +110,12 @@ vi.mock('../../src/utils/s3.js', () => ({
   deleteFromS3: mockDeleteFromS3,
 }));
 
+const mockOtpCreate = vi.fn().mockResolvedValue({ code: '123456', expiresIn: 300 });
+const mockOtpVerify = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/services/otp.service.js', () => ({
+  OtpService: { create: mockOtpCreate, verify: mockOtpVerify },
+}));
+
 const { UserService } = await import('../../src/services/user.service.js');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -533,41 +539,35 @@ describe('UserService.acceptInvite', () => {
 
   it('creates user, assigns role, marks invite accepted in transaction', async () => {
     const invitation = makeInvitation();
-    const createdUser = makeUser({ id: 'new-user', phone_number: '+250788000002', user_roles: [] });
     mockInvitationFindUnique.mockResolvedValueOnce(invitation);
-    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user' });
-    mockTxUserFindUniqueOrThrow.mockResolvedValueOnce(createdUser);
+    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user', phone_number: '+250788000002', email: null, first_name: 'Bob', locale: 'rw' });
     const result = await UserService.acceptInvite('tok', 'pass');
     expect(mockTxUserCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ user_type: 'staff', status: 'active', password_hash: 'hashed-password' }),
+        data: expect.objectContaining({ user_type: 'staff', status: 'pending_verification', password_hash: 'hashed-password' }),
       }),
     );
     expect(mockTxUserRoleCreate).toHaveBeenCalledWith({ data: { user_id: 'new-user', role_id: 'role-1' } });
     expect(mockTxInvitationUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: { accepted_at: expect.any(Date) } }),
     );
-    expect(result.user).toEqual(createdUser);
+    expect(result).toMatchObject({ user_id: 'new-user', channels: ['phone'] });
   });
 
-  it('sends welcome SMS (always)', async () => {
+  it('sends phone OTP via SMS (always)', async () => {
     const invitation = makeInvitation();
-    const createdUser = makeUser({ id: 'new-user', phone_number: '+250788000002', user_roles: [] });
     mockInvitationFindUnique.mockResolvedValueOnce(invitation);
-    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user' });
-    mockTxUserFindUniqueOrThrow.mockResolvedValueOnce(createdUser);
+    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user', phone_number: '+250788000002', email: null, first_name: 'Bob', locale: 'rw' });
     await UserService.acceptInvite('tok', 'pass');
-    expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'welcome.sms' }));
+    expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'otp.sms', purpose: 'phone_verification' }));
   });
 
-  it('sends welcome email when user has email', async () => {
+  it('sends email OTP when invitation has email', async () => {
     const invitation = makeInvitation({ email: 'bob@acme.com' });
-    const createdUser = makeUser({ id: 'new-user', email: 'bob@acme.com', phone_number: '+250788000002', user_roles: [] });
     mockInvitationFindUnique.mockResolvedValueOnce(invitation);
-    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user' });
-    mockTxUserFindUniqueOrThrow.mockResolvedValueOnce(createdUser);
+    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user', phone_number: '+250788000002', email: 'bob@acme.com', first_name: 'Bob', locale: 'rw' });
     await UserService.acceptInvite('tok', 'pass');
-    expect(mockPublishMail).toHaveBeenCalledWith(expect.objectContaining({ type: 'welcome.mail' }));
+    expect(mockPublishMail).toHaveBeenCalledWith(expect.objectContaining({ type: 'otp.mail', purpose: 'email_verification' }));
   });
 });
 

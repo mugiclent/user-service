@@ -8,7 +8,7 @@ import { PasswordService } from './password.service.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
-import { normalizePhone } from '../utils/phone.js';
+import { normalizePhone, displayPhone } from '../utils/phone.js';
 
 const withRoles = {
   include: {
@@ -24,12 +24,17 @@ const isEmail = (identifier: string): boolean => identifier.includes('@');
 // ---------------------------------------------------------------------------
 
 export type LoginResult =
-  | { requires_2fa: false; user: UserWithRoles; tokens: AuthTokens }
-  | { requires_2fa: true;  user_id: string; expires_in: number };
+  | { requires_2fa: false; requires_verification: false; user: UserWithRoles; tokens: AuthTokens }
+  | { requires_2fa: true;  requires_verification: false; user_id: string; expires_in: number }
+  | { requires_2fa: false; requires_verification: true;  user_id: string; channel: 'phone' | 'email'; expires_in: number };
 
 export const AuthService = {
   /**
    * Login with phone/email + password.
+   *
+   * If account is pending_verification (login_channel is null):
+   *   → sends OTP to the entered channel, returns { requires_verification: true, user_id, channel, expires_in }
+   *   → client must call POST /auth/verify-login to complete login
    *
    * If two_factor_enabled:
    *   → creates OTP, publishes SMS, returns { requires_2fa: true, user_id, expires_in }
@@ -65,13 +70,37 @@ export const AuthService = {
     if (!passwordValid) throw new AppError('INVALID_CREDENTIALS', 401);
 
     if (user.status === 'suspended') throw new AppError('ACCOUNT_SUSPENDED', 403);
-    if (user.status === 'pending_verification') throw new AppError('PHONE_NOT_VERIFIED', 403);
+
+    // Account not yet verified by any channel — send OTP to the entered channel
+    if (user.status === 'pending_verification') {
+      const channel = isEmail(identifier) ? 'email' : 'phone';
+      if (channel === 'email' && !user.email) {
+        throw new AppError('EMAIL_NOT_FOUND', 422);
+      }
+      const purpose = channel === 'email' ? 'email_verification' : 'phone_verification';
+      const { code, expiresIn } = await OtpService.create(user.id, purpose);
+      const locale = user.locale as Locale;
+      if (channel === 'email') {
+        publishMail({ type: 'otp.mail', purpose, email: user.email!, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+      } else {
+        publishSms({ type: 'otp.sms', purpose, phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+      }
+      return { requires_2fa: false, requires_verification: true, user_id: user.id, channel, expires_in: expiresIn };
+    }
+
+    // Enforce login_channel — only the verified channel may be used
+    if (user.login_channel === 'email' && !isEmail(identifier)) {
+      throw new AppError('EMAIL_LOGIN_REQUIRED', 403);
+    }
+    if (user.login_channel === 'phone' && isEmail(identifier)) {
+      throw new AppError('PHONE_LOGIN_REQUIRED', 403);
+    }
 
     // 2FA: send OTP, defer token issuance to verify-2fa step
     if (user.two_factor_enabled) {
       const { code, expiresIn } = await OtpService.create(user.id, '2fa');
       publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
-      return { requires_2fa: true, user_id: user.id, expires_in: expiresIn };
+      return { requires_2fa: true, requires_verification: false, user_id: user.id, expires_in: expiresIn };
     }
 
     prisma.user.update({ where: { id: user.id }, data: { last_login_at: new Date() } })
@@ -79,12 +108,12 @@ export const AuthService = {
 
     publishAudit({ actor_id: user.id, action: 'login', resource: 'User', resource_id: user.id, ip });
 
-    // Detect login from a new device: user has existing tokens but none match this user-agent
+    // Detect login from a new device
     if (user_agent) {
       prisma.refreshToken.findFirst({
         where: { user_id: user.id, revoked_at: null, expires_at: { gt: new Date() } },
       }).then((anyToken) => {
-        if (!anyToken) return; // first ever login — no alert needed
+        if (!anyToken) return;
         return prisma.refreshToken.findFirst({
           where: { user_id: user.id, user_agent, revoked_at: null, expires_at: { gt: new Date() } },
         }).then((sameDevice) => {
@@ -100,7 +129,7 @@ export const AuthService = {
     }
 
     const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
-    return { requires_2fa: false, user, tokens };
+    return { requires_2fa: false, requires_verification: false, user, tokens };
   },
 
   /**
@@ -133,8 +162,8 @@ export const AuthService = {
 
   /**
    * Register a new passenger account.
-   * Sends a 6-digit OTP to phone_number (always) and to email if provided.
-   * Welcome message is deferred until POST /auth/verify-phone succeeds.
+   * Creates separate OTP records for phone (always) and email (if provided).
+   * Welcome message is deferred until verify-phone or verify-login succeeds.
    */
   async register(data: {
     first_name: string;
@@ -174,46 +203,139 @@ export const AuthService = {
       return created;
     });
 
-    const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
+    const locale = (data.locale as Locale | undefined) ?? 'rw';
 
-    const locale = (data.locale as 'rw' | 'en' | 'fr' | undefined) ?? 'rw';
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+    // Phone OTP — always
+    const { code: phoneCode, expiresIn } = await OtpService.create(user.id, 'phone_verification');
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code: phoneCode, expires_in_seconds: expiresIn, locale });
+
+    // Email OTP — only when email provided (separate code)
     if (data.email) {
-      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: data.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+      const { code: emailCode } = await OtpService.create(user.id, 'email_verification');
+      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: data.email, first_name: user.first_name, code: emailCode, expires_in_seconds: expiresIn, locale });
     }
+
     publishAudit({ actor_id: user.id, action: 'register', resource: 'User', resource_id: user.id });
 
     return { user_id: user.id, expires_in: expiresIn };
   },
 
   /**
-   * Verify phone number with OTP.
-   * Activates the account and issues the first token pair.
+   * Verify phone number OTP (standalone — not part of a login flow).
+   * On first verification: activates the account, sets login_channel to 'phone', sends welcome.
+   * On subsequent verification (account already active): only stamps phone_verified_at.
+   * Does NOT issue tokens — user is directed to log in.
    */
-  async verifyPhone(
+  async verifyPhone(user_id: string, otp: string): Promise<{ login_identifier: string }> {
+    await OtpService.verify(user_id, otp, 'phone_verification');
+
+    const user = await prisma.user.findUnique({ where: { id: user_id } });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+
+    const isFirst = user.status === 'pending_verification';
+
+    const updated = await prisma.user.update({
+      where: { id: user_id },
+      data: {
+        phone_verified_at: new Date(),
+        ...(isFirst ? { status: 'active', login_channel: 'phone' } : {}),
+      },
+      ...withRoles,
+    });
+
+    if (isFirst) {
+      notifyUser(updated, {
+        sms: { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name },
+        mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
+      });
+    }
+
+    publishAudit({ actor_id: user_id, action: 'verify_phone', resource: 'User', resource_id: user_id });
+
+    return { login_identifier: displayPhone(updated.phone_number) };
+  },
+
+  /**
+   * Verify email address OTP (standalone — not part of a login flow).
+   * On first verification: activates the account, sets login_channel to 'email', sends welcome.
+   * On subsequent verification (account already active): only stamps email_verified_at.
+   * Does NOT issue tokens — user is directed to log in.
+   */
+  async verifyEmail(user_id: string, otp: string): Promise<{ login_identifier: string }> {
+    const user = await prisma.user.findUnique({ where: { id: user_id } });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+    if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
+    if (user.email_verified_at) throw new AppError('EMAIL_ALREADY_VERIFIED', 409);
+
+    await OtpService.verify(user_id, otp, 'email_verification');
+
+    const isFirst = user.status === 'pending_verification';
+
+    const updated = await prisma.user.update({
+      where: { id: user_id },
+      data: {
+        email_verified_at: new Date(),
+        ...(isFirst ? { status: 'active', login_channel: 'email' } : {}),
+      },
+      ...withRoles,
+    });
+
+    if (isFirst) {
+      notifyUser(updated, {
+        sms: { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name },
+        mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
+      });
+    }
+
+    publishAudit({ actor_id: user_id, action: 'verify_email', resource: 'User', resource_id: user_id });
+
+    return { login_identifier: updated.email! };
+  },
+
+  /**
+   * Verify OTP during a login-triggered verification flow (pending_verification account).
+   * Activates the account, sets login_channel, stamps _verified_at, sends welcome, issues tokens.
+   * This is the ONLY verify path that returns tokens.
+   */
+  async verifyLogin(
     user_id: string,
     otp: string,
+    channel: 'phone' | 'email',
     device_name?: string,
     ip?: string,
     user_agent?: string,
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
-    await OtpService.verify(user_id, otp, 'phone_verification');
+    const user = await prisma.user.findUnique({ where: { id: user_id } });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+    if (user.status !== 'pending_verification') {
+      throw new AppError('INVALID_STATUS', 409);
+    }
 
-    const user = await prisma.user.update({
+    const purpose = channel === 'email' ? 'email_verification' : 'phone_verification';
+    await OtpService.verify(user_id, otp, purpose);
+
+    const updated = await prisma.user.update({
       where: { id: user_id },
-      data: { status: 'active', phone_verified_at: new Date() },
+      data: {
+        status: 'active',
+        login_channel: channel,
+        last_login_at: new Date(),
+        ...(channel === 'phone'
+          ? { phone_verified_at: new Date() }
+          : { email_verified_at: new Date() }),
+      },
       ...withRoles,
     });
 
-    publishAudit({ actor_id: user.id, action: 'verify_phone', resource: 'User', resource_id: user.id });
-
-    notifyUser(user, {
-      sms: { type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name },
-      mail: user.email ? { type: 'welcome.mail', email: user.email, first_name: user.first_name } : undefined,
+    notifyUser(updated, {
+      sms: { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name },
+      mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
     });
 
-    const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
-    return { user, tokens };
+    publishAudit({ actor_id: user_id, action: 'verify_login', resource: 'User', resource_id: user_id, ip });
+
+    const tokens = await TokenService.issueTokenPair(updated, device_name, ip, user_agent);
+    return { user: updated, tokens };
   },
 
   /** Initiate password recovery. Always silent — no enumeration. */
@@ -242,23 +364,28 @@ export const AuthService = {
   },
 
   /**
-   * Resend a phone verification OTP to a user still in pending_verification status.
-   * Idempotent — OtpService.create deletes any previous OTP for the same purpose.
+   * Resend a verification OTP to a user still in pending_verification status.
+   * channel='phone' (default): resends phone_verification OTP via SMS.
+   * channel='email': resends email_verification OTP via email.
    */
-  async resendOtp(user_id: string): Promise<{ expires_in: number }> {
+  async resendOtp(user_id: string, channel: 'phone' | 'email' = 'phone'): Promise<{ expires_in: number }> {
     const user = await prisma.user.findUnique({ where: { id: user_id } });
 
     if (!user || user.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
     if (user.status !== 'pending_verification') throw new AppError('ALREADY_VERIFIED', 409);
 
-    const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
-
     const locale = user.locale as Locale;
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
-    if (user.email) {
+
+    if (channel === 'email') {
+      if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
+      if (user.email_verified_at) throw new AppError('EMAIL_ALREADY_VERIFIED', 409);
+      const { code, expiresIn } = await OtpService.create(user.id, 'email_verification');
       publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+      return { expires_in: expiresIn };
     }
 
+    const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
     return { expires_in: expiresIn };
   },
 };

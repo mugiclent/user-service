@@ -49,7 +49,7 @@ export type SmsEvent = (
   // ── OTP delivery ──────────────────────────────────────────────────────────
   | {
       type: 'otp.sms';
-      purpose: 'phone_verification' | '2fa' | 'password_reset';
+      purpose: 'phone_verification' | 'email_verification' | '2fa' | 'password_reset';
       phone_number: string;
       code: string;
       expires_in_seconds: number;
@@ -84,7 +84,7 @@ export type MailEvent = (
   // ── OTP delivery ──────────────────────────────────────────────────────────
   | {
       type: 'otp.mail';
-      purpose: 'password_reset' | 'email_verification';
+      purpose: 'phone_verification' | 'email_verification' | 'password_reset';
       email: string;
       first_name: string;
       code: string;

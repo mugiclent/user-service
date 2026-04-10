@@ -1,11 +1,12 @@
 import { prisma } from '../models/index.js';
-import type { Prisma, UserWithRoles, AuthenticatedUser } from '../models/index.js';
+import type { Prisma, AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
 import { buildRulesFromGrants, buildAbilityFromRules } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
+import { OtpService } from './otp.service.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
 
@@ -334,7 +335,7 @@ export const UserService = {
   async acceptInvite(
     token: string,
     password: string,
-  ): Promise<{ user: UserWithRoles }> {
+  ): Promise<{ user_id: string; channels: ('phone' | 'email')[] }> {
     const tokenHash = hashToken(token);
 
     const invitation = await prisma.invitation.findUnique({ where: { token_hash: tokenHash } });
@@ -354,12 +355,10 @@ export const UserService = {
           phone_number: invitation.phone_number!,
           password_hash,
           user_type: 'staff',
-          status: 'active',
+          status: 'pending_verification',
           org_id: invitation.org_id ?? null,
-          notif_channel: ['sms', 'email', 'app'],  // staff receive on all channels by default
+          notif_channel: invitation.email ? ['sms', 'email', 'app'] : ['sms', 'app'],
           locale,
-          phone_verified_at: invitation.phone_number ? new Date() : null,
-          email_verified_at: invitation.email ? new Date() : null,
         },
       });
       await tx.userRole.create({ data: { user_id: created.id, role_id: invitation.role_id } });
@@ -367,17 +366,100 @@ export const UserService = {
         where: { token_hash: tokenHash },
         data: { accepted_at: new Date() },
       });
-      return tx.user.findUniqueOrThrow({ where: { id: created.id }, ...withRoles });
+      return created;
     });
 
-    // Welcome notifications for the newly created staff user
-    publishSms({ type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name, locale });
+    // Send OTPs — separate codes per channel
+    const { code: phoneCode, expiresIn } = await OtpService.create(user.id, 'phone_verification');
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code: phoneCode, expires_in_seconds: expiresIn, locale });
+
     if (user.email) {
-      publishMail({ type: 'welcome.mail', email: user.email, first_name: user.first_name, locale });
+      const { code: emailCode } = await OtpService.create(user.id, 'email_verification');
+      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code: emailCode, expires_in_seconds: expiresIn, locale });
     }
+
     publishAudit({ actor_id: user.id, action: 'accept_invite', resource: 'User', resource_id: user.id });
 
-    return { user };
+    const channels: ('phone' | 'email')[] = user.email ? ['phone', 'email'] : ['phone'];
+    return { user_id: user.id, channels };
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /auth/invite/validate — token pre-check (public, frontend pre-check)
+  // ---------------------------------------------------------------------------
+
+  async validateInviteToken(token: string): Promise<{
+    valid: true;
+    first_name: string;
+    channels: ('phone' | 'email')[];
+    masked_phone: string | null;
+    masked_email: string | null;
+  }> {
+    const tokenHash = hashToken(token);
+
+    const invitation = await prisma.invitation.findUnique({ where: { token_hash: tokenHash } });
+    if (!invitation || invitation.accepted_at) throw new AppError('INVITE_NOT_FOUND', 404);
+    if (invitation.expires_at < new Date()) throw new AppError('INVITE_EXPIRED', 410);
+
+    const maskPhone = (phone: string) => '+' + phone.slice(0, 3) + phone.slice(3, 6) + '***' + phone.slice(-3);
+    const maskEmail = (email: string) => {
+      const [local, domain] = email.split('@');
+      return local.slice(0, 2) + '***@' + domain;
+    };
+
+    return {
+      valid: true,
+      first_name: invitation.first_name,
+      channels: [
+        ...(invitation.phone_number ? ['phone' as const] : []),
+        ...(invitation.email ? ['email' as const] : []),
+      ],
+      masked_phone: invitation.phone_number ? maskPhone(invitation.phone_number) : null,
+      masked_email: invitation.email ? maskEmail(invitation.email) : null,
+    };
+  },
+
+  // ---------------------------------------------------------------------------
+  // POST /users/me/login-channel — request login channel change (sends OTP)
+  // POST /users/me/login-channel/confirm — confirm with OTP
+  // ---------------------------------------------------------------------------
+
+  async requestLoginChannelChange(userId: string, channel: 'phone' | 'email'): Promise<{ expires_in: number }> {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+    if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
+
+    if (channel === 'email') {
+      if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
+      const { code, expiresIn } = await OtpService.create(userId, 'email_verification');
+      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: user.locale as 'rw' | 'en' | 'fr' });
+      return { expires_in: expiresIn };
+    }
+
+    const { code, expiresIn } = await OtpService.create(userId, 'phone_verification');
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as 'rw' | 'en' | 'fr' });
+    return { expires_in: expiresIn };
+  },
+
+  async confirmLoginChannelChange(userId: string, channel: 'phone' | 'email', otp: string): Promise<{ login_channel: string }> {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+    if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
+
+    const purpose = channel === 'email' ? 'email_verification' : 'phone_verification';
+    await OtpService.verify(userId, otp, purpose);
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        login_channel: channel,
+        ...(channel === 'phone' ? { phone_verified_at: new Date() } : { email_verified_at: new Date() }),
+      },
+    });
+
+    publishAudit({ actor_id: userId, action: 'change_login_channel', resource: 'User', resource_id: userId });
+
+    return { login_channel: channel };
   },
 
   // ---------------------------------------------------------------------------

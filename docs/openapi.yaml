@@ -522,12 +522,13 @@ paths:
       summary: Register a new passenger account
       description: |
         Creates a `passenger` account in `pending_verification` status.
-        On success, sends a 6-digit OTP to `phone_number`. If `email` is also provided,
-        the same OTP is sent there too. The account cannot log in until
-        `POST /auth/verify-phone` is called with the OTP.
+        On success, sends **separate** 6-digit OTPs per channel:
+        - **Phone OTP** → always sent via SMS (`phone_verification` purpose)
+        - **Email OTP** → only if `email` provided, distinct code via email (`email_verification` purpose)
 
-        On successful phone verification, a welcome message is sent via the
-        channels matching the user's `notif_channel` preference.
+        The account cannot log in until at least one channel is verified.
+        The first channel verified sets `login_channel` and activates the account.
+        After verifying, call `POST /auth/login` to obtain tokens.
 
         Staff accounts are provisioned via `POST /users/invite` (admin-only flow).
       security: []
@@ -578,13 +579,16 @@ paths:
   /auth/verify-phone:
     post:
       tags: [Auth]
-      summary: Verify phone number and activate account
-      parameters:
-        - $ref: '#/components/parameters/ClientType'
+      summary: Verify phone number (standalone — no tokens)
       description: |
-        Activates the account (`pending_verification` → `active`) and issues the first token pair.
-        This is the only way a self-registered passenger obtains tokens.
-        The OTP is single-use and deleted on success.
+        Verifies the phone OTP. On first verification (account `pending_verification`):
+        activates the account and sets `login_channel` to `phone`.
+
+        **Does not issue tokens.** Returns `login_identifier` so the client can direct
+        the user to the login screen with the correct identifier pre-filled.
+
+        If the account was already active (email verified first), only stamps `phone_verified_at`.
+        The user can then switch to phone login via `POST /users/me/login-channel`.
       security: []
       requestBody:
         required: true
@@ -594,21 +598,24 @@ paths:
               type: object
               required: [user_id, otp]
               properties:
-                user_id:     { type: string, format: uuid }
-                otp:         { type: string, minLength: 6, maxLength: 6, description: 6-digit code sent to phone. }
-                device_name: { type: string, maxLength: 200, description: 'Optional label stored with the refresh token, e.g. "iPhone 15 Pro".' }
+                user_id: { type: string, format: uuid }
+                otp:     { type: string, minLength: 6, maxLength: 6, description: 6-digit code sent to phone. }
       responses:
         '200':
-          description: Phone verified — tokens issued
+          description: Phone verified — proceed to login
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AuthResponse' }
+              schema:
+                type: object
+                properties:
+                  message:          { type: string, example: 'Phone verified. Please log in with your phone number.' }
+                  login_identifier: { type: string, example: '+250780000001' }
         '400':
           description: Invalid OTP
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: OTP_INVALID } }
+              example: { error: { code: INVALID_OTP } }
         '410':
           description: OTP expired
           content:
@@ -616,6 +623,126 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: OTP_EXPIRED } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/verify-email:
+    post:
+      tags: [Auth]
+      summary: Verify email address (standalone — no tokens)
+      description: |
+        Verifies the email OTP. On first verification (account `pending_verification`):
+        activates the account and sets `login_channel` to `email`.
+
+        **Does not issue tokens.** Returns `login_identifier` so the client can direct
+        the user to the login screen.
+
+        If the account was already active (phone verified first), only stamps `email_verified_at`.
+        The user can then switch to email login via `POST /users/me/login-channel`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, otp]
+              properties:
+                user_id: { type: string, format: uuid }
+                otp:     { type: string, minLength: 6, maxLength: 6, description: 6-digit code sent to email. }
+      responses:
+        '200':
+          description: Email verified — proceed to login
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:          { type: string, example: 'Email verified. Please log in with your email.' }
+                  login_identifier: { type: string, example: 'user@company.com' }
+        '400':
+          description: Invalid OTP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Email already verified
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: EMAIL_ALREADY_VERIFIED } }
+        '410':
+          description: OTP expired
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/verify-login:
+    post:
+      tags: [Auth]
+      parameters:
+        - $ref: '#/components/parameters/ClientType'
+      summary: Complete login-triggered OTP verification (issues tokens)
+      description: |
+        Called after `POST /auth/login` returns `{ requires_verification: true }`.
+
+        Verifies the OTP sent to the channel the user logged in with, activates the account,
+        sets `login_channel`, and issues the first token pair. This is the **only** verification
+        endpoint that returns tokens.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id, otp, channel]
+              properties:
+                user_id:     { type: string, format: uuid }
+                otp:         { type: string, minLength: 6, maxLength: 6 }
+                channel:     { type: string, enum: [phone, email], description: Must match the channel returned by POST /auth/login. }
+                device_name: { type: string, maxLength: 200 }
+      responses:
+        '200':
+          description: Verified — tokens issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthResponse' }
+        '400':  { description: Invalid OTP, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '404':  { description: User not found, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '409':  { description: Account already verified, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '410':  { description: OTP expired, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422':  { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/invite/validate:
+    get:
+      tags: [Auth]
+      summary: Validate an invite token (frontend pre-check)
+      description: |
+        Called by the frontend when the accept-invite page loads (before showing the set-password form).
+        Returns masked contact details so the user knows who the invite is for.
+        Returns `404` if the token is invalid or already used, `410` if expired.
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+          description: Raw invite token from the URL
+      responses:
+        '200':
+          description: Token valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:        { type: boolean, enum: [true] }
+                  first_name:   { type: string }
+                  channels:     { type: array, items: { type: string, enum: [phone, email] } }
+                  masked_phone: { type: string, nullable: true, example: '+250780***001' }
+                  masked_email: { type: string, nullable: true, example: 'us***@company.com' }
+        '404': { description: Token not found or already used, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '410': { description: Token expired, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
   /auth/login:
     post:
@@ -626,10 +753,16 @@ paths:
       description: |
         Accepts a phone number in E.164 format or an email address as `identifier`.
 
-        **2FA disabled** → `200` with full `AuthResponse`.
+        **Normal** → `200` with full `AuthResponse`.
+
+        **Account pending verification** → `202` with `{ requires_verification: true, user_id, channel, expires_in }`.
+        An OTP is sent to the channel the user logged in with. Follow up with `POST /auth/verify-login`.
 
         **2FA enabled** → `202` with `{ requires_2fa: true, user_id, expires_in }`.
-        An OTP is sent to the user's phone. The client must follow up with `POST /auth/verify-2fa`.
+        An OTP is sent to the user's phone. Follow up with `POST /auth/verify-2fa`.
+
+        **Wrong login channel** → `403` with `PHONE_LOGIN_REQUIRED` or `EMAIL_LOGIN_REQUIRED`
+        if the user tries to log in via a channel that is not their `login_channel`.
 
         Rate-limited to **5 attempts per 15 min per IP** by default.
         Configurable via `RATE_LIMIT_LOGIN_MAX` and `RATE_LIMIT_LOGIN_WINDOW_SECONDS`.
@@ -848,13 +981,13 @@ paths:
   /auth/resend-otp:
     post:
       tags: [Auth]
-      summary: Resend phone verification OTP
+      summary: Resend verification OTP
       description: |
-        Issues a fresh 6-digit OTP to a user who is still in `pending_verification` status
-        (e.g. the original OTP expired before they could enter it).
+        Issues a fresh 6-digit OTP to a user still in `pending_verification` status.
 
-        - Sends OTP via SMS always; also via email if the user registered with one.
-        - The previous OTP for `phone_verification` is invalidated automatically.
+        - `channel: 'phone'` (default) → resends `phone_verification` OTP via SMS.
+        - `channel: 'email'` → resends `email_verification` OTP via email (requires email on account, not yet verified).
+        - The previous OTP for the same channel+purpose is invalidated automatically.
         - Rate-limited to 3 requests per 10 minutes per `user_id`.
       security: []
       requestBody:
@@ -868,6 +1001,11 @@ paths:
                 user_id:
                   type: string
                   format: uuid
+                channel:
+                  type: string
+                  enum: [phone, email]
+                  default: phone
+                  description: Which channel to resend the OTP to.
       responses:
         '200':
           description: OTP resent
@@ -1584,6 +1722,72 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: INVALID_CREDENTIALS } }
 
+  /users/me/login-channel:
+    post:
+      tags: [Users]
+      summary: Request login channel change (step 1 — sends OTP)
+      description: |
+        Sends a fresh OTP to the requested channel to confirm possession before switching `login_channel`.
+        The target channel must be associated with the account (phone_number always exists; email must be present).
+        Requires authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel]
+              properties:
+                channel: { type: string, enum: [phone, email] }
+      responses:
+        '200':
+          description: OTP sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expires_in: { type: integer, description: OTP TTL in seconds }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: Already active channel or email already verified conflict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /users/me/login-channel/confirm:
+    post:
+      tags: [Users]
+      summary: Confirm login channel change (step 2 — verifies OTP, updates channel)
+      description: |
+        Verifies the OTP sent by `POST /users/me/login-channel` and updates `login_channel`.
+        Also stamps the corresponding `_verified_at` field.
+        Requires authentication.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [channel, otp]
+              properties:
+                channel: { type: string, enum: [phone, email] }
+                otp:     { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '200':
+          description: Login channel updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  login_channel: { type: string, enum: [phone, email] }
+        '400': { description: Invalid OTP, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '410': { description: OTP expired, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
   /users/me/2fa:
     patch:
       tags: [Users]
@@ -1671,13 +1875,16 @@ paths:
   /users/accept-invite:
     post:
       tags: [Users]
-      summary: Accept a staff invitation
+      summary: Accept a staff invitation (set password, trigger OTP)
       description: |
-        Activates the pending staff account with the supplied password and issues tokens immediately.
-        The `token` is the raw value from the invitation link (not hashed).
+        Sets the user's password, creates the account in `pending_verification` status,
+        and sends OTP(s) to the provided channel(s).
 
-        Staff accounts are created with `notif_channel: all` by default.
-        A welcome SMS and email are sent to the new user.
+        **Does not issue tokens.** After this call, the user must:
+        1. Log in via `POST /auth/login` → receives `{ requires_verification: true, channel }`.
+        2. Enter the OTP via `POST /auth/verify-login` → tokens issued.
+
+        Alternatively: validate token first via `GET /auth/invite/validate`.
       security: []
       requestBody:
         required: true
@@ -1687,15 +1894,19 @@ paths:
               type: object
               required: [token, password]
               properties:
-                token:       { type: string, description: Raw invite token from the invitation link. }
-                password:    { type: string, minLength: 8, maxLength: 128 }
-                device_name: { type: string, maxLength: 200 }
+                token:    { type: string, description: Raw invite token from the invitation link. }
+                password: { type: string, minLength: 8, maxLength: 128 }
       responses:
         '200':
-          description: Invite accepted — tokens issued
+          description: Account created — OTP(s) sent, proceed to login
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/AuthResponse' }
+              schema:
+                type: object
+                properties:
+                  message:  { type: string, example: 'Account created. Please verify your account to log in.' }
+                  user_id:  { type: string, format: uuid }
+                  channels: { type: array, items: { type: string, enum: [phone, email] }, example: [phone, email] }
         '400':
           description: Token invalid or already used
           content:

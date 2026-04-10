@@ -65,6 +65,11 @@ vi.mock('../../src/models/index.js', () => ({
   Prisma: {},
 }));
 
+const mockOtpCreate = vi.fn().mockResolvedValue({ code: '654321', expiresIn: 300 });
+vi.mock('../../src/services/otp.service.js', () => ({
+  OtpService: { create: mockOtpCreate, verify: vi.fn().mockResolvedValue(undefined) },
+}));
+
 // ── import service AFTER mocks ────────────────────────────────────────────────
 const { UserService } = await import('../../src/services/user.service.js');
 
@@ -114,7 +119,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockRoleFindFirst.mockResolvedValue(baseRole);
   mockInvitationCreate.mockResolvedValue({});
-  mockUserCreate.mockResolvedValue(makeAcceptedUser());
+  // acceptInvite uses the tx.user.create result directly (no findUniqueOrThrow)
+  mockUserCreate.mockResolvedValue({
+    id: 'user-new-1',
+    phone_number: '+250780000099',
+    email: null,
+    first_name: 'Bob',
+    locale: 'rw',
+  });
+  mockOtpCreate.mockResolvedValue({ code: '654321', expiresIn: 300 });
 });
 
 // ── inviteUser — phone only ───────────────────────────────────────────────────
@@ -255,10 +268,10 @@ describe('UserService.acceptInvite', () => {
     });
   });
 
-  it('publishes welcome.sms after accepting invite', async () => {
+  it('publishes phone OTP via SMS after accepting invite', async () => {
     await UserService.acceptInvite('test-raw-token-abc', 'NewPass!123');
     expect(publishSms).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'welcome.sms', phone_number: '+250780000099' }),
+      expect.objectContaining({ type: 'otp.sms', purpose: 'phone_verification', phone_number: '+250780000099' }),
     );
   });
 
@@ -269,12 +282,12 @@ describe('UserService.acceptInvite', () => {
     );
   });
 
-  it('does NOT publish welcome.mail when no email on invitation', async () => {
+  it('does NOT publish email OTP when no email on invitation', async () => {
     await UserService.acceptInvite('test-raw-token-abc', 'NewPass!123');
     expect(publishMail).not.toHaveBeenCalled();
   });
 
-  it('publishes welcome.mail when invitation has email', async () => {
+  it('publishes email OTP when invitation has email', async () => {
     mockInvitationFindUnique.mockResolvedValue({
       token_hash: 'hashed:test-raw-token-abc',
       first_name: 'Carol',
@@ -286,20 +299,16 @@ describe('UserService.acceptInvite', () => {
       accepted_at: null,
       expires_at: new Date(Date.now() + 3_600_000),
     });
-    const acceptedUser = makeAcceptedUser({ email: 'carol@example.com', first_name: 'Carol' });
-    // Override the $transaction mock for this specific test
-    const { prisma } = await import('../../src/models/index.js');
-    vi.mocked(prisma.$transaction).mockImplementationOnce(async (fn: (tx: unknown) => Promise<unknown>) => {
-      const tx = {
-        user: { create: mockUserCreate, findUniqueOrThrow: vi.fn().mockResolvedValue(acceptedUser) },
-        userRole: { create: mockUserRoleCreate },
-        invitation: { update: mockInvitationUpdate },
-      };
-      return fn(tx);
+    mockUserCreate.mockResolvedValueOnce({
+      id: 'user-carol',
+      phone_number: '+250780000088',
+      email: 'carol@example.com',
+      first_name: 'Carol',
+      locale: 'rw',
     });
     await UserService.acceptInvite('test-raw-token-abc', 'NewPass!123');
     expect(publishMail).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'welcome.mail', email: 'carol@example.com' }),
+      expect.objectContaining({ type: 'otp.mail', purpose: 'email_verification', email: 'carol@example.com' }),
     );
   });
 });

@@ -11,6 +11,8 @@ import {
   acceptInviteSchema,
   validatePasswordSchema,
   toggle2faSchema,
+  loginChannelSchema,
+  loginChannelConfirmSchema,
 } from '../middleware/schemas/user.schema.js';
 
 const router = Router();
@@ -32,6 +34,12 @@ router.post('/me/validate-password', authenticate, validate(validatePasswordSche
 
 // PATCH /api/v1/users/me/2fa
 router.patch('/me/2fa', authenticate, validate(toggle2faSchema), UserController.toggle2fa);
+
+// POST /api/v1/users/me/login-channel  — request login channel switch (sends OTP)
+router.post('/me/login-channel', authenticate, validate(loginChannelSchema), UserController.requestLoginChannelChange);
+
+// POST /api/v1/users/me/login-channel/confirm  — confirm channel switch with OTP
+router.post('/me/login-channel/confirm', authenticate, validate(loginChannelConfirmSchema), UserController.confirmLoginChannelChange);
 
 // GET /api/v1/users/me/avatar/presigned-url?content_type=image/jpeg
 router.get('/me/avatar/presigned-url', authenticate, UserController.getAvatarPresignedUrl);

@@ -1,9 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { UserService } from '../services/user.service.js';
-import { TokenService } from '../services/token.service.js';
 import { MediaService } from '../services/media.service.js';
-import { sendAuthResponse } from '../utils/sendAuthResponse.js';
-import { serializeUserForAuth } from '../models/serializers.js';
 import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 
@@ -146,14 +143,35 @@ export const UserController = {
 
   async acceptInvite(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { token, password, device_name } = req.body as {
-        token: string;
-        password: string;
-        device_name?: string;
-      };
-      const { user } = await UserService.acceptInvite(token, password);
-      const tokens = await TokenService.issueTokenPair(user, device_name, req.ip, req.headers['user-agent']);
-      sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
+      const { token, password } = req.body as { token: string; password: string };
+      const result = await UserService.acceptInvite(token, password);
+      res.status(200).json({
+        message: 'Account created. Please verify your account to log in.',
+        user_id: result.user_id,
+        channels: result.channels,
+      });
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async requestLoginChannelChange(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { channel } = req.body as { channel: 'phone' | 'email' };
+      const result = await UserService.requestLoginChannelChange(user.id, channel);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async confirmLoginChannelChange(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { channel, otp } = req.body as { channel: 'phone' | 'email'; otp: string };
+      const result = await UserService.confirmLoginChannelChange(user.id, channel, otp);
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

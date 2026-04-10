@@ -276,14 +276,14 @@ describe('UserController.inviteUser', () => {
 // ── acceptInvite ──────────────────────────────────────────────────────────────
 
 describe('UserController.acceptInvite', () => {
-  it('issues token pair and calls sendAuthResponse', async () => {
-    const user = { id: 'new-user', user_roles: [] };
-    mockAcceptInvite.mockResolvedValueOnce({ user });
+  it('returns user_id and channels without issuing tokens', async () => {
+    mockAcceptInvite.mockResolvedValueOnce({ user_id: 'new-user', channels: ['phone'] });
     const req = { body: { token: 'tok', password: 'pass' }, headers: {}, ip: '1.1.1.1' } as unknown as Request;
     const res = makeRes();
     await UserController.acceptInvite(req, res, next);
-    expect(mockIssueTokenPair).toHaveBeenCalledWith(user, undefined, '1.1.1.1', undefined);
-    expect(mockSendAuthResponse).toHaveBeenCalled();
+    expect(mockIssueTokenPair).not.toHaveBeenCalled();
+    expect(mockSendAuthResponse).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ user_id: 'new-user', channels: ['phone'] }));
   });
 
   it('calls next(err) on error', async () => {

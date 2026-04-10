@@ -8,6 +8,8 @@ import {
   loginSchema,
   registerSchema,
   verifyPhoneSchema,
+  verifyEmailSchema,
+  verifyLoginSchema,
   verify2faSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
@@ -23,11 +25,20 @@ router.post('/login', loginRateLimiter, validate(loginSchema), AuthController.lo
 // POST /api/v1/auth/register
 router.post('/register', validate(registerSchema), AuthController.register);
 
-// POST /api/v1/auth/verify-phone
+// POST /api/v1/auth/verify-phone  — standalone (no tokens; user directed to log in)
 router.post('/verify-phone', validate(verifyPhoneSchema), AuthController.verifyPhone);
+
+// POST /api/v1/auth/verify-email  — standalone (no tokens; user directed to log in)
+router.post('/verify-email', validate(verifyEmailSchema), AuthController.verifyEmail);
+
+// POST /api/v1/auth/verify-login  — OTP verification during login flow (issues tokens)
+router.post('/verify-login', validate(verifyLoginSchema), AuthController.verifyLogin);
 
 // POST /api/v1/auth/verify-2fa  — step 2 when two_factor_enabled = true
 router.post('/verify-2fa', validate(verify2faSchema), AuthController.verify2fa);
+
+// GET /api/v1/auth/invite/validate  — validate invite token before showing set-password form
+router.get('/invite/validate', AuthController.validateInviteToken);
 
 // POST /api/v1/auth/forgot-password
 router.post('/forgot-password', resetRateLimiter, validate(forgotPasswordSchema), AuthController.forgotPassword);

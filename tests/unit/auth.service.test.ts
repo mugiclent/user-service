@@ -68,11 +68,13 @@ vi.mock('../../src/utils/crypto.js', () => ({
 
 const mockPublishAudit = vi.fn();
 const mockPublishSms = vi.fn();
+const mockPublishMail = vi.fn();
 const mockNotifyUser = vi.fn();
 
 vi.mock('../../src/utils/publishers.js', () => ({
   publishAudit: mockPublishAudit,
   publishSms: mockPublishSms,
+  publishMail: mockPublishMail,
   notifyUser: mockNotifyUser,
 }));
 
@@ -136,11 +138,12 @@ describe('AuthService.login', () => {
     });
   });
 
-  it('throws PHONE_NOT_VERIFIED for pending_verification users', async () => {
+  it('returns requires_verification: true for pending_verification users and sends OTP', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser({ status: 'pending_verification' }));
-    await expect(AuthService.login('+250788000001', 'pass')).rejects.toMatchObject({
-      code: 'PHONE_NOT_VERIFIED', status: 403,
-    });
+    const result = await AuthService.login('+250788000001', 'pass');
+    expect(result).toMatchObject({ requires_verification: true, channel: 'phone', user_id: 'user-1' });
+    expect(mockOtpCreate).toHaveBeenCalledWith('user-1', 'phone_verification');
+    expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'otp.sms', purpose: 'phone_verification' }));
   });
 
   it('returns requires_2fa: true when 2FA is enabled', async () => {
@@ -308,17 +311,37 @@ describe('AuthService.register', () => {
 // ── verifyPhone ───────────────────────────────────────────────────────────────
 
 describe('AuthService.verifyPhone', () => {
-  it('updates user status to active and returns tokens', async () => {
-    const user = makeUser({ status: 'active' });
-    mockUserUpdate.mockResolvedValueOnce(user);
+  it('activates account on first verification, sets login_channel to phone, returns login_identifier', async () => {
+    const pendingUser = makeUser({ status: 'pending_verification' });
+    const activeUser = makeUser({ status: 'active', login_channel: 'phone' });
+    mockUserFindUnique.mockResolvedValueOnce(pendingUser);
+    mockUserUpdate.mockResolvedValueOnce(activeUser);
     const result = await AuthService.verifyPhone('user-1', '123456');
     expect(mockUserUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ status: 'active', phone_verified_at: expect.any(Date) }),
+        data: expect.objectContaining({ status: 'active', login_channel: 'phone', phone_verified_at: expect.any(Date) }),
       }),
     );
-    expect(result).toMatchObject({ user, tokens: { access: 'access-tok', refresh: 'refresh-tok' } });
+    expect(result).toMatchObject({ login_identifier: expect.stringContaining('+') });
+    expect(mockIssueTokenPair).not.toHaveBeenCalled();
     expect(mockPublishAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'verify_phone' }));
+  });
+
+  it('only stamps phone_verified_at when account already active (second verification)', async () => {
+    const activeUser = makeUser({ status: 'active', login_channel: 'email' });
+    mockUserFindUnique.mockResolvedValueOnce(activeUser);
+    mockUserUpdate.mockResolvedValueOnce(activeUser);
+    await AuthService.verifyPhone('user-1', '123456');
+    expect(mockUserUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ phone_verified_at: expect.any(Date) }),
+      }),
+    );
+    // Should NOT set status or login_channel when already active
+    const callData = mockUserUpdate.mock.calls[0][0].data;
+    expect(callData.status).toBeUndefined();
+    expect(callData.login_channel).toBeUndefined();
+    expect(mockIssueTokenPair).not.toHaveBeenCalled();
   });
 });
 
