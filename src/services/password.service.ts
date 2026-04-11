@@ -39,7 +39,7 @@ export const PasswordService = {
       publishSms({
         type: 'otp.sms',
         purpose: 'password_reset',
-        phone_number: user.phone_number,
+        phone_number: user.phone_number!,
         code,
         expires_in_seconds: expiresIn,
         locale,
@@ -74,7 +74,7 @@ export const PasswordService = {
     ]);
 
     notifyUser(user, {
-      sms: { type: 'security.password_changed', phone_number: user.phone_number, first_name: user.first_name },
+      sms: user.phone_number ? { type: 'security.password_changed', phone_number: user.phone_number, first_name: user.first_name } : undefined,
       mail: user.email ? { type: 'security.password_changed', email: user.email, first_name: user.first_name } : undefined,
       push: { type: 'security.password_changed' },
     });

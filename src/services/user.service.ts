@@ -91,7 +91,7 @@ export const UserService = {
     if (data.two_factor_enabled !== undefined && current!.two_factor_enabled !== data.two_factor_enabled) {
       const eventType = data.two_factor_enabled ? 'security.2fa_enabled' : 'security.2fa_disabled';
       notifyUser(user, {
-        sms: { type: eventType, phone_number: user.phone_number, first_name: user.first_name },
+        sms: user.phone_number ? { type: eventType, phone_number: user.phone_number, first_name: user.first_name } : undefined,
         mail: user.email ? { type: eventType, email: user.email, first_name: user.first_name } : undefined,
         push: { type: eventType },
       });
@@ -248,7 +248,7 @@ export const UserService = {
     // Notify the target user if their account was suspended
     if (data.status === 'suspended') {
       notifyUser(updated, {
-        sms: { type: 'security.account_suspended', phone_number: updated.phone_number, first_name: updated.first_name },
+        sms: updated.phone_number ? { type: 'security.account_suspended', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
         mail: updated.email ? { type: 'security.account_suspended', email: updated.email, first_name: updated.first_name } : undefined,
         push: { type: 'security.account_suspended' },
       });
@@ -430,7 +430,7 @@ export const UserService = {
 
     // Send OTPs — separate codes per channel
     const { code: phoneCode, expiresIn } = await OtpService.create(user.id, 'phone_verification');
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code: phoneCode, expires_in_seconds: expiresIn, locale });
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number!, code: phoneCode, expires_in_seconds: expiresIn, locale });
 
     if (user.email) {
       const { code: emailCode } = await OtpService.create(user.id, 'email_verification');
@@ -518,7 +518,7 @@ export const UserService = {
       const normIdentifier = identifier;
 
       // Reject if identifier is already the current value for that channel
-      const currentValue = channel === 'email' ? user.email : displayPhone(user.phone_number);
+      const currentValue = channel === 'email' ? user.email : (user.phone_number ? displayPhone(user.phone_number) : null);
       if (currentValue === normIdentifier || user.phone_number === normIdentifier) {
         throw new AppError('IDENTIFIER_UNCHANGED', 409);
       }
@@ -558,9 +558,9 @@ export const UserService = {
 
     // channel === 'phone'
     const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
-    await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: displayPhone(user.phone_number), mode: 'switch' }));
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
-    return { expires_in: expiresIn, masked_identifier: maskPhone(user.phone_number) };
+    await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: displayPhone(user.phone_number!), mode: 'switch' }));
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale });
+    return { expires_in: expiresIn, masked_identifier: maskPhone(user.phone_number!) };
   },
 
   // ---------------------------------------------------------------------------

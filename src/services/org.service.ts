@@ -240,7 +240,7 @@ export const OrgService = {
       }).then((users) => {
         for (const u of users) {
           notifyUser(u, {
-            sms:  { type: 'org.suspended', phone_number: u.phone_number, org_name: org.name },
+            sms:  u.phone_number ? { type: 'org.suspended', phone_number: u.phone_number, org_name: org.name } : undefined,
             mail: u.email ? { type: 'org.suspended', email: u.email, org_name: org.name } : undefined,
             push: { type: 'org.suspended', data: { org_name: org.name } },
           });

@@ -153,7 +153,7 @@ export const publishPush = (event: PushEvent): void =>
 // ---------------------------------------------------------------------------
 
 export interface NotifiableUser {
-  phone_number: string;
+  phone_number: string | null;
   email: string | null;
   fcm_token: string | null;
   notif_channel: string[];
@@ -173,7 +173,8 @@ export const notifyUser = (
   const hasEmail = !!user.email;
   const locale = (user.locale as Locale | undefined) ?? 'rw';
 
-  const shouldSms  = ch.includes('sms') || (ch.includes('app') && !hasFcm);
+  const hasPhone = !!user.phone_number;
+  const shouldSms  = hasPhone && (ch.includes('sms') || (ch.includes('app') && !hasFcm));
   const shouldMail = ch.includes('email') && hasEmail;
   const shouldPush = ch.includes('app') && hasFcm;
 

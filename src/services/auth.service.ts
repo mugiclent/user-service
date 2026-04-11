@@ -101,7 +101,7 @@ export const AuthService = {
       if (channel === 'email') {
         publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email!, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
       } else {
-        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale });
       }
       return { requires_2fa: false, requires_verification: true, user_id: user.id, channel, expires_in: expiresIn };
     }
@@ -120,7 +120,7 @@ export const AuthService = {
       if (user.login_channel === 'email' && user.email) {
         publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
       } else {
-        publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
+        publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
       }
       return { requires_2fa: true, requires_verification: false, user_id: user.id, expires_in: expiresIn };
     }
@@ -141,7 +141,7 @@ export const AuthService = {
         }).then((sameDevice) => {
           if (!sameDevice) {
             notifyUser(user, {
-              sms: { type: 'security.login_new_device', phone_number: user.phone_number, first_name: user.first_name, device: device_name },
+              sms: user.phone_number ? { type: 'security.login_new_device', phone_number: user.phone_number, first_name: user.first_name, device: device_name } : undefined,
               mail: user.email ? { type: 'security.login_new_device', email: user.email, first_name: user.first_name, device: device_name } : undefined,
               push: { type: 'security.login_new_device', data: device_name ? { device: device_name } : undefined },
             });
@@ -229,7 +229,7 @@ export const AuthService = {
 
     // Phone OTP — always
     const { code: phoneCode, expiresIn } = await OtpService.create(user.id, 'phone_verification');
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code: phoneCode, expires_in_seconds: expiresIn, locale });
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number!, code: phoneCode, expires_in_seconds: expiresIn, locale });
 
     // Email OTP — only when email provided (separate code)
     if (data.email) {
@@ -267,14 +267,14 @@ export const AuthService = {
 
     if (isFirst) {
       notifyUser(updated, {
-        sms: { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name },
+        sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
         mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
       });
     }
 
     publishAudit({ actor_id: user_id, action: 'verify_phone', resource: 'User', resource_id: user_id });
 
-    return { login_identifier: displayPhone(updated.phone_number) };
+    return { login_identifier: displayPhone(updated.phone_number!) };
   },
 
   /**
@@ -304,7 +304,7 @@ export const AuthService = {
 
     if (isFirst) {
       notifyUser(updated, {
-        sms: { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name },
+        sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
         mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
       });
     }
@@ -350,7 +350,7 @@ export const AuthService = {
     });
 
     notifyUser(updated, {
-      sms: { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name },
+      sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
       mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
     });
 
@@ -420,7 +420,7 @@ export const AuthService = {
         if (user.status !== 'pending_verification') throw new AppError('ALREADY_VERIFIED', 409);
         if (user.phone_verified_at) throw new AppError('CHANNEL_ALREADY_VERIFIED', 409);
         const { code, expiresIn } = await OtpService.create(user.id, purpose);
-        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale });
         return { expires_in: expiresIn };
       }
 
@@ -439,7 +439,7 @@ export const AuthService = {
         if (user.login_channel === 'email' && user.email) {
           publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
         } else {
-          publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+          publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale });
         }
         return { expires_in: expiresIn };
       }
@@ -450,7 +450,7 @@ export const AuthService = {
           if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
           publishMail({ type: 'otp.mail', purpose: 'password_reset', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
         } else {
-          publishSms({ type: 'otp.sms', purpose: 'password_reset', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+          publishSms({ type: 'otp.sms', purpose: 'password_reset', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale });
         }
         return { expires_in: expiresIn };
       }
@@ -466,7 +466,7 @@ export const AuthService = {
           return { expires_in: expiresIn };
         }
         const { code, expiresIn } = await OtpService.create(user.id, purpose);
-        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale });
         return { expires_in: expiresIn };
       }
     }

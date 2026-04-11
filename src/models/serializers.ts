@@ -15,7 +15,7 @@ export interface AuthUserDto {
   avatar_path: string | null;
   org_id: string | null;
   roles: string[];
-  status: 'active' | 'pending_verification' | 'suspended';
+  status: 'active' | 'pending_verification' | 'suspended' | 'pending_deletion' | 'deleted';
   two_factor_enabled: boolean;
   login_channel: string | null;
   locale: string;
