@@ -36,6 +36,8 @@ export const config = {
     secure: env.COOKIE_SECURE,
   },
 
+  deletionGraceDays: env.DELETION_GRACE_DAYS,
+
   otp: {
     ttlSeconds: env.OTP_TTL_SECONDS,
     length: env.OTP_LENGTH,

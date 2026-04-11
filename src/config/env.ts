@@ -35,6 +35,8 @@ const schema = Joi.object({
   COOKIE_SECURE: Joi.boolean().default(true),
   TRUST_PROXY: Joi.number().integer().min(0).default(1),
 
+  DELETION_GRACE_DAYS: Joi.number().integer().min(1).default(30),
+
   OTP_TTL_SECONDS: Joi.number().default(300),
   OTP_LENGTH: Joi.number().default(6),
   OTP_MAX_ATTEMPTS: Joi.number().default(3),
@@ -87,6 +89,7 @@ export const env = value as {
   REFRESH_TOKEN_TTL_DAYS: number;
   COOKIE_SECURE: boolean;
   TRUST_PROXY: number;
+  DELETION_GRACE_DAYS: number;
   OTP_TTL_SECONDS: number;
   OTP_LENGTH: number;
   OTP_MAX_ATTEMPTS: number;
