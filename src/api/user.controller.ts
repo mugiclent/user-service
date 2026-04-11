@@ -21,6 +21,7 @@ export const UserController = {
       const result = await UserService.updateMe(user, req.body as {
         first_name?: string;
         last_name?: string;
+        phone_number?: string;
         email?: string;
         avatar_path?: string | null;
         notif_channel?: string[];

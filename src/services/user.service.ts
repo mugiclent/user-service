@@ -41,6 +41,7 @@ export const UserService = {
     data: {
       first_name?: string;
       last_name?: string;
+      phone_number?: string;
       email?: string;
       avatar_path?: string | null;
       notif_channel?: string[];
@@ -49,7 +50,11 @@ export const UserService = {
     },
   ): Promise<Record<string, unknown>> {
     // Fetch current user when we need to compare before/after state
-    const needsCurrent = data.email !== undefined || data.two_factor_enabled !== undefined || 'avatar_path' in data;
+    const needsCurrent =
+      data.phone_number !== undefined ||
+      data.email !== undefined ||
+      data.two_factor_enabled !== undefined ||
+      'avatar_path' in data;
     const current = needsCurrent
       ? await prisma.user.findUniqueOrThrow({
           where: { id: requestingUser.id },
@@ -57,8 +62,11 @@ export const UserService = {
         })
       : null;
 
-    // Changing the email field while email is the active login channel must go
+    // Changing phone/email while it is the active login channel must go
     // through the login-channel-change flow — not a simple profile patch.
+    if (data.phone_number !== undefined && current!.login_channel === 'phone') {
+      throw new AppError('LOGIN_CHANNEL_CHANGE_REQUIRED', 422);
+    }
     if (data.email !== undefined && current!.login_channel === 'email') {
       throw new AppError('LOGIN_CHANNEL_CHANGE_REQUIRED', 422);
     }
@@ -66,6 +74,7 @@ export const UserService = {
     const updateData: Prisma.UserUncheckedUpdateInput = {};
     if (data.first_name !== undefined) updateData.first_name = data.first_name;
     if (data.last_name !== undefined) updateData.last_name = data.last_name;
+    if (data.phone_number !== undefined) updateData.phone_number = data.phone_number;
     if (data.email !== undefined) updateData.email = data.email;
     if (data.avatar_path !== undefined) updateData.avatar_path = data.avatar_path;
     if (data.notif_channel !== undefined) updateData.notif_channel = data.notif_channel;

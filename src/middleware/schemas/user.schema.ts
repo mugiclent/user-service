@@ -6,6 +6,7 @@ const password = Joi.string().min(8).max(128);
 export const updateMeSchema = Joi.object({
   first_name: Joi.string().trim().max(100).optional(),
   last_name: Joi.string().trim().max(100).optional(),
+  phone_number: phoneSchema.optional(),
   email: Joi.string().trim().email().max(255).optional(),
   avatar_path: Joi.string().max(500).optional().allow(null),
   notif_channel: Joi.array().items(Joi.string().valid('sms', 'email', 'app')).min(1).unique().optional(),

@@ -1713,7 +1713,9 @@ paths:
         Updates the authenticated user's own profile. At least one field must be provided.
 
         Field notes:
-        - `email` — if `email` is the current `login_channel`, the update is rejected with
+        - `phone_number` — if phone is the current `login_channel`, the update is rejected with
+          `LOGIN_CHANNEL_CHANGE_REQUIRED` (422) — use `POST /users/me/login-channel` instead.
+        - `email` — if email is the current `login_channel`, the update is rejected with
           `LOGIN_CHANNEL_CHANGE_REQUIRED` (422) — use `POST /users/me/login-channel` instead.
         - `avatar_path` — use the `path` from `GET /users/me/avatar/presigned-url` after uploading.
           Pass `null` to remove the current avatar (S3 file is deleted asynchronously).
@@ -1732,6 +1734,12 @@ paths:
               properties:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
+                phone_number:
+                  type: string
+                  pattern: '^\+\d{7,15}$'
+                  description: |
+                    E.164 format. Cannot be changed if phone is the current `login_channel` — use
+                    `POST /users/me/login-channel` with an `identifier` instead.
                 email:
                   type: string
                   format: email
