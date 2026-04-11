@@ -107,9 +107,9 @@ describe('orgDocumentKey', () => {
 // ── generatePresignedPutUrl ────────────────────────────────────────────────────
 
 describe('generatePresignedPutUrl', () => {
-  it('calls getSignedUrl and returns uploadUrl + path', async () => {
+  it('calls getSignedUrl and returns upload_url + path', async () => {
     const result = await generatePresignedPutUrl('avatars/u/file.jpg', 'image/jpeg');
-    expect(result.uploadUrl).toBe('https://s3.test/bucket/key?sig=abc');
+    expect(result.upload_url).toBe('https://s3.test/bucket/key?sig=abc');
     expect(result.path).toBe('avatars/u/file.jpg');
     expect(mockGetSignedUrl).toHaveBeenCalledTimes(1);
   });

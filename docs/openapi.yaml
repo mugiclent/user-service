@@ -1817,10 +1817,6 @@ paths:
                     type: string
                     format: uri
                     description: 'PUT the image file here. Expires in ~5 min.'
-                  key:
-                    type: string
-                    example: 'avatars/user-id/uuid.jpg'
-                    description: Same value as `path`.
                   path:
                     type: string
                     example: 'avatars/user-id/uuid.jpg'

@@ -17,7 +17,7 @@ import { AppError } from '../utils/AppError.js';
  * Generate a presigned PUT URL for a user's avatar.
  *
  * The client should:
- *   1. PUT the file to `uploadUrl` with the matching Content-Type header.
+ *   1. PUT the file to `upload_url` with the matching Content-Type header.
  *   2. PATCH /users/me with { avatar_path: path } to commit the path.
  */
 export const MediaService = {

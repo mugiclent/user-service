@@ -52,7 +52,7 @@ const extFor = (ct: string): string => ALLOWED_DOC_TYPES[ct] ?? 'bin';
 
 export interface PresignedResult {
   /** The URL the client should PUT the file to (expires in 5 min). */
-  uploadUrl: string;
+  upload_url: string;
   /**
    * S3 object path — store this in the DB and send back via PATCH.
    * e.g. "avatars/user-id/uuid.jpg"
@@ -71,11 +71,11 @@ export const generatePresignedPutUrl = async (
     ContentType: contentType,
   });
 
-  const uploadUrl = await getSignedUrl(publicClient, cmd, {
+  const upload_url = await getSignedUrl(publicClient, cmd, {
     expiresIn: config.s3.presignedExpiresIn,
   });
 
-  return { uploadUrl, path };
+  return { upload_url, path };
 };
 
 // ---------------------------------------------------------------------------
