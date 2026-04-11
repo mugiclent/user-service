@@ -81,9 +81,9 @@ export const AuthService = {
       const { code, expiresIn } = await OtpService.create(user.id, purpose);
       const locale = user.locale as Locale;
       if (channel === 'email') {
-        publishMail({ type: 'otp.mail', purpose, email: user.email!, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+        publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email!, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
       } else {
-        publishSms({ type: 'otp.sms', purpose, phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
       }
       return { requires_2fa: false, requires_verification: true, user_id: user.id, channel, expires_in: expiresIn };
     }

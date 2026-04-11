@@ -58,7 +58,7 @@ export const OrgApplicationService = {
           contact_email: data.contact_email,
           contact_phone: data.contact_phone,
           address: data.address ?? null,
-          tin: data.tin ?? null,
+          tin: data.tin!,
           license_number: data.license_number ?? null,
           parent_org_id: data.parent_org_id ?? null,
           status: 'pending',
