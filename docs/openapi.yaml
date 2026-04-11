@@ -991,7 +991,7 @@ paths:
         |---|---|---|
         | `phone_verification` | Registration — user never verified their phone | always `phone` |
         | `email_verification` | Registration — user never verified their email | always `email` |
-        | `2fa` | Mid-login — 2FA code not received | user's `two_factor_channel` (ignored if provided) |
+        | `2fa` | Mid-login — 2FA code not received | user's `login_channel` (channel field ignored) |
         | `password_reset` | Mid-reset — reset code not received | `phone` or `email` |
         | `login_channel_change` | Mid-channel-switch — OTP not received | `phone` or `email` (target channel) |
 
@@ -1020,7 +1020,7 @@ paths:
                   type: string
                   enum: [phone, email]
                   default: phone
-                  description: Delivery channel. Relevant for `password_reset` and `login_channel_change`. Ignored for `2fa` (uses `two_factor_channel`). Fixed for `phone_verification` (phone) and `email_verification` (email).
+                  description: Delivery channel. Relevant for `password_reset` and `login_channel_change`. Ignored for `2fa` (always uses `login_channel`). Fixed for `phone_verification` (phone) and `email_verification` (email).
       responses:
         '200':
           description: OTP resent

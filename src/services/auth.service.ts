@@ -371,7 +371,7 @@ export const AuthService = {
    * Central resend-OTP handler. Supports all OTP purposes.
    *
    * phone_verification / email_verification: registration flow, user must be pending_verification.
-   * 2fa:                  mid-login flow, user must have 2FA enabled, sent via two_factor_channel.
+   * 2fa:                  mid-login flow, user must have 2FA enabled, sent via login_channel.
    * password_reset:       mid-reset flow, channel determines delivery (phone or email).
    * login_channel_change: mid-channel-switch flow, channel is the target channel.
    *
