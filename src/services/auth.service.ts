@@ -96,11 +96,10 @@ export const AuthService = {
       throw new AppError('PHONE_LOGIN_REQUIRED', 403);
     }
 
-    // 2FA: send OTP via user's preferred 2FA channel, defer token issuance to verify-2fa step
+    // 2FA: send OTP via the user's login_channel, defer token issuance to verify-2fa step
     if (user.two_factor_enabled) {
       const { code, expiresIn } = await OtpService.create(user.id, '2fa');
-      const twoFaChannel = (user.two_factor_channel as 'phone' | 'email') ?? 'phone';
-      if (twoFaChannel === 'email' && user.email) {
+      if (user.login_channel === 'email' && user.email) {
         publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
       } else {
         publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
@@ -418,9 +417,8 @@ export const AuthService = {
 
       case '2fa': {
         if (!user.two_factor_enabled) throw new AppError('TWO_FACTOR_NOT_ENABLED', 409);
-        const twoFaChannel = (user.two_factor_channel as 'phone' | 'email') ?? 'phone';
         const { code, expiresIn } = await OtpService.create(user.id, purpose);
-        if (twoFaChannel === 'email' && user.email) {
+        if (user.login_channel === 'email' && user.email) {
           publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
         } else {
           publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });

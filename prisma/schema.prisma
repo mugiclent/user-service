@@ -136,7 +136,6 @@ model User {
   status                     UserStatus   @default(pending_verification)
   login_channel              LoginChannel?
   two_factor_enabled         Boolean      @default(false)
-  two_factor_channel         LoginChannel @default(phone)
   avatar_path                String?
   notif_channel              String[]     @default(["sms", "email"])
   locale                     String       @default("rw") @db.VarChar(5)
