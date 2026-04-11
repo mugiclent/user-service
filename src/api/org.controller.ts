@@ -14,7 +14,7 @@ export const OrgController = {
         contact_email: string;
         contact_phone: string;
         address?: string;
-        tin?: string;
+        tin: string;
         license_number?: string;
         parent_org_id?: string;
       });

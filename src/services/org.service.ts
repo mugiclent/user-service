@@ -38,7 +38,7 @@ export const OrgService = {
       contact_email: string;
       contact_phone: string;
       address?: string;
-      tin?: string;
+      tin: string;
       license_number?: string;
       parent_org_id?: string;
     },
@@ -57,14 +57,15 @@ export const OrgService = {
           contact_email: data.contact_email,
           contact_phone: data.contact_phone,
           address: data.address ?? null,
-          tin: data.tin ?? null,
+          tin: data.tin,
           license_number: data.license_number ?? null,
           parent_org_id: data.parent_org_id ?? null,
         },
       });
     } catch (err) {
-      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2003') {
-        throw new AppError('PARENT_ORG_NOT_FOUND', 404);
+      if (err instanceof Prisma.PrismaClientKnownRequestError) {
+        if (err.code === 'P2003') throw new AppError('PARENT_ORG_NOT_FOUND', 404);
+        if (err.code === 'P2002') throw new AppError('TIN_ALREADY_EXISTS', 409);
       }
       throw err;
     }

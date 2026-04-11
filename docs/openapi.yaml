@@ -1085,14 +1085,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, org_type, contact_email, contact_phone]
+              required: [name, org_type, contact_email, contact_phone, tin]
               properties:
                 name:           { type: string, maxLength: 200 }
                 org_type:       { type: string, enum: [company, cooperative] }
                 contact_email:  { type: string, format: email, maxLength: 255 }
-                contact_phone:  { type: string, maxLength: 20, description: 'E.164 format recommended.' }
+                contact_phone:  { type: string, description: 'E.164 format (e.g. +250788000001).' }
                 address:        { type: string, maxLength: 500 }
-                tin:            { type: string, maxLength: 50 }
+                tin:            { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
                 license_number: { type: string, maxLength: 100 }
                 parent_org_id:  { type: string, format: uuid, description: Parent cooperative org for member companies. }
       responses:
@@ -1485,14 +1485,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, org_type, contact_email, contact_phone, business_certificate_path, rep_id_path]
+              required: [name, org_type, contact_email, contact_phone, tin, business_certificate_path, rep_id_path]
               properties:
                 name:           { type: string, maxLength: 200 }
                 org_type:       { type: string, enum: [company, cooperative] }
                 contact_email:  { type: string, format: email, maxLength: 255, description: A 6-digit OTP will be emailed here for verification. }
                 contact_phone:  { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
                 address:        { type: string, maxLength: 500 }
-                tin:            { type: string, maxLength: 50 }
+                tin:            { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
                 license_number: { type: string, maxLength: 100 }
                 parent_org_id:  { type: string, format: uuid, description: ID of the parent cooperative org, if applicable. }
                 business_certificate_path:

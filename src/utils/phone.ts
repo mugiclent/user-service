@@ -47,6 +47,16 @@ export const normalizePhone = (raw: string): string => {
 export const displayPhone = (stored: string): string => '+' + stored;
 
 /**
+ * Reusable Joi schema for Tax Identification Numbers — exactly 9 digits.
+ */
+export const tinSchema = Joi.string()
+  .trim()
+  .pattern(/^\d{9}$/)
+  .messages({
+    'string.pattern.base': 'TIN must be exactly 9 digits',
+  });
+
+/**
  * Reusable Joi schema — normalizes to digits-only on validation.
  */
 export const phoneSchema = Joi.string()

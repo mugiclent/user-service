@@ -116,10 +116,13 @@ describe('toggle2faSchema', () => {
 // ── Org schemas ────────────────────────────────────────────────────────────────
 
 describe('createOrgSchema', () => {
-  const base = { name: 'Acme', org_type: 'company', contact_email: 'a@b.com', contact_phone: '+250788000001' };
+  const base = { name: 'Acme', org_type: 'company', contact_email: 'a@b.com', contact_phone: '+250788000001', tin: '123456789' };
   it('accepts valid org creation', () => ok(createOrgSchema, base));
   it('rejects invalid org_type', () => fail(createOrgSchema, { ...base, org_type: 'partnership' }));
   it('rejects missing name', () => fail(createOrgSchema, { ...base, name: undefined }));
+  it('rejects missing tin', () => fail(createOrgSchema, { ...base, tin: undefined }));
+  it('rejects tin with non-digits', () => fail(createOrgSchema, { ...base, tin: 'abc456789' }));
+  it('rejects tin not 9 digits', () => fail(createOrgSchema, { ...base, tin: '12345' }));
   it('accepts optional UUID parent_org_id', () => ok(createOrgSchema, { ...base, parent_org_id: '550e8400-e29b-41d4-a716-446655440000' }));
   it('rejects non-UUID parent_org_id', () => fail(createOrgSchema, { ...base, parent_org_id: 'not-uuid' }));
 });
@@ -135,11 +138,12 @@ describe('updateOrgSchema', () => {
 
 describe('applyOrgSchema', () => {
   const base = {
-    name: 'Acme', org_type: 'company', contact_email: 'a@b.com',
+    name: 'Acme', org_type: 'company', contact_email: 'a@b.com', tin: '123456789',
     contact_phone: '+250788000001', business_certificate_path: 'org-docs/p/cert.pdf',
     rep_id_path: 'org-docs/p/id.jpg',
   };
   it('accepts valid application', () => ok(applyOrgSchema, base));
+  it('rejects missing tin', () => fail(applyOrgSchema, { ...base, tin: undefined }));
   it('rejects missing business_certificate_path', () => fail(applyOrgSchema, { ...base, business_certificate_path: undefined }));
   it('rejects invalid phone format', () => fail(applyOrgSchema, { ...base, contact_phone: 'not-a-phone' }));
 });
