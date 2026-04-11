@@ -56,6 +56,8 @@ export const config = {
 
   s3: {
     endpoint: env.S3_ENDPOINT,
+    // Falls back to S3_ENDPOINT when not set (e.g. local dev where both are the same)
+    internalEndpoint: env.S3_INTERNAL_ENDPOINT ?? env.S3_ENDPOINT,
     accessKey: env.S3_ACCESS_KEY,
     secretKey: env.S3_SECRET_KEY,
     bucket: env.S3_BUCKET,

@@ -3,13 +3,24 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
 
-const client = new S3Client({
-  forcePathStyle: true, // required for SeaweedFS S3
+const sharedCredentials = {
+  accessKeyId: config.s3.accessKey,
+  secretAccessKey: config.s3.secretKey,
+};
+
+// Used for presigned URLs — endpoint must be the public URL so clients can reach it
+const publicClient = new S3Client({
+  forcePathStyle: true,
   endpoint: config.s3.endpoint,
-  credentials: {
-    accessKeyId: config.s3.accessKey,
-    secretAccessKey: config.s3.secretKey,
-  },
+  credentials: sharedCredentials,
+  region: config.s3.region,
+});
+
+// Used for server-side operations (delete) — talks to SeaweedFS directly over the internal network
+const internalClient = new S3Client({
+  forcePathStyle: true,
+  endpoint: config.s3.internalEndpoint,
+  credentials: sharedCredentials,
   region: config.s3.region,
 });
 
@@ -60,7 +71,7 @@ export const generatePresignedPutUrl = async (
     ContentType: contentType,
   });
 
-  const uploadUrl = await getSignedUrl(client, cmd, {
+  const uploadUrl = await getSignedUrl(publicClient, cmd, {
     expiresIn: config.s3.presignedExpiresIn,
   });
 
@@ -87,7 +98,7 @@ export const orgDocumentKey = (orgId: string, docType: string, contentType: stri
 /** Fire-and-forget S3 delete. Logs on failure but does not throw. */
 export const deleteFromS3 = async (key: string): Promise<void> => {
   try {
-    await client.send(new DeleteObjectCommand({
+    await internalClient.send(new DeleteObjectCommand({
       Bucket: config.s3.bucket,
       Key: key,
     }));

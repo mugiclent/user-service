@@ -55,6 +55,7 @@ const schema = Joi.object({
   STAFF_APP_URL: Joi.string().uri().required(),
 
   S3_ENDPOINT: Joi.string().uri().required(),
+  S3_INTERNAL_ENDPOINT: Joi.string().uri().optional(),
   S3_ACCESS_KEY: Joi.string().required(),
   S3_SECRET_KEY: Joi.string().required(),
   S3_BUCKET: Joi.string().default('katisha'),
@@ -104,6 +105,7 @@ export const env = value as {
   APP_URL: string;
   STAFF_APP_URL: string;
   S3_ENDPOINT: string;
+  S3_INTERNAL_ENDPOINT: string | undefined;
   S3_ACCESS_KEY: string;
   S3_SECRET_KEY: string;
   S3_BUCKET: string;
