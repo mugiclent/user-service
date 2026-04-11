@@ -411,7 +411,7 @@ describe('UserService.deleteUser', () => {
     await UserService.deleteUser(authUser as never, 'user-2');
     expect(mockTransaction).toHaveBeenCalled();
     expect(mockUserUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { deleted_at: expect.any(Date) } }),
+      expect.objectContaining({ data: { status: 'pending_deletion', deleted_at: expect.any(Date) } }),
     );
     expect(mockRefreshTokenUpdateMany).toHaveBeenCalled();
   });

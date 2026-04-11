@@ -9,6 +9,7 @@ import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publ
 import type { Locale } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 import { normalizePhone, displayPhone } from '../utils/phone.js';
+import { DELETION_GRACE_DAYS } from '../utils/constants.js';
 
 const withRoles = {
   include: {
@@ -70,6 +71,23 @@ export const AuthService = {
     if (!passwordValid) throw new AppError('INVALID_CREDENTIALS', 401);
 
     if (user.status === 'suspended') throw new AppError('ACCOUNT_SUSPENDED', 403);
+
+    // Account permanently anonymized — PII is gone, credentials won't match anyway
+    if (user.status === 'deleted') throw new AppError('INVALID_CREDENTIALS', 401);
+
+    // Account pending deletion — restore if still within grace period, otherwise reject
+    if (user.status === 'pending_deletion') {
+      const graceCutoff = new Date(user.deleted_at!.getTime() + DELETION_GRACE_DAYS * 24 * 60 * 60 * 1000);
+      if (new Date() > graceCutoff) throw new AppError('ACCOUNT_DELETED', 403);
+
+      // Within grace period — restore the account and continue login normally
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { status: 'active', deleted_at: null },
+      });
+      user.status = 'active';
+      user.deleted_at = null;
+    }
 
     // Account not yet verified by any channel — send OTP to the entered channel
     if (user.status === 'pending_verification') {

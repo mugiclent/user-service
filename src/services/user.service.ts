@@ -283,7 +283,7 @@ export const UserService = {
 
   async deleteUser(requestingUser: AuthenticatedUser, targetId: string): Promise<void> {
     const target = await prisma.user.findUnique({ where: { id: targetId } });
-    if (!target || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
+    if (!target || target.status === 'deleted' || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
 
     // Org-scoped admins (org_admin) may only delete users within their own org
     const isAdmin = requestingUser.role_slugs.includes('platform-admin');
@@ -292,7 +292,10 @@ export const UserService = {
     }
 
     await prisma.$transaction([
-      prisma.user.update({ where: { id: targetId }, data: { deleted_at: new Date() } }),
+      prisma.user.update({
+        where: { id: targetId },
+        data: { status: 'pending_deletion', deleted_at: new Date() },
+      }),
       // Revoke all refresh tokens
       prisma.refreshToken.updateMany({
         where: { user_id: targetId, revoked_at: null },
