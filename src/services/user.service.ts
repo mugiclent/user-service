@@ -303,11 +303,18 @@ export const UserService = {
     const inviteLink = `${config.appUrl}/accept-invite?token=${rawToken}`;
     const expiresInSeconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
 
+    const inviter = await prisma.user.findUnique({
+      where: { id: requestingUser.id },
+      select: { first_name: true, last_name: true },
+    });
+    const invited_by = inviter ? `${inviter.first_name} ${inviter.last_name}` : 'Katisha';
+
     if (data.phone_number) {
       publishSms({
         type: 'invite.sms',
         phone_number: data.phone_number,
         first_name: data.first_name,
+        invited_by,
         invite_link: inviteLink,
         expires_in_seconds: expiresInSeconds,
         locale,
@@ -318,6 +325,7 @@ export const UserService = {
         type: 'invite.mail',
         email: data.email,
         first_name: data.first_name,
+        invited_by,
         invite_link: inviteLink,
         expires_in_seconds: expiresInSeconds,
         locale,

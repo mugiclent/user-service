@@ -45,10 +45,7 @@ vi.mock('../../src/config/index.js', () => ({
   config: { jwt: { refreshTtlMs: 604_800_000 } },
 }));
 
-const mockNotifyUser = vi.fn();
-vi.mock('../../src/utils/publishers.js', () => ({
-  notifyUser: mockNotifyUser,
-}));
+vi.mock('../../src/utils/publishers.js', () => ({}));
 
 const { TokenService } = await import('../../src/services/token.service.js');
 
@@ -128,34 +125,14 @@ describe('TokenService.rotateRefreshToken — token not found', () => {
 });
 
 describe('TokenService.rotateRefreshToken — revoked token (reuse detection)', () => {
-  it('revokes all sessions for the user', async () => {
+  it('revokes all sessions and throws TOKEN_REUSE_DETECTED (401)', async () => {
     mockFindUniqueRefreshToken.mockResolvedValueOnce(makeStoredToken({ revoked_at: pastDate }));
-    mockFindUniqueUser.mockResolvedValueOnce(null); // victim lookup
     await expect(TokenService.rotateRefreshToken('raw')).rejects.toMatchObject({
       code: 'TOKEN_REUSE_DETECTED', status: 401,
     });
     expect(mockUpdateManyRefreshToken).toHaveBeenCalledWith({
       where: { user_id: 'user-1', revoked_at: null },
       data: { revoked_at: expect.any(Date) },
-    });
-  });
-
-  it('notifies the user when victim is found', async () => {
-    const victim = makeUser();
-    mockFindUniqueRefreshToken.mockResolvedValueOnce(makeStoredToken({ revoked_at: pastDate }));
-    mockFindUniqueUser.mockResolvedValueOnce(victim);
-    await expect(TokenService.rotateRefreshToken('raw')).rejects.toMatchObject({ code: 'TOKEN_REUSE_DETECTED' });
-    expect(mockNotifyUser).toHaveBeenCalledWith(
-      victim,
-      expect.objectContaining({ sms: expect.objectContaining({ type: 'security.all_sessions_revoked' }) }),
-    );
-  });
-
-  it('throws TOKEN_REUSE_DETECTED (401)', async () => {
-    mockFindUniqueRefreshToken.mockResolvedValueOnce(makeStoredToken({ revoked_at: pastDate }));
-    mockFindUniqueUser.mockResolvedValueOnce(null);
-    await expect(TokenService.rotateRefreshToken('raw')).rejects.toMatchObject({
-      code: 'TOKEN_REUSE_DETECTED', status: 401,
     });
   });
 });

@@ -49,19 +49,18 @@ export type SmsEvent = (
   // ── OTP delivery ──────────────────────────────────────────────────────────
   | {
       type: 'otp.sms';
-      purpose: 'phone_verification' | 'email_verification' | '2fa' | 'password_reset';
+      purpose: 'phone_verification' | '2fa' | 'password_reset';
       phone_number: string;
       code: string;
       expires_in_seconds: number;
     }
   // ── Welcome / onboarding ──────────────────────────────────────────────────
   | { type: 'welcome.sms'; phone_number: string; first_name: string }
-  | { type: 'invite.sms'; phone_number: string; first_name: string; invite_link: string; expires_in_seconds: number }
+  | { type: 'invite.sms'; phone_number: string; first_name: string; invited_by: string; invite_link: string; expires_in_seconds: number }
   | { type: 'org_approved.sms'; phone_number: string; org_name: string; invite_link: string; expires_in_seconds: number }
   // ── Security events ───────────────────────────────────────────────────────
   | { type: 'security.login_new_device'; phone_number: string; first_name: string; device?: string }
   | { type: 'security.password_changed'; phone_number: string; first_name: string }
-  | { type: 'security.all_sessions_revoked'; phone_number: string; first_name: string }
   | { type: 'security.account_suspended'; phone_number: string; first_name: string }
   | { type: 'security.2fa_enabled'; phone_number: string; first_name: string }
   | { type: 'security.2fa_disabled'; phone_number: string; first_name: string }
@@ -84,7 +83,7 @@ export type MailEvent = (
   // ── OTP delivery ──────────────────────────────────────────────────────────
   | {
       type: 'otp.mail';
-      purpose: 'phone_verification' | 'email_verification' | 'password_reset';
+      purpose: 'email_verification' | '2fa' | 'password_reset';
       email: string;
       first_name: string;
       code: string;
@@ -92,7 +91,7 @@ export type MailEvent = (
     }
   // ── Welcome / onboarding ──────────────────────────────────────────────────
   | { type: 'welcome.mail'; email: string; first_name: string }
-  | { type: 'invite.mail'; email: string; first_name: string; invite_link: string; expires_in_seconds: number }
+  | { type: 'invite.mail'; email: string; first_name: string; invited_by: string; invite_link: string; expires_in_seconds: number }
   | { type: 'org_approved.mail'; email: string; org_name: string; invite_link: string; expires_in_seconds: number }
   // ── Security events ───────────────────────────────────────────────────────
   | { type: 'security.login_new_device'; email: string; first_name: string; device?: string }
@@ -125,7 +124,6 @@ export interface PushEvent {
   type:
     | 'security.login_new_device'
     | 'security.password_changed'
-    | 'security.all_sessions_revoked'
     | 'security.account_suspended'
     | 'security.2fa_enabled'
     | 'security.2fa_disabled'
