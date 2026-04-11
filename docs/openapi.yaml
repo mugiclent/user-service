@@ -981,13 +981,24 @@ paths:
   /auth/resend-otp:
     post:
       tags: [Auth]
-      summary: Resend verification OTP
+      summary: Resend OTP (all purposes)
       description: |
-        Issues a fresh 6-digit OTP to a user still in `pending_verification` status.
+        Central endpoint for resending any OTP. Supports all OTP flows via the required `purpose` field.
 
-        - `channel: 'phone'` (default) → resends `phone_verification` OTP via SMS.
-        - `channel: 'email'` → resends `email_verification` OTP via email (requires email on account, not yet verified).
-        - The previous OTP for the same channel+purpose is invalidated automatically.
+        **Purposes and when to use them:**
+
+        | purpose | flow | channel |
+        |---|---|---|
+        | `phone_verification` | Registration — user never verified their phone | always `phone` |
+        | `email_verification` | Registration — user never verified their email | always `email` |
+        | `2fa` | Mid-login — 2FA code not received | user's `two_factor_channel` (ignored if provided) |
+        | `password_reset` | Mid-reset — reset code not received | `phone` or `email` |
+        | `login_channel_change` | Mid-channel-switch — OTP not received | `phone` or `email` (target channel) |
+
+        **Rules:**
+        - The previous unused OTP for the same user+purpose is invalidated and replaced.
+        - For `phone_verification` / `email_verification`: user must be in `pending_verification` status. Returns `CHANNEL_ALREADY_VERIFIED` (409) if the channel is already verified.
+        - For `2fa`, `password_reset`, `login_channel_change`: an existing unused OTP must exist (proof the flow was initiated). This includes expired-but-unused OTPs — users who miss the window can resend without restarting the flow. Returns `OTP_FLOW_NOT_INITIATED` (400) if no prior OTP exists.
         - Rate-limited to 3 requests per 10 minutes per `user_id`.
       security: []
       requestBody:
@@ -996,16 +1007,20 @@ paths:
           application/json:
             schema:
               type: object
-              required: [user_id]
+              required: [user_id, purpose]
               properties:
                 user_id:
                   type: string
                   format: uuid
+                purpose:
+                  type: string
+                  enum: [phone_verification, email_verification, '2fa', password_reset, login_channel_change]
+                  description: The OTP flow to resend for.
                 channel:
                   type: string
                   enum: [phone, email]
                   default: phone
-                  description: Which channel to resend the OTP to.
+                  description: Delivery channel. Relevant for `password_reset` and `login_channel_change`. Ignored for `2fa` (uses `two_factor_channel`). Fixed for `phone_verification` (phone) and `email_verification` (email).
       responses:
         '200':
           description: OTP resent
@@ -1015,20 +1030,29 @@ paths:
                 type: object
                 properties:
                   expires_in: { type: integer, description: OTP TTL in seconds }
+        '400':
+          description: |
+            `OTP_FLOW_NOT_INITIATED` — no prior OTP exists for this purpose (flow was never started).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: User not found
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
+              schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: User is already verified (`ALREADY_VERIFIED`)
+          description: |
+            One of:
+            - `ALREADY_VERIFIED` — user is not in `pending_verification` status (phone/email_verification only)
+            - `CHANNEL_ALREADY_VERIFIED` — the target channel is already verified
+            - `TWO_FACTOR_NOT_ENABLED` — 2FA is not enabled on the account
+            - `ALREADY_ACTIVE_CHANNEL` — target channel is already the active login channel
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/Error'
-        '429': { $ref: '#/components/responses/TooManyRequests' }
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
 
   /auth/register-device:
     post:
@@ -1727,8 +1751,14 @@ paths:
       tags: [Users]
       summary: Request login channel change (step 1 — sends OTP)
       description: |
-        Sends a fresh OTP to the requested channel to confirm possession before switching `login_channel`.
-        The target channel must be associated with the account (phone_number always exists; email must be present).
+        Initiates a login channel switch by sending an OTP to the target channel.
+
+        If the target channel is **already verified** (e.g. switching to phone when `phone_verified_at` is set),
+        no OTP is sent and `expires_in` is returned as `0`. The client can call `/confirm` immediately
+        without an OTP code.
+
+        The target channel must be different from the current `login_channel`.
+        For email: an email address must be present on the account.
         Requires authentication.
       requestBody:
         required: true
@@ -1741,16 +1771,18 @@ paths:
                 channel: { type: string, enum: [phone, email] }
       responses:
         '200':
-          description: OTP sent
+          description: OTP sent (or skipped if channel already verified)
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  expires_in: { type: integer, description: OTP TTL in seconds }
+                  expires_in:
+                    type: integer
+                    description: OTP TTL in seconds. `0` means the channel is already verified — call `/confirm` directly.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
-          description: Already active channel or email already verified conflict
+          description: '`ALREADY_ACTIVE_CHANNEL` — target channel is already the active login channel.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1761,8 +1793,13 @@ paths:
       tags: [Users]
       summary: Confirm login channel change (step 2 — verifies OTP, updates channel)
       description: |
-        Verifies the OTP sent by `POST /users/me/login-channel` and updates `login_channel`.
-        Also stamps the corresponding `_verified_at` field.
+        Confirms the login channel switch and updates `login_channel`.
+        Also stamps `phone_verified_at` or `email_verified_at` on the user.
+
+        `otp` is **optional** when the target channel was already verified
+        (i.e. `/users/me/login-channel` returned `expires_in: 0`).
+        In all other cases, `otp` is required.
+
         Requires authentication.
       requestBody:
         required: true
@@ -1770,10 +1807,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [channel, otp]
+              required: [channel]
               properties:
                 channel: { type: string, enum: [phone, email] }
-                otp:     { type: string, minLength: 6, maxLength: 6 }
+                otp:     { type: string, minLength: 6, maxLength: 6, description: Required unless the target channel was already verified. }
       responses:
         '200':
           description: Login channel updated
@@ -1783,7 +1820,11 @@ paths:
                 type: object
                 properties:
                   login_channel: { type: string, enum: [phone, email] }
-        '400': { description: Invalid OTP, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+        '400':
+          description: '`OTP_REQUIRED` — otp was omitted but the channel is not yet verified. `INVALID_OTP` — wrong code.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '410': { description: OTP expired, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
