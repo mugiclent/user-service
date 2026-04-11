@@ -49,5 +49,5 @@ export const loginChannelSchema = Joi.object({
 
 export const loginChannelConfirmSchema = Joi.object({
   channel: Joi.string().valid('phone', 'email').required(),
-  otp: Joi.string().trim().length(6).required(),
+  otp: Joi.string().trim().length(6).optional(),
 });

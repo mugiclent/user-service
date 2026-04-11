@@ -3,7 +3,7 @@ import type { UserWithRoles } from '../models/index.js';
 import { hashPassword, verifyPassword } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
-import { OtpService } from './otp.service.js';
+import { OtpService, type OtpPurpose } from './otp.service.js';
 import { PasswordService } from './password.service.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
@@ -96,10 +96,15 @@ export const AuthService = {
       throw new AppError('PHONE_LOGIN_REQUIRED', 403);
     }
 
-    // 2FA: send OTP, defer token issuance to verify-2fa step
+    // 2FA: send OTP via user's preferred 2FA channel, defer token issuance to verify-2fa step
     if (user.two_factor_enabled) {
       const { code, expiresIn } = await OtpService.create(user.id, '2fa');
-      publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
+      const twoFaChannel = (user.two_factor_channel as 'phone' | 'email') ?? 'phone';
+      if (twoFaChannel === 'email' && user.email) {
+        publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
+      } else {
+        publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
+      }
       return { requires_2fa: true, requires_verification: false, user_id: user.id, expires_in: expiresIn };
     }
 
@@ -364,28 +369,90 @@ export const AuthService = {
   },
 
   /**
-   * Resend a verification OTP to a user still in pending_verification status.
-   * channel='phone' (default): resends phone_verification OTP via SMS.
-   * channel='email': resends email_verification OTP via email.
+   * Central resend-OTP handler. Supports all OTP purposes.
+   *
+   * phone_verification / email_verification: registration flow, user must be pending_verification.
+   * 2fa:                  mid-login flow, user must have 2FA enabled, sent via two_factor_channel.
+   * password_reset:       mid-reset flow, channel determines delivery (phone or email).
+   * login_channel_change: mid-channel-switch flow, channel is the target channel.
+   *
+   * For flow-gated purposes (2fa, password_reset, login_channel_change) resend is only allowed
+   * when an unused OTP already exists — this includes expired-but-unused OTPs, so users who
+   * missed the window can still get a new code without restarting the whole flow.
    */
-  async resendOtp(user_id: string, channel: 'phone' | 'email' = 'phone'): Promise<{ expires_in: number }> {
+  async resendOtp(
+    user_id: string,
+    purpose: OtpPurpose,
+    channel: 'phone' | 'email' = 'phone',
+  ): Promise<{ expires_in: number }> {
     const user = await prisma.user.findUnique({ where: { id: user_id } });
-
     if (!user || user.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
-    if (user.status !== 'pending_verification') throw new AppError('ALREADY_VERIFIED', 409);
 
     const locale = user.locale as Locale;
 
-    if (channel === 'email') {
-      if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
-      if (user.email_verified_at) throw new AppError('EMAIL_ALREADY_VERIFIED', 409);
-      const { code, expiresIn } = await OtpService.create(user.id, 'email_verification');
-      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
-      return { expires_in: expiresIn };
+    // For purposes tied to an initiated flow, require an existing unused OTP as proof.
+    // used_at: null covers both still-valid and expired-but-not-yet-used OTPs.
+    const flowGated: OtpPurpose[] = ['2fa', 'password_reset', 'login_channel_change'];
+    if (flowGated.includes(purpose)) {
+      const existing = await prisma.otp.findFirst({ where: { user_id: user.id, purpose, used_at: null } });
+      if (!existing) throw new AppError('OTP_FLOW_NOT_INITIATED', 400);
     }
 
-    const { code, expiresIn } = await OtpService.create(user.id, 'phone_verification');
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
-    return { expires_in: expiresIn };
+    switch (purpose) {
+      case 'phone_verification': {
+        if (user.status !== 'pending_verification') throw new AppError('ALREADY_VERIFIED', 409);
+        if (user.phone_verified_at) throw new AppError('CHANNEL_ALREADY_VERIFIED', 409);
+        const { code, expiresIn } = await OtpService.create(user.id, purpose);
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        return { expires_in: expiresIn };
+      }
+
+      case 'email_verification': {
+        if (user.status !== 'pending_verification') throw new AppError('ALREADY_VERIFIED', 409);
+        if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
+        if (user.email_verified_at) throw new AppError('CHANNEL_ALREADY_VERIFIED', 409);
+        const { code, expiresIn } = await OtpService.create(user.id, purpose);
+        publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+        return { expires_in: expiresIn };
+      }
+
+      case '2fa': {
+        if (!user.two_factor_enabled) throw new AppError('TWO_FACTOR_NOT_ENABLED', 409);
+        const twoFaChannel = (user.two_factor_channel as 'phone' | 'email') ?? 'phone';
+        const { code, expiresIn } = await OtpService.create(user.id, purpose);
+        if (twoFaChannel === 'email' && user.email) {
+          publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+        } else {
+          publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        }
+        return { expires_in: expiresIn };
+      }
+
+      case 'password_reset': {
+        const { code, expiresIn } = await OtpService.create(user.id, purpose);
+        if (channel === 'email') {
+          if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
+          publishMail({ type: 'otp.mail', purpose: 'password_reset', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+        } else {
+          publishSms({ type: 'otp.sms', purpose: 'password_reset', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        }
+        return { expires_in: expiresIn };
+      }
+
+      case 'login_channel_change': {
+        if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
+        if (channel === 'phone' && user.phone_verified_at) throw new AppError('CHANNEL_ALREADY_VERIFIED', 409);
+        if (channel === 'email') {
+          if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
+          if (user.email_verified_at) throw new AppError('CHANNEL_ALREADY_VERIFIED', 409);
+          const { code, expiresIn } = await OtpService.create(user.id, purpose);
+          publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+          return { expires_in: expiresIn };
+        }
+        const { code, expiresIn } = await OtpService.create(user.id, purpose);
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
+        return { expires_in: expiresIn };
+      }
+    }
   },
 };

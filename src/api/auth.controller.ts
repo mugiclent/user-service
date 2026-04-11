@@ -205,8 +205,8 @@ export const AuthController = {
 
   async resendOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { user_id, channel } = req.body as { user_id: string; channel?: 'phone' | 'email' };
-      const result = await AuthService.resendOtp(user_id, channel);
+      const { user_id, purpose, channel } = req.body as { user_id: string; purpose: string; channel?: 'phone' | 'email' };
+      const result = await AuthService.resendOtp(user_id, purpose as never, channel);
       res.status(200).json(result);
     } catch (err) {
       next(err);

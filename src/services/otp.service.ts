@@ -4,7 +4,7 @@ import { hashToken } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { config } from '../config/index.js';
 
-export type OtpPurpose = 'phone_verification' | 'email_verification' | '2fa' | 'password_reset';
+export type OtpPurpose = 'phone_verification' | 'email_verification' | '2fa' | 'password_reset' | 'login_channel_change';
 
 /** Generate a zero-padded N-digit numeric OTP. */
 const generateCode = (length: number): string => {

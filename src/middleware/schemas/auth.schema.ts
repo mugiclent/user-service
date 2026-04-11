@@ -61,5 +61,8 @@ export const registerDeviceSchema = Joi.object({
 
 export const resendOtpSchema = Joi.object({
   user_id: Joi.string().uuid().required(),
+  purpose: Joi.string()
+    .valid('phone_verification', 'email_verification', '2fa', 'password_reset', 'login_channel_change')
+    .required(),
   channel: Joi.string().valid('phone', 'email').default('phone'),
 });

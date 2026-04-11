@@ -437,25 +437,39 @@ export const UserService = {
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
     if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
 
+    const locale = user.locale as 'rw' | 'en' | 'fr';
+
+    // Skip OTP if the target channel is already verified — just allow confirm directly
+    if (channel === 'phone' && user.phone_verified_at) {
+      return { expires_in: 0 };
+    }
     if (channel === 'email') {
       if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
-      const { code, expiresIn } = await OtpService.create(userId, 'email_verification');
-      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: user.locale as 'rw' | 'en' | 'fr' });
+      if (user.email_verified_at) return { expires_in: 0 };
+      const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
+      publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
       return { expires_in: expiresIn };
     }
 
-    const { code, expiresIn } = await OtpService.create(userId, 'phone_verification');
-    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale: user.locale as 'rw' | 'en' | 'fr' });
+    const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
+    publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
     return { expires_in: expiresIn };
   },
 
-  async confirmLoginChannelChange(userId: string, channel: 'phone' | 'email', otp: string): Promise<{ login_channel: string }> {
+  async confirmLoginChannelChange(userId: string, channel: 'phone' | 'email', otp?: string): Promise<{ login_channel: string }> {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
     if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
 
-    const purpose = channel === 'email' ? 'email_verification' : 'phone_verification';
-    await OtpService.verify(userId, otp, purpose);
+    // If the channel is already verified, no OTP needed — skip verification
+    const alreadyVerified =
+      (channel === 'phone' && !!user.phone_verified_at) ||
+      (channel === 'email' && !!user.email_verified_at);
+
+    if (!alreadyVerified) {
+      if (!otp) throw new AppError('OTP_REQUIRED', 400);
+      await OtpService.verify(userId, otp, 'login_channel_change');
+    }
 
     await prisma.user.update({
       where: { id: userId },
