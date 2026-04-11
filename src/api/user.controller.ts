@@ -163,8 +163,8 @@ export const UserController = {
   async confirmLoginChannelChange(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const { channel, identifier, otp } = req.body as { channel: 'phone' | 'email'; identifier: string; otp: string };
-      const result = await UserService.confirmLoginChannelChange(user.id, channel, identifier, otp);
+      const { channel, otp } = req.body as { channel: 'phone' | 'email'; otp: string };
+      const result = await UserService.confirmLoginChannelChange(user.id, channel, otp);
       res.status(200).json(result);
     } catch (err) {
       next(err);

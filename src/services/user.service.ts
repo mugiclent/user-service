@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import type { Prisma, AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
-import { serializeUserMe, serializeUserForList, serializeUserFullProfile } from '../models/serializers.js';
+import { serializeUserMe, serializeUserForList, serializeUserFullProfile, maskPhone } from '../models/serializers.js';
 import { buildRulesFromGrants, buildAbilityFromRules } from '../utils/ability.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
@@ -497,7 +497,7 @@ export const UserService = {
     userId: string,
     channel: 'phone' | 'email',
     identifier?: string,
-  ): Promise<{ expires_in: number }> {
+  ): Promise<{ expires_in: number; masked_identifier: string }> {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
 
@@ -505,10 +505,14 @@ export const UserService = {
     const redis = getRedisClient();
     const pendingKey = `pending_login_channel:${userId}`;
 
+    const maskEmail = (email: string) => {
+      const [local, domain] = email.split('@');
+      return `${local.slice(0, 2)}***@${domain}`;
+    };
+
     if (identifier) {
       // ── Change mode: new identifier + make it the login_channel ────────────
-      // Normalise for comparison (phone is already E.164 from Joi, email lowercase)
-      const normIdentifier = channel === 'email' ? identifier.toLowerCase() : identifier;
+      const normIdentifier = identifier;
 
       // Reject if identifier is already the current value for that channel
       const currentValue = channel === 'email' ? user.email : displayPhone(user.phone_number);
@@ -526,17 +530,15 @@ export const UserService = {
       }
 
       const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
-
-      // Store pending state so /confirm can validate channel + identifier
       await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: normIdentifier, mode: 'change' }));
 
       if (channel === 'email') {
         publishMail({ type: 'otp.mail', purpose: 'email_verification', email: normIdentifier, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+        return { expires_in: expiresIn, masked_identifier: maskEmail(normIdentifier) };
       } else {
         publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: normIdentifier, code, expires_in_seconds: expiresIn, locale });
+        return { expires_in: expiresIn, masked_identifier: maskPhone(normIdentifier) };
       }
-
-      return { expires_in: expiresIn };
     }
 
     // ── Switch mode: change login_channel to the other channel on the account ──
@@ -548,14 +550,14 @@ export const UserService = {
       const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
       await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: user.email, mode: 'switch' }));
       publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
-      return { expires_in: expiresIn };
+      return { expires_in: expiresIn, masked_identifier: maskEmail(user.email) };
     }
 
     // channel === 'phone'
     const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
     await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: displayPhone(user.phone_number), mode: 'switch' }));
     publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
-    return { expires_in: expiresIn };
+    return { expires_in: expiresIn, masked_identifier: maskPhone(user.phone_number) };
   },
 
   // ---------------------------------------------------------------------------
@@ -570,7 +572,6 @@ export const UserService = {
   async confirmLoginChannelChange(
     userId: string,
     channel: 'phone' | 'email',
-    identifier: string,
     otp: string,
   ): Promise<{ login_channel: string }> {
     const redis = getRedisClient();
@@ -581,12 +582,7 @@ export const UserService = {
 
     const pending = JSON.parse(raw) as { channel: string; identifier: string; mode: 'switch' | 'change' };
 
-    // Normalise for comparison
-    const normIdentifier = channel === 'email' ? identifier.toLowerCase() : identifier;
-
-    if (pending.channel !== channel || pending.identifier !== normIdentifier) {
-      throw new AppError('CHANNEL_MISMATCH', 400);
-    }
+    if (pending.channel !== channel) throw new AppError('CHANNEL_MISMATCH', 400);
 
     await OtpService.verify(userId, otp, 'login_channel_change');
     await redis.del(pendingKey);
@@ -595,10 +591,10 @@ export const UserService = {
     const updateData: Prisma.UserUncheckedUpdateInput = { login_channel: channel };
 
     if (channel === 'email') {
-      if (pending.mode === 'change') updateData.email = normIdentifier;
+      if (pending.mode === 'change') updateData.email = pending.identifier;
       if (pending.mode === 'change' || !user.email_verified_at) updateData.email_verified_at = new Date();
     } else {
-      if (pending.mode === 'change') updateData.phone_number = normIdentifier;
+      if (pending.mode === 'change') updateData.phone_number = pending.identifier;
       if (pending.mode === 'change' || !user.phone_verified_at) updateData.phone_verified_at = new Date();
     }
 

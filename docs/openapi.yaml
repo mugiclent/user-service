@@ -1911,7 +1911,7 @@ paths:
                 value: { channel: phone, identifier: '+250781234567' }
       responses:
         '200':
-          description: OTP sent — call `/confirm` with the identifier and OTP code
+          description: OTP sent — call `/confirm` with `channel` and the OTP code
           content:
             application/json:
               schema:
@@ -1919,7 +1919,10 @@ paths:
                 properties:
                   expires_in:
                     type: integer
-                    description: OTP TTL in seconds.
+                    description: OTP validity period in seconds (e.g. 300 = 5 minutes).
+                  masked_identifier:
+                    type: string
+                    description: Redacted version of the address the OTP was sent to (e.g. `jo***@example.com` or `+250788***567`). Display this to the user so they know where to look.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
           description: |
@@ -1943,11 +1946,12 @@ paths:
       description: |
         Confirms the pending login channel change initiated by `POST /users/me/login-channel`.
 
-        The `channel` and `identifier` must exactly match what was submitted in step 1 — the server
-        validates them against the pending state stored in Redis.
+        The server reads the pending state (channel + identifier) from Redis — the client only
+        needs to send `channel` and the OTP code. No need to re-send the identifier.
 
         **Switch mode** (channel type switch, no identifier update):
-        Updates `login_channel` only. The identifier fields (`phone_number`, `email`) are unchanged.
+        Updates `login_channel` only. If the channel was previously unverified, `verified_at` is
+        also stamped. The identifier fields (`phone_number`, `email`) are unchanged.
 
         **Change mode** (new identifier was provided in step 1):
         Updates the identifier field (`phone_number` or `email`), stamps `verified_at`, and sets
@@ -1960,14 +1964,10 @@ paths:
           application/json:
             schema:
               type: object
-              required: [channel, identifier, otp]
+              required: [channel, otp]
               properties:
-                channel:    { type: string, enum: [phone, email] }
-                identifier:
-                  type: string
-                  description: The exact phone number or email the OTP was sent to.
-                  example: '+250781234567'
-                otp:        { type: string, minLength: 6, maxLength: 6 }
+                channel: { type: string, enum: [phone, email] }
+                otp:     { type: string, minLength: 6, maxLength: 6 }
       responses:
         '200':
           description: Login channel updated
@@ -1980,7 +1980,7 @@ paths:
         '400':
           description: |
             `NO_PENDING_CHANNEL_CHANGE` — no pending change found (expired or never initiated).
-            `CHANNEL_MISMATCH` — channel or identifier does not match the pending request.
+            `CHANNEL_MISMATCH` — `channel` does not match the pending request.
             `INVALID_OTP` — wrong OTP code.
           content:
             application/json:

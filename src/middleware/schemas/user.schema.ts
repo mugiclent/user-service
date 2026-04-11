@@ -54,13 +54,8 @@ export const loginChannelSchema = Joi.object({
   }),
 });
 
-// Confirm a login-channel change — OTP + the exact identifier the OTP was sent to.
+// Confirm a login-channel change — channel + OTP only. Identifier is read from server-side pending state.
 export const loginChannelConfirmSchema = Joi.object({
   channel: Joi.string().valid('phone', 'email').required(),
-  identifier: Joi.when('channel', {
-    is: 'email',
-    then: Joi.string().trim().email().max(255).required(),
-    otherwise: phoneSchema.required(),
-  }),
   otp: Joi.string().trim().length(6).required(),
 });

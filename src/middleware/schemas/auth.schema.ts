@@ -16,7 +16,7 @@ export const registerSchema = Joi.object({
   first_name: Joi.string().trim().max(100).required(),
   last_name: Joi.string().trim().max(100).required(),
   phone_number: phone.required(),
-  email: Joi.string().trim().email().lowercase().max(255).optional(),
+  email: Joi.string().trim().email().max(255).optional(),
   locale: Joi.string().valid('rw', 'en', 'fr').optional(),
   password: password.required(),
 });
