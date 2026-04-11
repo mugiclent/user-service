@@ -10,7 +10,6 @@ import {
   inviteUserSchema,
   acceptInviteSchema,
   validatePasswordSchema,
-  toggle2faSchema,
   loginChannelSchema,
   loginChannelConfirmSchema,
 } from '../middleware/schemas/user.schema.js';
@@ -31,9 +30,6 @@ router.patch('/me', authenticate, validate(updateMeSchema), UserController.updat
 
 // POST /api/v1/users/me/validate-password
 router.post('/me/validate-password', authenticate, validate(validatePasswordSchema), UserController.validatePassword);
-
-// PATCH /api/v1/users/me/2fa
-router.patch('/me/2fa', authenticate, validate(toggle2faSchema), UserController.toggle2fa);
 
 // POST /api/v1/users/me/login-channel  — request login channel switch (sends OTP)
 router.post('/me/login-channel', authenticate, validate(loginChannelSchema), UserController.requestLoginChannelChange);

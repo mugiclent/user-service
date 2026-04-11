@@ -9,6 +9,7 @@ import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publ
 import { OtpService } from './otp.service.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
+import { displayPhone } from '../utils/phone.js';
 
 const withRoles = {
   include: {
@@ -37,26 +38,64 @@ export const UserService = {
 
   async updateMe(
     requestingUser: AuthenticatedUser,
-    data: { first_name?: string; last_name?: string; email?: string; avatar_path?: string | null; notif_channel?: string[] },
+    data: {
+      first_name?: string;
+      last_name?: string;
+      email?: string;
+      avatar_path?: string | null;
+      notif_channel?: string[];
+      locale?: string;
+      two_factor_enabled?: boolean;
+    },
   ): Promise<Record<string, unknown>> {
-    // Passengers cannot have email — only staff can
-    if (data.email !== undefined && requestingUser.user_type === 'passenger') {
-      throw new AppError('PASSENGERS_CANNOT_HAVE_EMAIL', 422);
+    // Fetch current user when we need to compare before/after state
+    const needsCurrent = data.email !== undefined || data.two_factor_enabled !== undefined || 'avatar_path' in data;
+    const current = needsCurrent
+      ? await prisma.user.findUniqueOrThrow({
+          where: { id: requestingUser.id },
+          select: { login_channel: true, two_factor_enabled: true, avatar_path: true },
+        })
+      : null;
+
+    // Changing the email field while email is the active login channel must go
+    // through the login-channel-change flow — not a simple profile patch.
+    if (data.email !== undefined && current!.login_channel === 'email') {
+      throw new AppError('LOGIN_CHANNEL_CHANGE_REQUIRED', 422);
     }
 
-    // Fetch old avatar_path before overwriting so we can delete it from S3
-    const existing = 'avatar_path' in data
-      ? await prisma.user.findUnique({ where: { id: requestingUser.id }, select: { avatar_path: true } })
-      : null;
+    const updateData: Prisma.UserUncheckedUpdateInput = {};
+    if (data.first_name !== undefined) updateData.first_name = data.first_name;
+    if (data.last_name !== undefined) updateData.last_name = data.last_name;
+    if (data.email !== undefined) updateData.email = data.email;
+    if (data.avatar_path !== undefined) updateData.avatar_path = data.avatar_path;
+    if (data.notif_channel !== undefined) updateData.notif_channel = data.notif_channel;
+    if (data.locale !== undefined) updateData.locale = data.locale;
+    if (data.two_factor_enabled !== undefined) updateData.two_factor_enabled = data.two_factor_enabled;
 
     const user = await prisma.user.update({
       where: { id: requestingUser.id },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      data: data as any,
+      data: updateData,
       ...withRoles,
     });
 
-    if (existing?.avatar_path) deleteFromS3(existing.avatar_path);
+    // Notify and audit when 2FA state changes
+    if (data.two_factor_enabled !== undefined && current!.two_factor_enabled !== data.two_factor_enabled) {
+      const eventType = data.two_factor_enabled ? 'security.2fa_enabled' : 'security.2fa_disabled';
+      notifyUser(user, {
+        sms: { type: eventType, phone_number: user.phone_number, first_name: user.first_name },
+        mail: user.email ? { type: eventType, email: user.email, first_name: user.first_name } : undefined,
+        push: { type: eventType },
+      });
+      setImmediate(() => publishAudit({
+        actor_id: requestingUser.id,
+        action: data.two_factor_enabled ? '2fa_enabled' : '2fa_disabled',
+        resource: 'User',
+        resource_id: requestingUser.id,
+        delta: { two_factor_enabled: { from: current!.two_factor_enabled, to: data.two_factor_enabled } },
+      }));
+    }
+
+    if ('avatar_path' in data && current?.avatar_path) deleteFromS3(current.avatar_path);
 
     const patterns = [...user.user_roles.flatMap(ur => ur.role.role_grants.map(g => g.pattern)), ...user.user_grants.map(g => g.pattern)];
     const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
@@ -432,52 +471,133 @@ export const UserService = {
   // POST /users/me/login-channel/confirm — confirm with OTP
   // ---------------------------------------------------------------------------
 
-  async requestLoginChannelChange(userId: string, channel: 'phone' | 'email'): Promise<{ expires_in: number }> {
+  // ---------------------------------------------------------------------------
+  // POST /users/me/login-channel
+  //
+  // Two modes:
+  //   1. Switch mode (no identifier): change login_channel to the other verified channel.
+  //      Target must be already verified on the account.
+  //   2. Change mode (identifier provided): update the actual phone/email value AND make
+  //      it the new login_channel. OTP is sent to the NEW identifier.
+  //
+  // In both modes a confirmation OTP is sent and pending state is stored in Redis
+  // so that /confirm can validate the exact channel + identifier the user agreed to.
+  // ---------------------------------------------------------------------------
+
+  async requestLoginChannelChange(
+    userId: string,
+    channel: 'phone' | 'email',
+    identifier?: string,
+  ): Promise<{ expires_in: number }> {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
-    if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
 
     const locale = user.locale as 'rw' | 'en' | 'fr';
+    const redis = getRedisClient();
+    const pendingKey = `pending_login_channel:${userId}`;
 
-    // Skip OTP if the target channel is already verified — just allow confirm directly
-    if (channel === 'phone' && user.phone_verified_at) {
-      return { expires_in: 0 };
+    if (identifier) {
+      // ── Change mode: new identifier + make it the login_channel ────────────
+      // Normalise for comparison (phone is already E.164 from Joi, email lowercase)
+      const normIdentifier = channel === 'email' ? identifier.toLowerCase() : identifier;
+
+      // Reject if identifier is already the current value for that channel
+      const currentValue = channel === 'email' ? user.email : displayPhone(user.phone_number);
+      if (currentValue === normIdentifier || user.phone_number === normIdentifier) {
+        throw new AppError('IDENTIFIER_UNCHANGED', 409);
+      }
+
+      // Uniqueness check — another account must not own this identifier
+      if (channel === 'email') {
+        const taken = await prisma.user.findFirst({ where: { email: normIdentifier, id: { not: userId } } });
+        if (taken) throw new AppError('EMAIL_ALREADY_IN_USE', 409);
+      } else {
+        const taken = await prisma.user.findFirst({ where: { phone_number: normIdentifier, id: { not: userId } } });
+        if (taken) throw new AppError('PHONE_ALREADY_IN_USE', 409);
+      }
+
+      const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
+
+      // Store pending state so /confirm can validate channel + identifier
+      await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: normIdentifier, mode: 'change' }));
+
+      if (channel === 'email') {
+        publishMail({ type: 'otp.mail', purpose: 'email_verification', email: normIdentifier, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
+      } else {
+        publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: normIdentifier, code, expires_in_seconds: expiresIn, locale });
+      }
+
+      return { expires_in: expiresIn };
     }
+
+    // ── Switch mode: toggle login_channel to an already-verified channel ─────
+    if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
+
     if (channel === 'email') {
       if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
-      if (user.email_verified_at) return { expires_in: 0 };
+      if (!user.email_verified_at) throw new AppError('EMAIL_NOT_VERIFIED', 422);
+
       const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
+      await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: user.email, mode: 'switch' }));
       publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
       return { expires_in: expiresIn };
     }
 
+    // channel === 'phone'
+    if (!user.phone_verified_at) throw new AppError('PHONE_NOT_VERIFIED', 422);
+
     const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
+    await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: displayPhone(user.phone_number), mode: 'switch' }));
     publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
     return { expires_in: expiresIn };
   },
 
-  async confirmLoginChannelChange(userId: string, channel: 'phone' | 'email', otp?: string): Promise<{ login_channel: string }> {
-    const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user) throw new AppError('USER_NOT_FOUND', 404);
-    if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
+  // ---------------------------------------------------------------------------
+  // POST /users/me/login-channel/confirm
+  //
+  // Verifies the OTP and the exact (channel, identifier) pair that was requested.
+  // On success:
+  //   - switch mode: updates login_channel only
+  //   - change mode: updates the identifier field + login_channel + marks verified
+  // ---------------------------------------------------------------------------
 
-    // If the channel is already verified, no OTP needed — skip verification
-    const alreadyVerified =
-      (channel === 'phone' && !!user.phone_verified_at) ||
-      (channel === 'email' && !!user.email_verified_at);
+  async confirmLoginChannelChange(
+    userId: string,
+    channel: 'phone' | 'email',
+    identifier: string,
+    otp: string,
+  ): Promise<{ login_channel: string }> {
+    const redis = getRedisClient();
+    const pendingKey = `pending_login_channel:${userId}`;
 
-    if (!alreadyVerified) {
-      if (!otp) throw new AppError('OTP_REQUIRED', 400);
-      await OtpService.verify(userId, otp, 'login_channel_change');
+    const raw = await redis.get(pendingKey);
+    if (!raw) throw new AppError('NO_PENDING_CHANNEL_CHANGE', 400);
+
+    const pending = JSON.parse(raw) as { channel: string; identifier: string; mode: 'switch' | 'change' };
+
+    // Normalise for comparison
+    const normIdentifier = channel === 'email' ? identifier.toLowerCase() : identifier;
+
+    if (pending.channel !== channel || pending.identifier !== normIdentifier) {
+      throw new AppError('CHANNEL_MISMATCH', 400);
     }
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: {
-        login_channel: channel,
-        ...(channel === 'phone' ? { phone_verified_at: new Date() } : { email_verified_at: new Date() }),
-      },
-    });
+    await OtpService.verify(userId, otp, 'login_channel_change');
+    await redis.del(pendingKey);
+
+    const updateData: Prisma.UserUncheckedUpdateInput = { login_channel: channel };
+
+    if (pending.mode === 'change') {
+      if (channel === 'email') {
+        updateData.email = normIdentifier;
+        updateData.email_verified_at = new Date();
+      } else {
+        updateData.phone_number = normIdentifier;
+        updateData.phone_verified_at = new Date();
+      }
+    }
+
+    await prisma.user.update({ where: { id: userId }, data: updateData });
 
     publishAudit({ actor_id: userId, action: 'change_login_channel', resource: 'User', resource_id: userId });
 
@@ -495,32 +615,5 @@ export const UserService = {
 
     const valid = await verifyPassword(password, user.password_hash);
     if (!valid) throw new AppError('INVALID_CREDENTIALS', 401);
-  },
-
-  // ---------------------------------------------------------------------------
-  // PATCH /users/me/2fa — enable or disable two-factor authentication
-  // ---------------------------------------------------------------------------
-
-  async toggle2fa(userId: string, enabled: boolean): Promise<{ two_factor_enabled: boolean }> {
-    const user = await prisma.user.update({
-      where: { id: userId },
-      data: { two_factor_enabled: enabled },
-    });
-
-    const eventType = enabled ? 'security.2fa_enabled' : 'security.2fa_disabled';
-    notifyUser(user, {
-      sms: { type: eventType, phone_number: user.phone_number, first_name: user.first_name },
-      mail: user.email ? { type: eventType, email: user.email, first_name: user.first_name } : undefined,
-      push: { type: eventType },
-    });
-
-    setImmediate(() => publishAudit({
-      actor_id: userId,
-      action: enabled ? '2fa_enabled' : '2fa_disabled',
-      resource: 'User',
-      resource_id: userId,
-      delta: { two_factor_enabled: { from: !enabled, to: enabled } },
-    }));
-    return { two_factor_enabled: user.two_factor_enabled };
   },
 };

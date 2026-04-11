@@ -9,6 +9,8 @@ export const updateMeSchema = Joi.object({
   email: Joi.string().trim().email().max(255).optional(),
   avatar_path: Joi.string().max(500).optional().allow(null),
   notif_channel: Joi.array().items(Joi.string().valid('sms', 'email', 'app')).min(1).unique().optional(),
+  locale: Joi.string().valid('rw', 'en', 'fr').optional(),
+  two_factor_enabled: Joi.boolean().optional(),
 }).min(1);
 
 export const updateUserSchema = Joi.object({
@@ -39,15 +41,25 @@ export const validatePasswordSchema = Joi.object({
   password: password.required(),
 });
 
-export const toggle2faSchema = Joi.object({
-  enabled: Joi.boolean().required(),
-});
-
+// Request a login-channel change or identifier update.
+// - channel only: switch login_channel to an already-verified channel (phone ↔ email)
+// - channel + identifier: change the actual phone/email value and make it the login_channel
 export const loginChannelSchema = Joi.object({
   channel: Joi.string().valid('phone', 'email').required(),
+  identifier: Joi.when('channel', {
+    is: 'email',
+    then: Joi.string().trim().email().max(255).optional(),
+    otherwise: phoneSchema.optional(),
+  }),
 });
 
+// Confirm a login-channel change — OTP + the exact identifier the OTP was sent to.
 export const loginChannelConfirmSchema = Joi.object({
   channel: Joi.string().valid('phone', 'email').required(),
-  otp: Joi.string().trim().length(6).optional(),
+  identifier: Joi.when('channel', {
+    is: 'email',
+    then: Joi.string().trim().email().max(255).required(),
+    otherwise: phoneSchema.required(),
+  }),
+  otp: Joi.string().trim().length(6).required(),
 });

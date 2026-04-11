@@ -23,6 +23,9 @@ export const UserController = {
         last_name?: string;
         email?: string;
         avatar_path?: string | null;
+        notif_channel?: string[];
+        locale?: string;
+        two_factor_enabled?: boolean;
       });
       res.status(200).json(result);
     } catch (err) {
@@ -49,16 +52,6 @@ export const UserController = {
       const user = req.user as AuthenticatedUser;
       await UserService.validatePassword(user.id, (req.body as { password: string }).password);
       res.status(204).end();
-    } catch (err) {
-      next(err);
-    }
-  },
-
-  async toggle2fa(req: Request, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const user = req.user as AuthenticatedUser;
-      const result = await UserService.toggle2fa(user.id, (req.body as { enabled: boolean }).enabled);
-      res.status(200).json(result);
     } catch (err) {
       next(err);
     }
@@ -158,8 +151,8 @@ export const UserController = {
   async requestLoginChannelChange(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const { channel } = req.body as { channel: 'phone' | 'email' };
-      const result = await UserService.requestLoginChannelChange(user.id, channel);
+      const { channel, identifier } = req.body as { channel: 'phone' | 'email'; identifier?: string };
+      const result = await UserService.requestLoginChannelChange(user.id, channel, identifier);
       res.status(200).json(result);
     } catch (err) {
       next(err);
@@ -169,8 +162,8 @@ export const UserController = {
   async confirmLoginChannelChange(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const { channel, otp } = req.body as { channel: 'phone' | 'email'; otp: string };
-      const result = await UserService.confirmLoginChannelChange(user.id, channel, otp);
+      const { channel, identifier, otp } = req.body as { channel: 'phone' | 'email'; identifier: string; otp: string };
+      const result = await UserService.confirmLoginChannelChange(user.id, channel, identifier, otp);
       res.status(200).json(result);
     } catch (err) {
       next(err);

@@ -5,11 +5,19 @@ import { parse } from 'yaml';
 import swaggerUi from 'swagger-ui-express';
 import type { Router } from 'express';
 import { Router as createRouter } from 'express';
+import { config } from '../config/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const specPath = join(__dirname, '../../docs/openapi.yaml');
-const spec = parse(readFileSync(specPath, 'utf-8')) as Record<string, unknown>;
+
+const readSpec = (): Record<string, unknown> =>
+  parse(readFileSync(specPath, 'utf-8')) as Record<string, unknown>;
+
+// In production the yaml never changes at runtime — read once and cache.
+// In development read fresh on every request so edits are visible on refresh.
+const cachedSpec = config.isProd ? readSpec() : null;
+const loadSpec = (): Record<string, unknown> => cachedSpec ?? readSpec();
 
 /**
  * Returns a router that serves Swagger UI at the mount point.
@@ -23,8 +31,7 @@ const spec = parse(readFileSync(specPath, 'utf-8')) as Record<string, unknown>;
 export const createSwaggerRouter = (): Router => {
   const router = createRouter();
 
-  router.use('/', swaggerUi.serve);
-  router.get('/', swaggerUi.setup(spec, {
+  const swaggerOptions = {
     customSiteTitle: 'Katisha User Service API',
     swaggerOptions: {
       docExpansion: 'list',
@@ -110,7 +117,12 @@ export const createSwaggerRouter = (): Router => {
       .swagger-ui .opblock-tag { margin-top: 0.75rem; }
       .swagger-ui .opblock-tag-section { margin-bottom: 0.5rem; }
     `,
-  }));
+  };
+
+  router.use('/', swaggerUi.serve);
+  router.get('/', (req, res, next) => {
+    swaggerUi.setup(loadSpec(), swaggerOptions)(req, res, next);
+  });
 
   return router;
 };

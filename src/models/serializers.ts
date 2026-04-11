@@ -17,6 +17,8 @@ export interface AuthUserDto {
   roles: string[];
   status: 'active' | 'pending_verification' | 'suspended';
   two_factor_enabled: boolean;
+  login_channel: string | null;
+  locale: string;
 }
 
 export const serializeUserForAuth = (user: UserWithRoles): AuthUserDto => ({
@@ -29,6 +31,8 @@ export const serializeUserForAuth = (user: UserWithRoles): AuthUserDto => ({
   roles: user.user_roles.map((ur) => ur.role.slug),
   status: user.status,
   two_factor_enabled: user.two_factor_enabled,
+  login_channel: user.login_channel,
+  locale: user.locale,
 });
 
 // ---------------------------------------------------------------------------
@@ -46,7 +50,9 @@ export interface UserMePassengerDto {
   avatar_path: string | null;
   user_type: 'passenger';
   status: string;
+  login_channel: string | null;
   notif_channel: string[];
+  locale: string;
   two_factor_enabled: boolean;
   created_at: Date;
   updated_at: Date;
@@ -61,14 +67,18 @@ export interface UserMeStaffDto {
   first_name: string;
   last_name: string;
   phone_number: string | null;
+  phone_verified_at: Date | null;
   email: string | null;
+  email_verified_at: Date | null;
   avatar_path: string | null;
   user_type: 'staff';
   status: string;
   org_id: string | null;
   roles: string[];
   permissions: AppRule[];
+  login_channel: string | null;
   notif_channel: string[];
+  locale: string;
   two_factor_enabled: boolean;
   driver_license_number: string | null;
   driver_license_verified_at: Date | null;
@@ -93,7 +103,9 @@ export const serializeUserMe = (
       avatar_path: user.avatar_path,
       user_type: 'passenger',
       status: user.status,
+      login_channel: user.login_channel,
       notif_channel: user.notif_channel,
+      locale: user.locale,
       two_factor_enabled: user.two_factor_enabled,
       created_at: user.created_at,
       updated_at: user.updated_at,
@@ -105,14 +117,18 @@ export const serializeUserMe = (
     first_name: user.first_name,
     last_name: user.last_name,
     phone_number: user.phone_number ? displayPhone(user.phone_number) : null,
+    phone_verified_at: user.phone_verified_at,
     email: user.email,
+    email_verified_at: user.email_verified_at,
     avatar_path: user.avatar_path,
     user_type: 'staff',
     status: user.status,
     org_id: user.org_id,
     roles: user.user_roles.map((ur) => ur.role.slug),
     permissions: rules,
+    login_channel: user.login_channel,
     notif_channel: user.notif_channel,
+    locale: user.locale,
     two_factor_enabled: user.two_factor_enabled,
     driver_license_number: user.driver_license_number,
     driver_license_verified_at: user.driver_license_verified_at,
@@ -165,15 +181,19 @@ export const serializeUserFullProfile = (
   id: user.id,
   first_name: user.first_name,
   last_name: user.last_name,
-  email: user.email,
   phone_number: user.phone_number ? displayPhone(user.phone_number) : null,
   phone_verified_at: user.phone_verified_at,
+  email: user.email,
   email_verified_at: user.email_verified_at,
   avatar_path: user.avatar_path,
   user_type: user.user_type,
   status: user.status,
   org_id: user.org_id,
   roles: user.user_roles.map((ur) => ur.role.slug),
+  login_channel: user.login_channel,
+  notif_channel: user.notif_channel,
+  locale: user.locale,
+  two_factor_enabled: user.two_factor_enabled,
   ...(isAdmin
     ? {
         driver_license_number: user.driver_license_number,

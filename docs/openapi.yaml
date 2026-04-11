@@ -65,19 +65,49 @@ info:
     The presigned URL expires in ~5 min (configurable via `S3_PRESIGNED_EXPIRES_IN`).
     The full CDN URL is never stored — build it client-side: `CDN_BASE_URL + "/" + path`.
 
+    ## Login Channel
+
+    Every user has a `login_channel` field (`"phone"` or `"email"`, initially `null`) that controls
+    which identifier is accepted at `POST /auth/login`.
+
+    - `null` — account created but not yet verified. Login sends an OTP and returns `requires_verification: true`.
+    - `"phone"` — user must log in with their phone number. Using email returns `PHONE_LOGIN_REQUIRED` (403).
+    - `"email"` — user must log in with their email. Using phone returns `EMAIL_LOGIN_REQUIRED` (403).
+
+    **How `login_channel` is set:**
+
+    | Action | Effect |
+    |---|---|
+    | `POST /auth/verify-phone` (first verification) | Sets `login_channel = "phone"`, activates account |
+    | `POST /auth/verify-email` (first verification) | Sets `login_channel = "email"`, activates account |
+    | `POST /auth/verify-login` | Sets `login_channel` to whichever channel the OTP was sent to |
+    | `POST /users/me/login-channel` + confirm | Switches `login_channel` (and optionally updates the identifier) |
+
+    **Changing the identifier (phone/email) via `PATCH /users/me`:**
+    Direct updates to `email` are rejected (`LOGIN_CHANNEL_CHANGE_REQUIRED` 422) when that field
+    is the current `login_channel`. Use `POST /users/me/login-channel` with an `identifier` instead —
+    this changes the value, re-verifies it, and updates `login_channel` atomically.
+
+    ## Notification Channel
+
+    `notif_channel` is a **string array** (one or more of `sms`, `email`, `app`) that controls
+    which channels security and lifecycle notifications are delivered to. Multiple values are allowed.
+
+    | Value | Delivery |
+    |---|---|
+    | `sms` | SMS via phone number |
+    | `email` | Email (only if `email` is set on account) |
+    | `app` | FCM push (falls back to SMS if no `fcm_token` registered) |
+
+    Default: `["sms"]` for passengers, `["sms", "email"]` for staff.
+    Calling `POST /auth/register-device` registers an FCM token and switches `notif_channel` to `["app"]`.
+    Update via `PATCH /users/me` with `{ "notif_channel": ["sms", "app"] }`.
+
     ## Push Notifications
 
     The mobile app obtains an FCM token from the Firebase SDK and registers it via
-    `POST /auth/register-device`. This switches `notif_channel` to `app`. Subsequent
-    security events (new device login, password change, account suspension) and org lifecycle
-    events are delivered as push notifications based on the user's `notif_channel` preference.
-
-    | `notif_channel` | Delivery |
-    |---|---|
-    | `sms` | SMS only |
-    | `email` | Email only |
-    | `app` | Push (falls back to SMS if no FCM token) |
-    | `all` | SMS + email + push |
+    `POST /auth/register-device`. Subsequent security events (new device login, password change,
+    account suspension) and org lifecycle events are delivered based on `notif_channel`.
 
 servers:
   - url: /api/v1
@@ -98,7 +128,7 @@ tags:
       No authentication required. Three ordered steps: upload documents → submit application → verify contact email.
   - name: Users
     description: |
-      User profiles, avatar uploads, staff invitations, 2FA toggle, user administration.
+      User profiles, avatar uploads, staff invitations, 2FA, login channel management, and user administration.
       Requires an organization to exist before staff can be invited into it.
   - name: Roles
     description: |
@@ -165,18 +195,29 @@ components:
       type: object
       description: Minimal user object returned alongside tokens on every successful auth response.
       properties:
-        id:                 { type: string, format: uuid }
-        first_name:         { type: string }
-        last_name:          { type: string }
+        id:                 { type: string, format: uuid, example: 'a1b2c3d4-0000-0000-0000-000000000001' }
+        first_name:         { type: string, example: Jean }
+        last_name:          { type: string, example: Uwimana }
         user_type:          { type: string, enum: [passenger, staff] }
-        avatar_path:        { type: string, nullable: true }
-        org_id:             { type: string, format: uuid, nullable: true }
+        avatar_path:        { type: string, nullable: true, example: null }
+        org_id:             { type: string, format: uuid, nullable: true, example: null }
         roles:
           type: array
           items: { type: string }
           example: [org-admin]
-        status:             { type: string, enum: [active, pending_verification, suspended] }
-        two_factor_enabled: { type: boolean }
+        status:             { type: string, enum: [active, pending_verification, suspended], example: active }
+        two_factor_enabled: { type: boolean, example: false }
+        login_channel:
+          type: string
+          enum: [phone, email]
+          nullable: true
+          example: phone
+          description: |
+            The channel the user logs in with. `null` until first OTP verification.
+            `"phone"` — login identifier must be a phone number.
+            `"email"` — login identifier must be an email address.
+            Using the wrong identifier at login returns `PHONE_LOGIN_REQUIRED` or `EMAIL_LOGIN_REQUIRED` (403).
+        locale:             { type: string, enum: [rw, en, fr], example: rw, description: 'Preferred notification language.' }
 
     Tokens:
       type: object
@@ -239,14 +280,26 @@ components:
         avatar_path:      { type: string, nullable: true }
         user_type:        { type: string, enum: [passenger] }
         status:           { type: string, enum: [active, pending_verification, suspended] }
-        notif_channel:
+        login_channel:
           type: string
-          enum: [sms, email, app, all]
+          enum: [phone, email]
+          nullable: true
+          example: phone
+          description: |
+            Active login channel. `null` until first OTP verification.
+            Use `POST /users/me/login-channel` to switch between `phone` and `email`,
+            or to change the actual phone number / email while switching.
+        notif_channel:
+          type: array
+          items: { type: string, enum: [sms, email, app] }
           description: |
             Controls which channel(s) are used for security and lifecycle notifications.
-            Defaults to `sms` for passengers. Automatically switches to `app` when an FCM
-            token is registered via `POST /auth/register-device`.
-        two_factor_enabled: { type: boolean }
+            Multiple values are allowed. Defaults to `["sms"]` for passengers. Automatically
+            switches to `["app"]` when an FCM token is registered via `POST /auth/register-device`.
+            Update via `PATCH /users/me` with `{ "notif_channel": ["sms", "app"] }`.
+          example: [sms]
+        locale:           { type: string, enum: [rw, en, fr], example: rw, description: 'Preferred notification language. Update via PATCH /users/me.' }
+        two_factor_enabled: { type: boolean, example: false }
         created_at:       { type: string, format: date-time }
         updated_at:       { type: string, format: date-time }
 
@@ -258,7 +311,9 @@ components:
         first_name:       { type: string }
         last_name:        { type: string }
         phone_number:     { type: string, nullable: true, example: '+250780000001' }
+        phone_verified_at: { type: string, format: date-time, nullable: true }
         email:            { type: string, format: email, nullable: true }
+        email_verified_at: { type: string, format: date-time, nullable: true }
         avatar_path:      { type: string, nullable: true }
         user_type:        { type: string, enum: [staff] }
         status:           { type: string, enum: [active, pending_verification, suspended] }
@@ -271,13 +326,25 @@ components:
           type: array
           items: { $ref: '#/components/schemas/CaslRule' }
           description: Packed CASL rules derived from this user's DB role-permission assignments. Use for frontend feature-flag rendering.
-        notif_channel:
+        login_channel:
           type: string
-          enum: [sms, email, app, all]
+          enum: [phone, email]
+          nullable: true
+          example: email
           description: |
-            Controls notification delivery. Defaults to `all` for staff (SMS + email + push).
-            Automatically switches to `app` when an FCM token is registered.
-        two_factor_enabled: { type: boolean }
+            Active login channel. `null` until first OTP verification.
+            Use `POST /users/me/login-channel` to switch between `phone` and `email`,
+            or to change the actual phone number / email while switching.
+        notif_channel:
+          type: array
+          items: { type: string, enum: [sms, email, app] }
+          description: |
+            Controls notification delivery. Multiple values are allowed.
+            Defaults to `["sms", "email"]` for staff. Automatically switches to `["app"]`
+            when an FCM token is registered. Update via `PATCH /users/me`.
+          example: [sms, email]
+        locale:           { type: string, enum: [rw, en, fr], example: rw, description: 'Preferred notification language. Update via PATCH /users/me.' }
+        two_factor_enabled: { type: boolean, example: false }
         driver_license_number:      { type: string, nullable: true }
         driver_license_verified_at: { type: string, format: date-time, nullable: true }
         last_login_at:    { type: string, format: date-time, nullable: true }
@@ -317,9 +384,9 @@ components:
         id:               { type: string, format: uuid }
         first_name:       { type: string }
         last_name:        { type: string }
-        email:            { type: string, format: email, nullable: true }
         phone_number:     { type: string, nullable: true }
         phone_verified_at: { type: string, format: date-time, nullable: true }
+        email:            { type: string, format: email, nullable: true }
         email_verified_at: { type: string, format: date-time, nullable: true }
         avatar_path:      { type: string, nullable: true }
         user_type:        { type: string, enum: [passenger, staff] }
@@ -328,6 +395,18 @@ components:
         roles:
           type: array
           items: { type: string }
+        login_channel:
+          type: string
+          enum: [phone, email]
+          nullable: true
+          example: phone
+          description: Active login channel. Determines which identifier is accepted at login.
+        notif_channel:
+          type: array
+          items: { type: string, enum: [sms, email, app] }
+          example: [sms, email]
+        locale:           { type: string, enum: [rw, en, fr], example: rw }
+        two_factor_enabled: { type: boolean, example: false }
         driver_license_number:
           type: string
           nullable: true
@@ -1634,9 +1713,15 @@ paths:
         Updates the authenticated user's own profile. At least one field must be provided.
 
         Field notes:
-        - `email` — rejected for passenger accounts (`PASSENGERS_CANNOT_HAVE_EMAIL` 422). Staff only.
-        - `avatar_path` — use the `path` from `GET /users/me/avatar/presigned-url` after uploading. Pass `null` to remove the current avatar (S3 file is deleted asynchronously).
-        - `notif_channel` — controls how notifications are delivered. Setting `app` without a registered FCM token will leave push delivery non-functional until `POST /auth/register-device` is called.
+        - `email` — if `email` is the current `login_channel`, the update is rejected with
+          `LOGIN_CHANNEL_CHANGE_REQUIRED` (422) — use `POST /users/me/login-channel` instead.
+        - `avatar_path` — use the `path` from `GET /users/me/avatar/presigned-url` after uploading.
+          Pass `null` to remove the current avatar (S3 file is deleted asynchronously).
+        - `notif_channel` — array of one or more delivery channels. Setting `app` without a
+          registered FCM token will leave push non-functional until `POST /auth/register-device`.
+        - `two_factor_enabled` — toggles 2FA. On change, a `security.2fa_enabled` or
+          `security.2fa_disabled` notification is sent via the user's `notif_channel`.
+        - `locale` — sets the preferred language for all future notifications.
       requestBody:
         required: true
         content:
@@ -1647,12 +1732,32 @@ paths:
               properties:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
-                email:        { type: string, format: email, maxLength: 255, description: Staff only. Rejected with 422 for passengers. }
-                avatar_path:  { type: string, maxLength: 500, nullable: true, description: 'S3 path from the presigned-url endpoint. null removes the avatar.' }
-                notif_channel:
+                email:
                   type: string
-                  enum: [sms, email, app, all]
-                  description: Notification delivery preference.
+                  format: email
+                  maxLength: 255
+                  description: |
+                    Cannot be changed if email is the current `login_channel` — use
+                    `POST /users/me/login-channel` with an `identifier` instead.
+                avatar_path:
+                  type: string
+                  maxLength: 500
+                  nullable: true
+                  description: S3 path from the presigned-url endpoint. null removes the avatar.
+                notif_channel:
+                  type: array
+                  items: { type: string, enum: [sms, email, app] }
+                  minItems: 1
+                  uniqueItems: true
+                  description: Notification delivery channels. At least one required.
+                  example: [sms, email]
+                locale:
+                  type: string
+                  enum: [rw, en, fr]
+                  description: Preferred notification language.
+                two_factor_enabled:
+                  type: boolean
+                  description: Enable or disable 2FA. Triggers a security notification on change.
       responses:
         '200':
           description: Updated profile
@@ -1663,6 +1768,11 @@ paths:
                   - $ref: '#/components/schemas/UserMePassenger'
                   - $ref: '#/components/schemas/UserMeStaff'
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '409':
+          description: '`LOGIN_CHANNEL_CHANGE_REQUIRED` — cannot update email/phone directly while it is the active login channel.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users/me/avatar/presigned-url:
@@ -1749,17 +1859,24 @@ paths:
   /users/me/login-channel:
     post:
       tags: [Users]
-      summary: Request login channel change (step 1 — sends OTP)
+      summary: Request login channel / identifier change (step 1 — sends OTP)
       description: |
-        Initiates a login channel switch by sending an OTP to the target channel.
+        Initiates a login channel change. Supports two modes:
 
-        If the target channel is **already verified** (e.g. switching to phone when `phone_verified_at` is set),
-        no OTP is sent and `expires_in` is returned as `0`. The client can call `/confirm` immediately
-        without an OTP code.
+        **Switch mode** — `channel` only, no `identifier`:
+        Switches the active `login_channel` to the other channel (phone ↔ email).
+        The target channel must already be verified (`phone_verified_at` / `email_verified_at` must be set).
+        If not verified, the request fails with `PHONE_NOT_VERIFIED` or `EMAIL_NOT_VERIFIED` (422).
+        An OTP is sent to the existing verified identifier as a confirmation step.
 
-        The target channel must be different from the current `login_channel`.
-        For email: an email address must be present on the account.
-        Requires authentication.
+        **Change mode** — `channel` + `identifier`:
+        Updates the actual phone number or email address **and** makes it the new `login_channel`.
+        The new identifier must not already be in use by another account.
+        An OTP is sent to the **new** identifier for verification.
+        On confirm, the identifier is written to the user record and marked as verified.
+
+        In both modes a pending change is stored server-side (TTL = OTP expiry).
+        The pending change is consumed by `POST /users/me/login-channel/confirm`.
       requestBody:
         required: true
         content:
@@ -1768,10 +1885,26 @@ paths:
               type: object
               required: [channel]
               properties:
-                channel: { type: string, enum: [phone, email] }
+                channel:
+                  type: string
+                  enum: [phone, email]
+                  description: The channel type being switched to or the type of the new identifier.
+                identifier:
+                  type: string
+                  description: |
+                    **Change mode only.** The new phone number (E.164) or email address to verify
+                    and adopt as the login channel. Omit for a simple channel-type switch.
+                  example: '+250781234567'
+            examples:
+              switch_to_email:
+                summary: Switch login channel to email (already verified)
+                value: { channel: email }
+              change_phone:
+                summary: Change phone number and switch to phone login
+                value: { channel: phone, identifier: '+250781234567' }
       responses:
         '200':
-          description: OTP sent (or skipped if channel already verified)
+          description: OTP sent — call `/confirm` with the identifier and OTP code
           content:
             application/json:
               schema:
@@ -1779,26 +1912,41 @@ paths:
                 properties:
                   expires_in:
                     type: integer
-                    description: OTP TTL in seconds. `0` means the channel is already verified — call `/confirm` directly.
+                    description: OTP TTL in seconds.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '409':
-          description: '`ALREADY_ACTIVE_CHANNEL` — target channel is already the active login channel.'
+          description: |
+            `ALREADY_ACTIVE_CHANNEL` — channel is already the active login channel.
+            `IDENTIFIER_UNCHANGED` — identifier matches the current value.
+            `EMAIL_ALREADY_IN_USE` / `PHONE_ALREADY_IN_USE` — identifier taken by another account.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '422':
+          description: |
+            `EMAIL_NOT_FOUND` — switching to email but no email on the account.
+            `EMAIL_NOT_VERIFIED` — switching to email but email is not yet verified.
+            `PHONE_NOT_VERIFIED` — switching to phone but phone is not yet verified.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /users/me/login-channel/confirm:
     post:
       tags: [Users]
-      summary: Confirm login channel change (step 2 — verifies OTP, updates channel)
+      summary: Confirm login channel / identifier change (step 2 — verifies OTP, applies change)
       description: |
-        Confirms the login channel switch and updates `login_channel`.
-        Also stamps `phone_verified_at` or `email_verified_at` on the user.
+        Confirms the pending login channel change initiated by `POST /users/me/login-channel`.
 
-        `otp` is **optional** when the target channel was already verified
-        (i.e. `/users/me/login-channel` returned `expires_in: 0`).
-        In all other cases, `otp` is required.
+        The `channel` and `identifier` must exactly match what was submitted in step 1 — the server
+        validates them against the pending state stored in Redis.
+
+        **Switch mode** (channel type switch, no identifier update):
+        Updates `login_channel` only. The identifier fields (`phone_number`, `email`) are unchanged.
+
+        **Change mode** (new identifier was provided in step 1):
+        Updates the identifier field (`phone_number` or `email`), stamps `verified_at`, and sets
+        `login_channel` — all in one atomic update.
 
         Requires authentication.
       requestBody:
@@ -1807,10 +1955,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [channel]
+              required: [channel, identifier, otp]
               properties:
-                channel: { type: string, enum: [phone, email] }
-                otp:     { type: string, minLength: 6, maxLength: 6, description: Required unless the target channel was already verified. }
+                channel:    { type: string, enum: [phone, email] }
+                identifier:
+                  type: string
+                  description: The exact phone number or email the OTP was sent to.
+                  example: '+250781234567'
+                otp:        { type: string, minLength: 6, maxLength: 6 }
       responses:
         '200':
           description: Login channel updated
@@ -1821,41 +1973,16 @@ paths:
                 properties:
                   login_channel: { type: string, enum: [phone, email] }
         '400':
-          description: '`OTP_REQUIRED` — otp was omitted but the channel is not yet verified. `INVALID_OTP` — wrong code.'
+          description: |
+            `NO_PENDING_CHANNEL_CHANGE` — no pending change found (expired or never initiated).
+            `CHANNEL_MISMATCH` — channel or identifier does not match the pending request.
+            `INVALID_OTP` — wrong OTP code.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '410': { description: OTP expired, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
-
-  /users/me/2fa:
-    patch:
-      tags: [Users]
-      summary: Enable or disable 2FA
-      description: |
-        Toggles two-factor authentication for the authenticated user.
-        On change, a notification is sent via the user's `notif_channel`
-        (`security.2fa_enabled` or `security.2fa_disabled`).
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [enabled]
-              properties:
-                enabled: { type: boolean }
-      responses:
-        '200':
-          description: 2FA setting updated
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  two_factor_enabled: { type: boolean }
-        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /users/invite:
     post:
