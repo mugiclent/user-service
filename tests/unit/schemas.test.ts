@@ -17,7 +17,6 @@ import {
   inviteUserSchema,
   acceptInviteSchema,
   validatePasswordSchema,
-  toggle2faSchema,
 } from '../../src/middleware/schemas/user.schema.js';
 import {
   createOrgSchema,
@@ -107,11 +106,6 @@ describe('validatePasswordSchema', () => {
   it('rejects short password', () => fail(validatePasswordSchema, { password: 'short' }));
 });
 
-describe('toggle2faSchema', () => {
-  it('accepts boolean enabled', () => ok(toggle2faSchema, { enabled: true }));
-  it('accepts false', () => ok(toggle2faSchema, { enabled: false }));
-  it('rejects non-boolean', () => fail(toggle2faSchema, { enabled: 'yes' }));
-});
 
 // ── Org schemas ────────────────────────────────────────────────────────────────
 

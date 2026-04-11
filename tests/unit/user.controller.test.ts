@@ -15,8 +15,6 @@ const mockDeleteUser = vi.fn().mockResolvedValue(undefined);
 const mockInviteUser = vi.fn().mockResolvedValue({ invite_token: 'tok', expires_at: new Date() });
 const mockAcceptInvite = vi.fn();
 const mockValidatePassword = vi.fn().mockResolvedValue(undefined);
-const mockToggle2fa = vi.fn().mockResolvedValue({ two_factor_enabled: true });
-
 vi.mock('../../src/services/user.service.js', () => ({
   UserService: {
     getMe: mockGetMe,
@@ -28,7 +26,6 @@ vi.mock('../../src/services/user.service.js', () => ({
     inviteUser: mockInviteUser,
     acceptInvite: mockAcceptInvite,
     validatePassword: mockValidatePassword,
-    toggle2fa: mockToggle2fa,
   },
 }));
 
@@ -151,25 +148,6 @@ describe('UserController.validatePassword', () => {
   });
 });
 
-// ── toggle2fa ─────────────────────────────────────────────────────────────────
-
-describe('UserController.toggle2fa', () => {
-  it('returns 200 with 2FA result', async () => {
-    const req = { user: authUser, body: { enabled: true } } as unknown as Request;
-    const res = makeRes();
-    await UserController.toggle2fa(req, res, next);
-    expect(mockToggle2fa).toHaveBeenCalledWith('user-1', true);
-    expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({ two_factor_enabled: true });
-  });
-
-  it('calls next(err) on error', async () => {
-    mockToggle2fa.mockRejectedValueOnce(new Error('db fail'));
-    const req = { user: authUser, body: { enabled: false } } as unknown as Request;
-    await UserController.toggle2fa(req, makeRes(), next);
-    expect(next).toHaveBeenCalledWith(expect.any(Error));
-  });
-});
 
 // ── listUsers ─────────────────────────────────────────────────────────────────
 

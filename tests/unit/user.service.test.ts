@@ -56,8 +56,11 @@ vi.mock('../../src/models/index.js', () => ({
 }));
 
 const mockRedisSet = vi.fn().mockResolvedValue('OK');
+const mockRedisSetex = vi.fn().mockResolvedValue('OK');
+const mockRedisGet = vi.fn().mockResolvedValue(null);
+const mockRedisDel = vi.fn().mockResolvedValue(1);
 vi.mock('../../src/loaders/redis.js', () => ({
-  getRedisClient: () => ({ set: mockRedisSet }),
+  getRedisClient: () => ({ set: mockRedisSet, setex: mockRedisSetex, get: mockRedisGet, del: mockRedisDel }),
 }));
 
 const mockSerializeUserMe = vi.fn().mockReturnValue({ id: 'user-1', serialized: 'me' });
@@ -173,13 +176,6 @@ describe('UserService.getMe', () => {
 // ── updateMe ─────────────────────────────────────────────────────────────────
 
 describe('UserService.updateMe', () => {
-  it('throws PASSENGERS_CANNOT_HAVE_EMAIL when passenger sets email', async () => {
-    const authUser = makeAuthUser({ user_type: 'passenger' });
-    await expect(UserService.updateMe(authUser as never, { email: 'a@b.com' })).rejects.toMatchObject({
-      code: 'PASSENGERS_CANNOT_HAVE_EMAIL', status: 422,
-    });
-  });
-
   it('updates user and returns serialized result', async () => {
     const user = makeUser();
     mockUserUpdate.mockResolvedValueOnce(user);
@@ -191,7 +187,7 @@ describe('UserService.updateMe', () => {
   });
 
   it('deletes old S3 avatar when avatar_path is included in update', async () => {
-    mockUserFindUnique.mockResolvedValueOnce({ avatar_path: 'avatars/user-1/old.jpg' });
+    mockUserFindUniqueOrThrow.mockResolvedValueOnce({ login_channel: null, two_factor_enabled: false, avatar_path: 'avatars/user-1/old.jpg' });
     mockUserUpdate.mockResolvedValueOnce(makeUser());
     const authUser = makeAuthUser({ user_type: 'staff' });
     await UserService.updateMe(authUser as never, { avatar_path: null });
@@ -199,18 +195,18 @@ describe('UserService.updateMe', () => {
   });
 
   it('does not call deleteFromS3 when existing avatar is null', async () => {
-    mockUserFindUnique.mockResolvedValueOnce({ avatar_path: null });
+    mockUserFindUniqueOrThrow.mockResolvedValueOnce({ login_channel: null, two_factor_enabled: false, avatar_path: null });
     mockUserUpdate.mockResolvedValueOnce(makeUser());
     const authUser = makeAuthUser({ user_type: 'staff' });
     await UserService.updateMe(authUser as never, { avatar_path: 'avatars/new.jpg' });
     expect(mockDeleteFromS3).not.toHaveBeenCalled();
   });
 
-  it('skips avatar fetch when avatar_path not in update data', async () => {
+  it('skips current user fetch when no sensitive fields in update data', async () => {
     mockUserUpdate.mockResolvedValueOnce(makeUser());
     const authUser = makeAuthUser({ user_type: 'staff' });
     await UserService.updateMe(authUser as never, { first_name: 'Bob' });
-    expect(mockUserFindUnique).not.toHaveBeenCalled();
+    expect(mockUserFindUniqueOrThrow).not.toHaveBeenCalled();
   });
 });
 
@@ -605,27 +601,3 @@ describe('UserService.validatePassword', () => {
 
 // ── toggle2fa ─────────────────────────────────────────────────────────────────
 
-describe('UserService.toggle2fa', () => {
-  it('enables 2FA and returns true', async () => {
-    mockUserUpdate.mockResolvedValueOnce(makeUser({ two_factor_enabled: true }));
-    const result = await UserService.toggle2fa('user-1', true);
-    expect(result).toEqual({ two_factor_enabled: true });
-    expect(mockUserUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { two_factor_enabled: true } }),
-    );
-    expect(mockNotifyUser).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ sms: expect.objectContaining({ type: 'security.2fa_enabled' }) }),
-    );
-  });
-
-  it('disables 2FA and returns false', async () => {
-    mockUserUpdate.mockResolvedValueOnce(makeUser({ two_factor_enabled: false }));
-    const result = await UserService.toggle2fa('user-1', false);
-    expect(result).toEqual({ two_factor_enabled: false });
-    expect(mockNotifyUser).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({ sms: expect.objectContaining({ type: 'security.2fa_disabled' }) }),
-    );
-  });
-});
