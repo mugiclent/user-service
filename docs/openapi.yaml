@@ -1873,9 +1873,8 @@ paths:
 
         **Switch mode** — `channel` only, no `identifier`:
         Switches the active `login_channel` to the other channel (phone ↔ email).
-        The target channel must already be verified (`phone_verified_at` / `email_verified_at` must be set).
-        If not verified, the request fails with `PHONE_NOT_VERIFIED` or `EMAIL_NOT_VERIFIED` (422).
-        An OTP is sent to the existing verified identifier as a confirmation step.
+        An OTP is sent to the target channel's existing identifier.
+        If the channel was not yet verified, confirming the OTP also marks it as verified.
 
         **Change mode** — `channel` + `identifier`:
         Updates the actual phone number or email address **and** makes it the new `login_channel`.
@@ -1905,7 +1904,7 @@ paths:
                   example: '+250781234567'
             examples:
               switch_to_email:
-                summary: Switch login channel to email (already verified)
+                summary: Switch login channel to email (sends OTP; verifies if needed)
                 value: { channel: email }
               change_phone:
                 summary: Change phone number and switch to phone login
@@ -1933,8 +1932,6 @@ paths:
         '422':
           description: |
             `EMAIL_NOT_FOUND` — switching to email but no email on the account.
-            `EMAIL_NOT_VERIFIED` — switching to email but email is not yet verified.
-            `PHONE_NOT_VERIFIED` — switching to phone but phone is not yet verified.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

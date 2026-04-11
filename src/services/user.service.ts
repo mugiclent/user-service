@@ -539,12 +539,11 @@ export const UserService = {
       return { expires_in: expiresIn };
     }
 
-    // ── Switch mode: toggle login_channel to an already-verified channel ─────
+    // ── Switch mode: change login_channel to the other channel on the account ──
     if (user.login_channel === channel) throw new AppError('ALREADY_ACTIVE_CHANNEL', 409);
 
     if (channel === 'email') {
       if (!user.email) throw new AppError('EMAIL_NOT_FOUND', 422);
-      if (!user.email_verified_at) throw new AppError('EMAIL_NOT_VERIFIED', 422);
 
       const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
       await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: user.email, mode: 'switch' }));
@@ -553,8 +552,6 @@ export const UserService = {
     }
 
     // channel === 'phone'
-    if (!user.phone_verified_at) throw new AppError('PHONE_NOT_VERIFIED', 422);
-
     const { code, expiresIn } = await OtpService.create(userId, 'login_channel_change');
     await redis.setex(pendingKey, expiresIn, JSON.stringify({ channel, identifier: displayPhone(user.phone_number), mode: 'switch' }));
     publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code, expires_in_seconds: expiresIn, locale });
@@ -594,16 +591,15 @@ export const UserService = {
     await OtpService.verify(userId, otp, 'login_channel_change');
     await redis.del(pendingKey);
 
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { email_verified_at: true, phone_verified_at: true } });
     const updateData: Prisma.UserUncheckedUpdateInput = { login_channel: channel };
 
-    if (pending.mode === 'change') {
-      if (channel === 'email') {
-        updateData.email = normIdentifier;
-        updateData.email_verified_at = new Date();
-      } else {
-        updateData.phone_number = normIdentifier;
-        updateData.phone_verified_at = new Date();
-      }
+    if (channel === 'email') {
+      if (pending.mode === 'change') updateData.email = normIdentifier;
+      if (pending.mode === 'change' || !user.email_verified_at) updateData.email_verified_at = new Date();
+    } else {
+      if (pending.mode === 'change') updateData.phone_number = normIdentifier;
+      if (pending.mode === 'change' || !user.phone_verified_at) updateData.phone_verified_at = new Date();
     }
 
     await prisma.user.update({ where: { id: userId }, data: updateData });
