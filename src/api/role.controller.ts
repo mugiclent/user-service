@@ -21,6 +21,7 @@ export const RoleController = {
       const result = await RoleService.createRole(user, req.body as {
         name: string;
         slug?: string;
+        description?: string;
         org_id?: string;
         patterns: string[];
       });
@@ -43,7 +44,7 @@ export const RoleController = {
   async updateRole(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const result = await RoleService.updateRole(user, req.params['id']!, req.body as { name: string });
+      const result = await RoleService.updateRole(user, req.params['id']!, req.body as { name?: string; description?: string });
       res.status(200).json(result);
     } catch (err) {
       next(err);

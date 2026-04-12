@@ -194,23 +194,6 @@ const PERMISSIONS: PermissionSeed[] = [
     scopes: ['org', 'platform'],
   },
 
-  // ── MediaAsset ────────────────────────────────────────────────────────────
-  {
-    action: 'upload',
-    subject: 'MediaAsset',
-    display_name: 'Upload media',
-    description: 'Obtain a presigned URL to upload images or files',
-    group: 'Media',
-    scopes: ['own', 'org', 'platform'],
-  },
-  {
-    action: 'delete',
-    subject: 'MediaAsset',
-    display_name: 'Delete media',
-    description: 'Remove a media asset',
-    group: 'Media',
-    scopes: ['own', 'org', 'platform'],
-  },
 
   // ── OrgDocument ───────────────────────────────────────────────────────────
   {
@@ -255,6 +238,16 @@ const PERMISSIONS: PermissionSeed[] = [
     group: 'Audit',
     scopes: ['org', 'platform'],
   },
+
+  // ── Notification ──────────────────────────────────────────────────────────
+  {
+    action: 'receive',
+    subject: 'Notification',
+    display_name: 'Receive notifications',
+    description: 'Receive notifications targeted at this scope — own for personal, org for org-wide, platform for platform-wide broadcasts',
+    group: 'Notifications',
+    scopes: ['own', 'org', 'platform'],
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -272,12 +265,12 @@ const MANAGED_ROLES: RoleSeed[] = [
   {
     name: 'Passenger',
     slug: 'passenger',
-    patterns: ['user:*:own', 'media_asset:*:own'],
+    patterns: ['user:*:own'],
   },
   {
     name: 'Driver',
     slug: 'driver',
-    patterns: ['user:*:own', 'media_asset:*:own', 'org:read:own'],
+    patterns: ['user:*:own', 'org:read:own'],
   },
   {
     name: 'Dispatcher',

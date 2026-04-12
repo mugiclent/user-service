@@ -58,6 +58,7 @@ enum PermissionAction {
   approve
   upload
   export
+  receive
 }
 
 enum PermissionSubject {
@@ -65,9 +66,9 @@ enum PermissionSubject {
   Org
   Role
   Invitation
-  MediaAsset
   OrgDocument
   AuditLog
+  Notification
 }
 
 
@@ -109,12 +110,13 @@ model Org {
 }
 
 model Role {
-  id         String   @id @default(uuid())
-  name       String   @db.VarChar(100)
-  slug       String   @db.VarChar(100)
-  org_id     String?
-  is_managed Boolean  @default(false)
-  created_at DateTime @default(now())
+  id          String   @id @default(uuid())
+  name        String   @db.VarChar(100)
+  slug        String   @db.VarChar(100)
+  description String?  @db.VarChar(500)
+  org_id      String?
+  is_managed  Boolean  @default(false)
+  created_at  DateTime @default(now())
 
   org          Org?         @relation(fields: [org_id], references: [id])
   user_roles   UserRole[]
@@ -247,23 +249,6 @@ model Otp {
   @@map("otps")
 }
 
-model MediaAsset {
-  id          String   @id @default(uuid())
-  entity_type String   @db.VarChar(20)
-  entity_id   String
-  field_name  String   @db.VarChar(50)
-  filename    String   @db.VarChar(255)
-  mime_type   String   @db.VarChar(100)
-  size_bytes  Int
-  filer_path  String   @db.VarChar(500)
-  public_url  String
-  uploaded_by String
-  created_at  DateTime @default(now())
-
-  @@unique([entity_type, entity_id, field_name])
-  @@index([entity_id])
-  @@map("media_assets")
-}
 
 model Invitation {
   id           String    @id @default(uuid())

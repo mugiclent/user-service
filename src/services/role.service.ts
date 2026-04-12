@@ -16,27 +16,37 @@ import { PERMISSIONS } from '../loaders/bootstrap.js';
 
 const withGrants = { include: { role_grants: { orderBy: { created_at: 'asc' as const } } } } as const;
 
-const serializeRole = (role: {
+type RoleWithGrants = {
   id: string;
   name: string;
   slug: string;
+  description: string | null;
   org_id: string | null;
   is_managed: boolean;
   created_at: Date;
   role_grants: { id: string; pattern: string; is_managed: boolean; created_at: Date }[];
-}): Record<string, unknown> => ({
+};
+
+type RoleWithoutGrants = Omit<RoleWithGrants, 'role_grants'>;
+
+const serializeRoleSummary = (role: RoleWithoutGrants): Record<string, unknown> => ({
   id: role.id,
   name: role.name,
   slug: role.slug,
+  description: role.description,
   org_id: role.org_id,
   is_managed: role.is_managed,
+  created_at: role.created_at,
+});
+
+const serializeRole = (role: RoleWithGrants): Record<string, unknown> => ({
+  ...serializeRoleSummary(role),
   grants: role.role_grants.map((g) => ({
     id: g.id,
     pattern: g.pattern,
     is_managed: g.is_managed,
     created_at: g.created_at,
   })),
-  created_at: role.created_at,
 });
 
 /** True when the user is a platform admin (unconditional manage:all). */
@@ -78,10 +88,9 @@ export const RoleService = {
     const roles = await prisma.role.findMany({
       where,
       orderBy: [{ org_id: 'asc' }, { name: 'asc' }],
-      ...withGrants,
     });
 
-    return { data: roles.map(serializeRole) };
+    return { data: roles.map(serializeRoleSummary) };
   },
 
   // -------------------------------------------------------------------------
@@ -90,7 +99,7 @@ export const RoleService = {
 
   async createRole(
     requestingUser: AuthenticatedUser,
-    data: { name: string; slug?: string; org_id?: string; patterns: string[] },
+    data: { name: string; slug?: string; description?: string; org_id?: string; patterns: string[] },
   ): Promise<Record<string, unknown>> {
     const platform = isPlatform(requestingUser);
     const orgAdmin = isOrgAdmin(requestingUser);
@@ -125,7 +134,7 @@ export const RoleService = {
 
     const role = await prisma.$transaction(async (tx) => {
       const created = await tx.role.create({
-        data: { name: data.name, slug, org_id },
+        data: { name: data.name, slug, description: data.description ?? null, org_id },
       });
       if (data.patterns.length > 0) {
         await tx.roleGrant.createMany({
@@ -173,7 +182,7 @@ export const RoleService = {
   async updateRole(
     requestingUser: AuthenticatedUser,
     roleId: string,
-    data: { name: string },
+    data: { name?: string; description?: string },
   ): Promise<Record<string, unknown>> {
     const platform = isPlatform(requestingUser);
     const orgAdmin = isOrgAdmin(requestingUser);
@@ -189,9 +198,13 @@ export const RoleService = {
       throw new AppError('FORBIDDEN', 403);
     }
 
+    const updateData: { name?: string; description?: string } = {};
+    if (data.name !== undefined) updateData.name = data.name;
+    if (data.description !== undefined) updateData.description = data.description;
+
     const updated = await prisma.role.update({
       where: { id: roleId },
-      data: { name: data.name },
+      data: updateData,
       ...withGrants,
     });
 
@@ -200,7 +213,10 @@ export const RoleService = {
       action: 'update',
       resource: 'Role',
       resource_id: roleId,
-      delta: { name: { from: role.name, to: data.name } },
+      delta: {
+        ...(data.name !== undefined ? { name: { from: role.name, to: data.name } } : {}),
+        ...(data.description !== undefined ? { description: { from: role.description, to: data.description } } : {}),
+      },
     }));
 
     return serializeRole(updated);

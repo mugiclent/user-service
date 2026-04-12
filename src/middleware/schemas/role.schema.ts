@@ -9,13 +9,15 @@ const patternItem = Joi.string()
 export const createRoleSchema = Joi.object({
   name: Joi.string().trim().max(100).required(),
   slug: Joi.string().trim().lowercase().max(100).pattern(/^[a-z0-9-]+$/).optional(),
+  description: Joi.string().trim().max(500).optional(),
   org_id: Joi.string().uuid().optional(),
   patterns: Joi.array().items(patternItem).min(1).required(),
 });
 
 export const updateRoleSchema = Joi.object({
-  name: Joi.string().trim().max(100).required(),
-});
+  name: Joi.string().trim().max(100).optional(),
+  description: Joi.string().trim().max(500).allow('', null).optional(),
+}).min(1);
 
 export const addGrantSchema = Joi.object({
   pattern: patternItem.required(),

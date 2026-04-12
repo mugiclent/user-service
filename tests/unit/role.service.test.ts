@@ -106,6 +106,7 @@ const makeRole = (overrides: Record<string, unknown> = {}) => ({
   id: 'role-1',
   name: 'Custom Role',
   slug: 'custom-role',
+  description: null as string | null,
   org_id: null as string | null,
   is_managed: false,
   created_at: new Date(),
@@ -162,14 +163,12 @@ describe('RoleService.listRoles', () => {
     );
   });
 
-  it('serializes grants inside each role', async () => {
-    const role = makeRole({
-      role_grants: [makeGrant({ id: 'g-1', pattern: 'user:read:org' })],
-    });
-    mockRoleFindMany.mockResolvedValueOnce([role]);
+  it('does not include grants in list response — fetch detail for grants', async () => {
+    mockRoleFindMany.mockResolvedValueOnce([makeRole()]);
     const result = await RoleService.listRoles(makePlatformAdmin() as never, {});
-    expect(result.data[0]).toHaveProperty('grants');
-    expect((result.data[0] as Record<string, unknown>)['grants']).toHaveLength(1);
+    expect(result.data[0]).not.toHaveProperty('grants');
+    expect(result.data[0]).toHaveProperty('name');
+    expect(result.data[0]).toHaveProperty('description');
   });
 });
 
