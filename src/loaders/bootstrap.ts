@@ -314,8 +314,8 @@ export const bootstrap = async (): Promise<void> => {
     const code = toPermissionCode(seed.action, seed.subject);
     await prisma.permission.upsert({
       where: { action_subject: { action: seed.action, subject: seed.subject } },
-      update: { code, display_name: seed.display_name, description: seed.description, group: seed.group },
-      create: { code, action: seed.action, subject: seed.subject, display_name: seed.display_name, description: seed.description, group: seed.group },
+      update: { code, display_name: seed.display_name, description: seed.description, group: seed.group, scopes: seed.scopes },
+      create: { code, action: seed.action, subject: seed.subject, display_name: seed.display_name, description: seed.description, group: seed.group, scopes: seed.scopes },
     });
     permCount++;
   }

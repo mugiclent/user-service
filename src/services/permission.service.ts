@@ -18,6 +18,7 @@ export const PermissionService = {
       display_name: p.display_name,
       description: p.description,
       group: p.group,
+      scopes: p.scopes,
     }));
   },
 };

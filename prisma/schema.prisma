@@ -169,6 +169,7 @@ model Permission {
   display_name String            @db.VarChar(100)
   description  String            @db.VarChar(255)
   group        String            @db.VarChar(50)
+  scopes       String[]
 
   @@unique([action, subject])
   @@map("permissions")

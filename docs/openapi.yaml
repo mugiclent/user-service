@@ -541,6 +541,13 @@ components:
         display_name: { type: string, example: 'View users' }
         description:  { type: string, example: 'Read user profile information', nullable: true }
         group:        { type: string, example: 'User management' }
+        scopes:
+          type: array
+          items:
+            type: string
+            enum: [own, org, platform]
+          example: ['own', 'org', 'platform']
+          description: 'Valid scope suffixes for this permission. Use these to construct grant patterns: `"{code}:{scope}"`. Not all permissions support all scopes — e.g. `org:create` is `platform`-only.'
 
   responses:
     Unauthorized:
@@ -2583,6 +2590,10 @@ paths:
 
         The `code` field is the canonical `subject:action` string. Combine it with a scope
         suffix to form a grant pattern: `"{code}:{scope}"` → e.g. `"user:read:org"`.
+
+        Each permission includes a `scopes` array listing which scope suffixes are valid for
+        that permission. Only offer those scopes in the UI — e.g. `org:create` only allows
+        `platform`, so offering `own` or `org` would produce an invalid pattern.
       responses:
         '200':
           description: Full permission catalog

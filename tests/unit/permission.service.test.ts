@@ -25,6 +25,7 @@ const makePermission = (overrides: Record<string, unknown> = {}) => ({
   display_name: 'View users',
   description: 'Read user profile information',
   group: 'User management',
+  scopes: ['own', 'org', 'platform'],
   ...overrides,
 });
 
@@ -50,6 +51,7 @@ describe('PermissionService.listPermissions', () => {
       subject: 'User',
       display_name: 'View users',
       group: 'User management',
+      scopes: ['own', 'org', 'platform'],
     });
   });
 
@@ -78,5 +80,6 @@ describe('PermissionService.listPermissions', () => {
     expect(result).toHaveProperty('display_name');
     expect(result).toHaveProperty('description');
     expect(result).toHaveProperty('group');
+    expect(result).toHaveProperty('scopes');
   });
 });
