@@ -71,15 +71,20 @@ describe('buildRulesFromGrants — *:*:platform', () => {
 });
 
 describe('buildRulesFromGrants — *:*:org', () => {
-  it('produces one rule per known subject, all conditioned to org_id', () => {
+  it('produces one manage rule per known subject plus an extra read:Role{org_id:null} rule', () => {
     const rules = buildRulesFromGrants(['*:*:org'], USER, ORG);
-    // One rule per subject in ALL_SUBJECTS
-    expect(rules).toHaveLength(ALL_SUBJECTS.length);
-    for (const rule of rules) {
-      expect(rule.action).toBe('manage');
-      // Every rule must have org_id or id condition (never unconditioned)
+    // One manage rule per subject + 1 synthetic read:Role{org_id:null} for global template visibility
+    expect(rules).toHaveLength(ALL_SUBJECTS.length + 1);
+    const manageRules = rules.filter((r) => r.action === 'manage');
+    expect(manageRules).toHaveLength(ALL_SUBJECTS.length);
+    for (const rule of manageRules) {
+      // Every manage rule must have org_id or id condition (never unconditioned)
       expect((rule as Record<string, unknown>)['conditions']).toBeDefined();
     }
+    // The synthetic rule allows reading global role templates
+    const globalReadRule = rules.find((r) => r.action === 'read' && r.subject === 'Role');
+    expect(globalReadRule).toBeDefined();
+    expect((globalReadRule as Record<string, unknown>)['conditions']).toEqual({ org_id: null });
   });
 
   it('Org subject gets { id: orgId } (not org_id) for org scope', () => {
@@ -150,9 +155,9 @@ describe('buildRulesFromGrants — concrete action+subject+scope', () => {
     expect(rules[0]).toMatchObject({ action: 'upload', subject: 'OrgDocument', conditions: { org_id: ORG } });
   });
 
-  it('media_asset:delete:own → delete:MediaAsset with { id: userId }', () => {
-    const rules = buildRulesFromGrants(['media_asset:delete:own'], USER, ORG);
-    expect(rules[0]).toMatchObject({ action: 'delete', subject: 'MediaAsset', conditions: { id: USER } });
+  it('notification:receive:own → receive:Notification with { id: userId }', () => {
+    const rules = buildRulesFromGrants(['notification:receive:own'], USER, ORG);
+    expect(rules[0]).toMatchObject({ action: 'receive', subject: 'Notification', conditions: { id: USER } });
   });
 });
 
@@ -272,8 +277,8 @@ describe('buildRulesFromGrants — edge cases', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildRulesFromGrants — managed role patterns', () => {
-  it('passenger grants (user:*:own, media_asset:*:own) → 2 conditioned rules', () => {
-    const rules = buildRulesFromGrants(['user:*:own', 'media_asset:*:own'], USER, null);
+  it('passenger grants (user:*:own, notification:*:own) → 2 conditioned rules', () => {
+    const rules = buildRulesFromGrants(['user:*:own', 'notification:*:own'], USER, null);
     expect(rules).toHaveLength(2);
     expect(rules.every((r) => r.action === 'manage')).toBe(true);
     expect(rules.every((r) => !!(r as Record<string, unknown>)['conditions'])).toBe(true);

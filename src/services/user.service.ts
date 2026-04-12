@@ -119,7 +119,8 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
-    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const isAdmin = ability.can('manage', 'all');
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -164,7 +165,8 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     targetId: string,
   ): Promise<Record<string, unknown>> {
-    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const isAdmin = ability.can('manage', 'all');
 
     const user = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -195,8 +197,8 @@ export const UserService = {
     targetId: string,
     data: { first_name?: string; last_name?: string; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
-    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
     const ability = buildAbilityFromRules(requestingUser.rules);
+    const isAdmin = ability.can('manage', 'all');
     // Role assignment requires unconditioned manage:User (platform admins only)
 
     const target = await prisma.user.findUnique({
@@ -286,7 +288,8 @@ export const UserService = {
     if (!target || target.status === 'deleted' || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
 
     // Org-scoped admins (org_admin) may only delete users within their own org
-    const isAdmin = requestingUser.role_slugs.includes('platform-admin');
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const isAdmin = ability.can('manage', 'all');
     if (!isAdmin && requestingUser.org_id && target.org_id !== requestingUser.org_id) {
       throw new AppError('FORBIDDEN', 403);
     }
@@ -321,13 +324,23 @@ export const UserService = {
     requestingUser: AuthenticatedUser,
     data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string; locale?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
-    const isOrgAdmin = requestingUser.role_slugs.includes('org-admin');
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const platform = ability.can('manage', 'all');
 
-    const org_id = isOrgAdmin ? requestingUser.org_id! : (data.org_id ?? null);
+    const org_id = platform ? (data.org_id ?? null) : requestingUser.org_id!;
 
     if (!data.email && !data.phone_number) throw new AppError('VALIDATION_ERROR', 422);
 
-    const role = await prisma.role.findFirst({ where: { slug: data.role_slug, org_id: org_id ?? null } });
+    // Prefer an org-specific role with this slug; fall back to a global template.
+    // The passenger role is excluded — it cannot be assigned to staff via invitation.
+    const role = await prisma.role.findFirst({
+      where: {
+        slug: data.role_slug,
+        OR: [{ org_id: org_id ?? null }, { org_id: null }],
+        NOT: { slug: 'passenger' },
+      },
+      orderBy: { org_id: 'asc' }, // non-null org_id sorts before null → org-specific wins
+    });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
 
     const rawToken = generateRawToken();
@@ -420,7 +433,11 @@ export const UserService = {
           locale,
         },
       });
-      await tx.userRole.create({ data: { user_id: created.id, role_id: invitation.role_id } });
+      // role_id is null when the invited role was deleted after the invitation was
+      // issued — create the account without a role; admin can assign one later.
+      if (invitation.role_id) {
+        await tx.userRole.create({ data: { user_id: created.id, role_id: invitation.role_id } });
+      }
       await tx.invitation.update({
         where: { token_hash: tokenHash },
         data: { accepted_at: new Date() },

@@ -864,15 +864,30 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/AuthResponse' }
         '202':
-          description: 2FA required — OTP sent to phone
+          description: |
+            Two cases — inspect the response body to distinguish:
+
+            **Account pending verification** — `login_channel` is `null` (never verified).
+            An OTP is sent to the channel the user logged in with. Follow up with `POST /auth/verify-login`.
+            ```
+            { requires_verification: true, user_id, channel: "phone"|"email", expires_in }
+            ```
+
+            **2FA required** — account is active and 2FA is enabled.
+            An OTP is sent to the user's phone. Follow up with `POST /auth/verify-2fa`.
+            ```
+            { requires_2fa: true, user_id, expires_in }
+            ```
           content:
             application/json:
               schema:
                 type: object
                 properties:
-                  requires_2fa: { type: boolean, enum: [true] }
-                  user_id:      { type: string, format: uuid, description: Pass to POST /auth/verify-2fa. }
-                  expires_in:   { type: integer, example: 300, description: OTP TTL in seconds. }
+                  requires_verification: { type: boolean, enum: [true], description: Present when account has not yet been verified. }
+                  requires_2fa:          { type: boolean, enum: [true], description: Present when 2FA is enabled on the account. }
+                  user_id:               { type: string, format: uuid }
+                  channel:               { type: string, enum: [phone, email], description: Channel the OTP was sent to. Present when requires_verification is true. }
+                  expires_in:            { type: integer, example: 300, description: OTP TTL in seconds. }
         '401':
           description: Invalid credentials
           content:
@@ -880,7 +895,11 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: INVALID_CREDENTIALS } }
         '403':
-          description: Account suspended (`ACCOUNT_SUSPENDED`) or phone not yet verified (`PHONE_NOT_VERIFIED`)
+          description: |
+            One of:
+            - `ACCOUNT_SUSPENDED` — account is suspended
+            - `PHONE_LOGIN_REQUIRED` — identifier was an email but `login_channel` is `phone`
+            - `EMAIL_LOGIN_REQUIRED` — identifier was a phone number but `login_channel` is `email`
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2228,10 +2247,19 @@ paths:
       tags: [Roles]
       summary: List roles
       description: |
-        **Required permission:** `read:Role`
+        **Staff only.** No additional permission required — any authenticated staff member may call this.
+        Passengers are rejected with `403`.
 
-        `platform-admin` sees all roles (platform-wide and org-specific).
-        `org-admin` sees only roles belonging to their org plus managed platform roles.
+        Scoping rules:
+        - `platform-admin` — sees all roles (global and org-scoped), including the `passenger` system role.
+          Optional `?org_id` query parameter filters to a specific org.
+        - All other staff — sees global role templates (`org_id = null`) plus their own org's roles.
+          The `passenger` system role is excluded.
+      parameters:
+        - in: query
+          name: org_id
+          schema: { type: string, format: uuid }
+          description: Platform admin only — filter by organization.
       responses:
         '200':
           description: List of roles
@@ -2244,7 +2272,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Role' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { description: Caller is a passenger (staff required), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
 
     post:
       tags: [Roles]
@@ -2329,9 +2357,13 @@ paths:
       tags: [Roles]
       summary: Get role by ID
       description: |
-        **Required permission:** `read:Role`
+        **Staff only.** No additional permission required — any authenticated staff member may call this.
+        Passengers are rejected with `403`.
 
-        `org-admin` may only access roles within their own org or managed platform roles.
+        Scoping rules:
+        - `platform-admin` — can fetch any role, including the `passenger` system role.
+        - All other staff — can fetch global role templates (`org_id = null`) or roles belonging to
+          their own org. Attempting to fetch another org's role or the `passenger` role returns `403`.
       responses:
         '200':
           description: Role detail with all grants
@@ -2339,7 +2371,13 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Role' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: |
+            Caller is a passenger, or the role belongs to a different org, or the role is the
+            `passenger` system role (not visible to non-platform-admin staff).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: Role not found
           content:
@@ -2349,23 +2387,30 @@ paths:
 
     patch:
       tags: [Roles]
-      summary: Rename a role
+      summary: Update a role's name or description
       description: |
         **Required permission:** `update:Role`
 
-        Only the `name` field is mutable. To change grants, use `POST /roles/{id}/grants`
-        or `DELETE /roles/{id}/grants/{grantId}`.
+        Updates `name` (display label) and/or `description`. At least one field is required.
+
+        **The slug is immutable.** Changing `name` does not change the slug — the slug is set at
+        creation time and frozen. It is embedded in user JWTs and `role_slugs` records; renaming it
+        would silently break all references. To change the slug, delete and recreate the role.
+
+        To change grants, use `POST /roles/{id}/grants` or `DELETE /roles/{id}/grants/{grantId}`.
 
         Returns `403 MANAGED_ROLE_IMMUTABLE` if the role has `is_managed: true`.
+        `org-admin` callers may only update roles within their own org — global templates return `403`.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [name]
+              minProperties: 1
               properties:
-                name: { type: string, maxLength: 100, example: 'Senior Document Reviewer' }
+                name:        { type: string, maxLength: 100, example: 'Senior Document Reviewer' }
+                description: { type: string, maxLength: 500, nullable: true, example: 'Reviews submitted documents before approval.' }
       responses:
         '200':
           description: Updated role
@@ -2394,9 +2439,15 @@ paths:
         **Required permission:** `delete:Role`
 
         Returns `403 MANAGED_ROLE_IMMUTABLE` for managed roles.
-        Users currently assigned this role will lose it on their next token refresh.
+
+        Users currently assigned this role lose the join record immediately (cascade delete).
+        Their JWT still carries the old rules until the token expires (~15 min), after which
+        the role no longer appears. The users themselves are **not** deleted.
+
+        Deletion is blocked (`409 ROLE_HAS_PENDING_INVITATIONS`) if any uninvitations using
+        this role have not yet been accepted. Resolve or cancel those invitations first.
       responses:
-        '204': { description: Role deleted }
+        '204': { description: Role deleted — user assignments cascade-removed }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
           description: Forbidden or managed role
@@ -2410,6 +2461,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: ROLE_NOT_FOUND } }
+        '409':
+          description: One or more pending invitations reference this role and have not yet been accepted
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ROLE_HAS_PENDING_INVITATIONS } }
 
   /roles/{id}/grants:
     parameters:
@@ -2517,7 +2574,8 @@ paths:
       tags: [Permissions]
       summary: List permission catalog
       description: |
-        **Required permission:** `read:Role`
+        **Staff only.** No additional permission required — any authenticated staff member may call this.
+        Passengers are rejected with `403`.
 
         Returns all valid `(subject, action)` pairs recognized by the platform, ordered by
         `group → subject → action`. Use this to build the pattern picker UI when creating
@@ -2537,4 +2595,4 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Permission' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403': { description: Caller is a passenger (staff required), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }

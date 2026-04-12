@@ -256,7 +256,7 @@ model Invitation {
   phone_number String?   @db.VarChar(20)
   first_name   String    @db.VarChar(100)
   last_name    String    @db.VarChar(100)
-  role_id      String
+  role_id      String?
   org_id       String?
   invited_by   String
   locale       String?   @db.VarChar(5)
@@ -265,7 +265,7 @@ model Invitation {
   accepted_at  DateTime?
   created_at   DateTime  @default(now())
 
-  role Role @relation(fields: [role_id], references: [id])
+  role Role? @relation(fields: [role_id], references: [id], onDelete: SetNull)
 
   @@map("invitations")
 }

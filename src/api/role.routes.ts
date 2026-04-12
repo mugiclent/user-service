@@ -2,20 +2,20 @@
 import { Router } from 'express';
 import { RoleController } from './role.controller.js';
 import { validate } from '../middleware/validate.js';
-import { authenticate } from '../middleware/authenticate.js';
+import { authenticate, requireStaff } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import { createRoleSchema, updateRoleSchema, addGrantSchema } from '../middleware/schemas/role.schema.js';
 
 const router = Router();
 
-// GET /api/v1/roles
-router.get('/', authenticate, authorize('read', 'Role'), RoleController.listRoles);
+// GET /api/v1/roles — staff-only; passengers cannot browse the role catalog
+router.get('/', authenticate, requireStaff, RoleController.listRoles);
 
 // POST /api/v1/roles
 router.post('/', authenticate, authorize('create', 'Role'), validate(createRoleSchema), RoleController.createRole);
 
-// GET /api/v1/roles/:id
-router.get('/:id', authenticate, authorize('read', 'Role'), RoleController.getRoleById);
+// GET /api/v1/roles/:id — staff-only; scoped in service
+router.get('/:id', authenticate, requireStaff, RoleController.getRoleById);
 
 // PATCH /api/v1/roles/:id
 router.patch('/:id', authenticate, authorize('update', 'Role'), validate(updateRoleSchema), RoleController.updateRole);

@@ -1,3 +1,4 @@
+import { subject } from '@casl/ability';
 import { prisma } from '../models/index.js';
 import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
@@ -7,7 +8,9 @@ import {
   isValidPattern,
   maxScopeFromPatterns,
   SCOPE_RANK,
+  buildAbilityFromRules,
 } from '../utils/ability.js';
+import type { Subjects } from '../utils/ability.js';
 import { PERMISSIONS } from '../loaders/bootstrap.js';
 
 // ---------------------------------------------------------------------------
@@ -49,12 +52,6 @@ const serializeRole = (role: RoleWithGrants): Record<string, unknown> => ({
   })),
 });
 
-/** True when the user is a platform admin (unconditional manage:all). */
-const isPlatform = (u: AuthenticatedUser): boolean => u.role_slugs.includes('platform-admin');
-
-/** True when the user is an org-scoped admin with an org. */
-const isOrgAdmin = (u: AuthenticatedUser): boolean =>
-  u.role_slugs.includes('org-admin') && !!u.org_id;
 
 // ---------------------------------------------------------------------------
 // Service
@@ -69,20 +66,20 @@ export const RoleService = {
     requestingUser: AuthenticatedUser,
     query: { org_id?: string },
   ): Promise<{ data: Record<string, unknown>[] }> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
-
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const platform = ability.can('manage', 'all');
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = {};
 
     if (platform) {
-      // Platform admin can filter by org_id; without filter returns everything
+      // Platform admin sees everything including the passenger system role
       if (query.org_id) where['org_id'] = query.org_id;
     } else {
-      // Org admin: see global templates (org_id=null) + their own org's roles
-      where['OR'] = [{ org_id: null }, { org_id: requestingUser.org_id }];
+      // All other staff: global templates (org_id=null) + their own org's roles,
+      // excluding the passenger system role
+      where['OR'] = [{ org_id: null }, { org_id: requestingUser.org_id ?? null }];
+      where['slug'] = { not: 'passenger' };
     }
 
     const roles = await prisma.role.findMany({
@@ -101,10 +98,10 @@ export const RoleService = {
     requestingUser: AuthenticatedUser,
     data: { name: string; slug?: string; description?: string; org_id?: string; patterns: string[] },
   ): Promise<Record<string, unknown>> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const platform = ability.can('manage', 'all');
 
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     // Validate every pattern against the catalog
     for (const pattern of data.patterns) {
@@ -157,19 +154,19 @@ export const RoleService = {
     requestingUser: AuthenticatedUser,
     roleId: string,
   ): Promise<Record<string, unknown>> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
-
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const platform = ability.can('manage', 'all');
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
 
-    // Org admin can only view global roles or their own org's roles
-    if (!platform) {
-      if (role.org_id !== null && role.org_id !== requestingUser.org_id) {
-        throw new AppError('FORBIDDEN', 403);
-      }
+    // The passenger role is an internal system role — only platform admins can inspect it
+    if (!platform && role.slug === 'passenger') throw new AppError('FORBIDDEN', 403);
+
+    // Global roles (org_id=null) are visible to everyone.
+    // Org-scoped roles are visible only to members of that org (or platform admin).
+    if (!platform && role.org_id !== null && role.org_id !== requestingUser.org_id) {
+      throw new AppError('FORBIDDEN', 403);
     }
 
     return serializeRole(role);
@@ -184,17 +181,18 @@ export const RoleService = {
     roleId: string,
     data: { name?: string; description?: string },
   ): Promise<Record<string, unknown>> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
+    const ability = buildAbilityFromRules(requestingUser.rules);
 
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
+    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
     if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    // Org admin scope check
-    if (!platform && role.org_id !== requestingUser.org_id) {
+    // Platform admin can manage any role; org admin only their own org's roles
+    // (the extra read Rule for global templates does NOT grant write access).
+    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 
@@ -227,18 +225,29 @@ export const RoleService = {
   // -------------------------------------------------------------------------
 
   async deleteRole(requestingUser: AuthenticatedUser, roleId: string): Promise<void> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
+    const ability = buildAbilityFromRules(requestingUser.rules);
 
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const role = await prisma.role.findUnique({ where: { id: roleId } });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
+    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
     if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    // Org admin scope check
-    if (!platform && role.org_id !== requestingUser.org_id) {
+    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
+    }
+
+    // Block deletion if there are pending invitations referencing this role.
+    // Accepted invitations are historical records and are fine — Prisma's FK
+    // RESTRICT would still block them, so we check all invitations and only
+    // surface the pending ones in the error message (accepted ones are resolved
+    // by the schema migration that makes role_id nullable + SetNull).
+    const pendingInvitations = await prisma.invitation.count({
+      where: { role_id: roleId, accepted_at: null },
+    });
+    if (pendingInvitations > 0) {
+      throw new AppError('ROLE_HAS_PENDING_INVITATIONS', 409);
     }
 
     await prisma.role.delete({ where: { id: roleId } });
@@ -255,17 +264,17 @@ export const RoleService = {
     roleId: string,
     pattern: string,
   ): Promise<Record<string, unknown>> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const platform = ability.can('manage', 'all');
 
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
+    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
     if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    // Org admin scope check
-    if (!platform && role.org_id !== requestingUser.org_id) {
+    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 
@@ -312,10 +321,9 @@ export const RoleService = {
     roleId: string,
     grantId: string,
   ): Promise<void> {
-    const platform = isPlatform(requestingUser);
-    const orgAdmin = isOrgAdmin(requestingUser);
+    const ability = buildAbilityFromRules(requestingUser.rules);
 
-    if (!platform && !orgAdmin) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const grant = await prisma.roleGrant.findUnique({ where: { id: grantId } });
     if (!grant || grant.role_id !== roleId) throw new AppError('GRANT_NOT_FOUND', 404);
@@ -323,7 +331,8 @@ export const RoleService = {
 
     const role = await prisma.role.findUnique({ where: { id: roleId } });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (!platform && role.org_id !== requestingUser.org_id) {
+    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
+    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 

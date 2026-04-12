@@ -2,6 +2,7 @@
  * Tests for src/services/user.service.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as AbilityModule from '../../src/utils/ability.js';
 
 // ── mocks ──────────────────────────────────────────────────────────────────────
 
@@ -73,12 +74,13 @@ vi.mock('../../src/models/serializers.js', () => ({
   serializeUserFullProfile: mockSerializeUserFullProfile,
 }));
 
-const mockAbilityCan = vi.fn().mockReturnValue(false);
-
-vi.mock('../../src/utils/ability.js', () => ({
-  buildAbilityFromRules: vi.fn().mockReturnValue({ can: mockAbilityCan }),
-  buildRulesFromGrants: vi.fn().mockReturnValue([]),
-}));
+vi.mock('../../src/utils/ability.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof AbilityModule>();
+  return {
+    ...actual,
+    buildRulesFromGrants: vi.fn().mockReturnValue([]),
+  };
+});
 
 const mockGenerateRawToken = vi.fn().mockReturnValue('raw-invite-token');
 const mockHashToken = vi.fn().mockReturnValue('hashed-token');
@@ -153,7 +155,6 @@ const makeUser = (overrides: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockAbilityCan.mockReturnValue(false);
   mockUserUpdate.mockResolvedValue(makeUser());
 });
 
@@ -230,7 +231,7 @@ describe('UserService.listUsers', () => {
   });
 
   it('admin can filter by org_id query param', async () => {
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.listUsers(authUser as never, { org_id: 'org-42' });
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ org_id: 'org-42' }) }),
@@ -271,7 +272,7 @@ describe('UserService.getUserById', () => {
   it('admin can view any user', async () => {
     const user = makeUser({ id: 'other-user', org_id: 'other-org' });
     mockUserFindUnique.mockResolvedValueOnce(user);
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.getUserById(authUser as never, 'other-user');
     expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(user, true);
   });
@@ -343,7 +344,7 @@ describe('UserService.updateUser', () => {
     const updated = makeUser({ id: 'user-2', first_name: 'New', org_id: 'org-1', user_roles: [] });
     mockUserFindUnique.mockResolvedValueOnce(target);
     mockTxUserUpdate.mockResolvedValueOnce(updated);
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.updateUser(authUser as never, 'user-2', { first_name: 'New' });
     expect(mockTxUserUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ first_name: 'New' }) }),
@@ -357,8 +358,7 @@ describe('UserService.updateUser', () => {
     mockTxUserUpdate.mockResolvedValueOnce(updated);
     mockTxRoleFindMany.mockResolvedValueOnce([{ id: 'role-1' }]);
     mockTxUserFindUniqueOrThrow.mockResolvedValueOnce(updated);
-    mockAbilityCan.mockReturnValue(true);
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.updateUser(authUser as never, 'user-2', { role_slugs: ['org-admin'] });
     expect(mockTxUserRoleDeleteMany).toHaveBeenCalledWith({ where: { user_id: 'user-2' } });
     expect(mockTxUserRoleCreateMany).toHaveBeenCalled();
@@ -369,7 +369,7 @@ describe('UserService.updateUser', () => {
     const updated = makeUser({ id: 'user-2', status: 'suspended', org_id: null, user_roles: [] });
     mockUserFindUnique.mockResolvedValueOnce(target);
     mockTxUserUpdate.mockResolvedValueOnce(updated);
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.updateUser(authUser as never, 'user-2', { status: 'suspended' });
     expect(mockNotifyUser).toHaveBeenCalledWith(
       updated,
@@ -465,7 +465,14 @@ describe('UserService.inviteUser', () => {
     const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1' });
     await UserService.inviteUser(authUser as never, { ...base, email: 'bob@acme.com' });
     expect(mockRoleFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ org_id: 'org-1' }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({
+          slug: 'dispatcher',
+          OR: [{ org_id: 'org-1' }, { org_id: null }],
+          NOT: { slug: 'passenger' },
+        }),
+        orderBy: { org_id: 'asc' },
+      }),
     );
   });
 

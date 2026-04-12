@@ -41,3 +41,13 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
     next(new AppError('UNAUTHORIZED', 401));
   }
 };
+
+/**
+ * Requires the authenticated user to be staff.
+ * Passengers cannot access internal catalog endpoints (roles, permissions).
+ * Must be used after `authenticate`.
+ */
+export const requireStaff = (req: Request, _res: Response, next: NextFunction): void => {
+  if (req.user?.user_type !== 'staff') return next(new AppError('FORBIDDEN', 403));
+  next();
+};

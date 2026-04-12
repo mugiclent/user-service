@@ -12,6 +12,7 @@ import {
   serializeOrgCreated,
   serializeOrgFull,
 } from '../models/serializers.js';
+import { buildAbilityFromRules } from '../utils/ability.js';
 
 // 15-minute blacklist window (matches access token TTL)
 const BLACKLIST_TTL_SECONDS = 900;
@@ -22,8 +23,6 @@ const withRelations = {
     child_orgs: { select: { id: true, name: true, slug: true, status: true } },
   },
 } as const;
-
-const isAdmin = (roleSlugs: string[]): boolean => roleSlugs.includes('platform-admin');
 
 export const OrgService = {
   // ---------------------------------------------------------------------------
@@ -82,8 +81,8 @@ export const OrgService = {
     requestingUser: AuthenticatedUser,
     query: { page?: number; limit?: number; status?: string; org_type?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
-    const roleSlugs = requestingUser.role_slugs;
-    const admin = isAdmin(roleSlugs);
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const admin = ability.can('manage', 'all');
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -124,8 +123,8 @@ export const OrgService = {
     });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
-    const roleSlugs = requestingUser.role_slugs;
-    return serializeOrgFull(org, isAdmin(roleSlugs));
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    return serializeOrgFull(org, ability.can('manage', 'all'));
   },
 
   // ---------------------------------------------------------------------------
@@ -136,8 +135,8 @@ export const OrgService = {
     requestingUser: AuthenticatedUser,
     orgId: string,
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.role_slugs;
-    const admin = isAdmin(roleSlugs);
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const admin = ability.can('manage', 'all');
 
     const org = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
@@ -168,12 +167,12 @@ export const OrgService = {
       rejection_reason?: string;
     },
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.role_slugs;
-    const admin = isAdmin(roleSlugs);
-    const orgAdmin = roleSlugs.includes('org-admin');
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const admin = ability.can('manage', 'all');
+    const orgAdmin = !admin && ability.can('update', 'Org') && !!requestingUser.org_id;
 
     if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
-    if (orgAdmin && !admin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
+    if (orgAdmin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
 
     // org_admin cannot change status — only katisha_admin can
     if (!admin && data.status !== undefined) throw new AppError('FORBIDDEN', 403);
@@ -280,9 +279,9 @@ export const OrgService = {
     requestingUser: AuthenticatedUser,
     orgId: string,
   ): Promise<Record<string, unknown>> {
-    const roleSlugs = requestingUser.role_slugs;
-    const admin = isAdmin(roleSlugs);
-    const orgAdmin = roleSlugs.includes('org-admin');
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const admin = ability.can('manage', 'all');
+    const orgAdmin = !admin && ability.can('approve', 'Org') && !!requestingUser.org_id;
 
     const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);

@@ -44,9 +44,9 @@ export const SUBJECT_CODE_TO_ENUM: Record<string, PermissionSubject> = {
   org:          'Org',
   role:         'Role',
   invitation:   'Invitation',
-  media_asset:  'MediaAsset',
   org_document: 'OrgDocument',
   audit_log:    'AuditLog',
+  notification: 'Notification',
 };
 
 export const ALL_SUBJECTS = Object.values(SUBJECT_CODE_TO_ENUM) as PermissionSubject[];
@@ -142,7 +142,25 @@ export const buildRulesFromGrants = (
     }
   }
 
-  return Array.from(best.values()).map((e) => e.rule);
+  const result = Array.from(best.values()).map((e) => e.rule);
+
+  // Org-scoped users who have explicit Role management access (i.e. their grants
+  // include a specific role:*:org pattern, which produces a manage:Role rule with
+  // org conditions) can also READ global role templates (org_id = null) so they
+  // can browse the catalog when customising their org's roles.
+  // They cannot write global templates — no manage rule will match { org_id: null }.
+  // Platform admin already has unconditional access; skip for them.
+  // We only inject this when the pattern set includes the role subject explicitly
+  // (tracked via the dedup key "manage:Role" that comes from "role:*:org" or "*:*:org").
+  const isPlatformAdmin = result.some((r) => r.subject === 'all' && !r.conditions);
+  if (!isPlatformAdmin && orgId) {
+    const hasOrgRoleManage = best.has('manage:Role');
+    if (hasOrgRoleManage) {
+      result.push({ action: 'read', subject: 'Role' as Subjects, conditions: { org_id: null } });
+    }
+  }
+
+  return result;
 };
 
 // ---------------------------------------------------------------------------

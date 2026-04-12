@@ -58,6 +58,7 @@ const adminUser = {
   id: 'admin-1',
   role_slugs: ['platform-admin'],
   org_id: null,
+  rules: [{ action: 'manage', subject: 'all' }],
 };
 
 const mockCreate = vi.fn().mockResolvedValue(baseOrg);

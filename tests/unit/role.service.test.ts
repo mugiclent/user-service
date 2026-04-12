@@ -2,6 +2,7 @@
  * Tests for src/services/role.service.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type * as AbilityModule from '../../src/utils/ability.js';
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,8 @@ const mockRoleGrantFindUnique = vi.fn();
 const mockRoleGrantCreate = vi.fn();
 const mockRoleGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockRoleGrantDelete = vi.fn();
+
+const mockInvitationCount = vi.fn().mockResolvedValue(0);
 
 const mockTxRoleCreate = vi.fn();
 const mockTxRoleGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
@@ -47,6 +50,9 @@ vi.mock('../../src/models/index.js', () => ({
       createMany: mockRoleGrantCreateMany,
       delete: mockRoleGrantDelete,
     },
+    invitation: {
+      count: mockInvitationCount,
+    },
     $transaction: mockTransaction,
   },
 }));
@@ -56,11 +62,15 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishAudit: mockPublishAudit,
 }));
 
-vi.mock('../../src/utils/ability.js', () => ({
-  isValidPattern: vi.fn().mockReturnValue(true),
-  maxScopeFromPatterns: vi.fn().mockReturnValue('org'),
-  SCOPE_RANK: { own: 0, org: 1, platform: 2 },
-}));
+vi.mock('../../src/utils/ability.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof AbilityModule>();
+  return {
+    ...actual,
+    isValidPattern: vi.fn().mockReturnValue(true),
+    maxScopeFromPatterns: vi.fn().mockReturnValue('org'),
+    SCOPE_RANK: { own: 0, org: 1, platform: 2 },
+  };
+});
 
 vi.mock('../../src/utils/slugify.js', () => ({
   slugify: vi.fn().mockImplementation((name: string) => name.toLowerCase().replace(/\s+/g, '-')),
@@ -80,7 +90,7 @@ const makePlatformAdmin = (overrides: Record<string, unknown> = {}) => ({
   org_id: null as string | null,
   user_type: 'staff' as const,
   role_slugs: ['platform-admin'],
-  rules: [],
+  rules: [{ action: 'manage', subject: 'all' }],
   ...overrides,
 });
 
@@ -89,7 +99,10 @@ const makeOrgAdmin = (overrides: Record<string, unknown> = {}) => ({
   org_id: 'org-1',
   user_type: 'staff' as const,
   role_slugs: ['org-admin'],
-  rules: [],
+  rules: [
+    { action: 'manage', subject: 'Role', conditions: { org_id: 'org-1' } },
+    { action: 'read',   subject: 'Role', conditions: { org_id: null } },
+  ],
   ...overrides,
 });
 
@@ -130,10 +143,17 @@ beforeEach(() => {
 // ── listRoles ─────────────────────────────────────────────────────────────────
 
 describe('RoleService.listRoles', () => {
-  it('throws FORBIDDEN for non-admin users', async () => {
-    await expect(RoleService.listRoles(makeOtherUser() as never, {})).rejects.toMatchObject({
-      code: 'FORBIDDEN', status: 403,
-    });
+  it('non-admin staff see global + own org roles, excluding passenger', async () => {
+    mockRoleFindMany.mockResolvedValueOnce([]);
+    await RoleService.listRoles(makeOtherUser() as never, {});
+    expect(mockRoleFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          OR: [{ org_id: null }, { org_id: 'org-1' }],
+          slug: { not: 'passenger' },
+        },
+      }),
+    );
   });
 
   it('platform admin gets all roles', async () => {
@@ -153,12 +173,15 @@ describe('RoleService.listRoles', () => {
     );
   });
 
-  it('org admin sees global + own org roles', async () => {
+  it('org admin sees global + own org roles, excluding passenger', async () => {
     mockRoleFindMany.mockResolvedValueOnce([makeRole()]);
     await RoleService.listRoles(makeOrgAdmin() as never, {});
     expect(mockRoleFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { OR: [{ org_id: null }, { org_id: 'org-1' }] },
+        where: {
+          OR: [{ org_id: null }, { org_id: 'org-1' }],
+          slug: { not: 'passenger' },
+        },
       }),
     );
   });
@@ -248,7 +271,15 @@ describe('RoleService.createRole', () => {
 // ── getRoleById ───────────────────────────────────────────────────────────────
 
 describe('RoleService.getRoleById', () => {
-  it('throws FORBIDDEN for non-admin', async () => {
+  it('non-admin staff cannot view another org role', async () => {
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: 'other-org' }));
+    await expect(RoleService.getRoleById(makeOtherUser() as never, 'role-1')).rejects.toMatchObject({
+      code: 'FORBIDDEN', status: 403,
+    });
+  });
+
+  it('non-admin staff cannot view the passenger role', async () => {
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, slug: 'passenger' }));
     await expect(RoleService.getRoleById(makeOtherUser() as never, 'role-1')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
@@ -348,8 +379,18 @@ describe('RoleService.deleteRole', () => {
     });
   });
 
+  it('throws ROLE_HAS_PENDING_INVITATIONS when pending invitations exist', async () => {
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, is_managed: false }));
+    mockInvitationCount.mockResolvedValueOnce(2);
+    await expect(RoleService.deleteRole(makePlatformAdmin() as never, 'role-1')).rejects.toMatchObject({
+      code: 'ROLE_HAS_PENDING_INVITATIONS', status: 409,
+    });
+    expect(mockRoleDelete).not.toHaveBeenCalled();
+  });
+
   it('deletes role and publishes audit', async () => {
     mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, is_managed: false }));
+    mockInvitationCount.mockResolvedValueOnce(0);
     mockRoleDelete.mockResolvedValueOnce({});
     await RoleService.deleteRole(makePlatformAdmin() as never, 'role-1');
     expect(mockRoleDelete).toHaveBeenCalledWith({ where: { id: 'role-1' } });
