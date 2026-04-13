@@ -625,6 +625,20 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             error: { code: VALIDATION_ERROR, message: '"phone_number" must be in E.164 format' }
+    ValidationError:
+      description: Request body failed Joi validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: VALIDATION_ERROR, message: '"phone_number" must be in E.164 format' }
+    TooManyRequests:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: TOO_MANY_REQUESTS, message: 'Rate limit exceeded' }
 
 # ---------------------------------------------------------------------------
 # Default security (override per-endpoint where needed)
@@ -1550,7 +1564,6 @@ paths:
                 type: object
                 properties:
                   upload_url: { type: string, format: uri, description: 'PUT the image here. Expires in ~5 min.' }
-                  key:        { type: string, example: 'logos/org-id/uuid.png', description: Same value as path. }
                   path:       { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id.' }
         '400':
           description: |
@@ -1598,7 +1611,6 @@ paths:
                 type: object
                 properties:
                   upload_url: { type: string, format: uri, description: 'PUT the image here. Expires in ~5 min.' }
-                  key:        { type: string, example: 'logos/org-id/uuid.png', description: Same value as path. }
                   path:       { type: string, example: 'logos/org-id/uuid.png', description: 'Send as logo_path in PATCH /organizations/:id.' }
         '400':
           description: Missing content_type query parameter
@@ -1668,10 +1680,6 @@ paths:
                     type: string
                     format: uri
                     description: 'PUT the document here with the matching Content-Type header. Expires in ~5 min.'
-                  key:
-                    type: string
-                    example: 'org-docs/pending/business_certificate/uuid.pdf'
-                    description: Same value as `path`.
                   path:
                     type: string
                     example: 'org-docs/pending/business_certificate/uuid.pdf'
