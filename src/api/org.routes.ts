@@ -27,8 +27,11 @@ router.get('/:id', authenticate, authorize('read', 'Org'), OrgController.getOrgB
 // PATCH /api/v1/organizations/:id  (also accepts logo_path to commit a presigned upload, or null to delete)
 router.patch('/:id', authenticate, authorize('update', 'Org'), validate(updateOrgSchema), OrgController.updateOrg);
 
-// POST /api/v1/organizations/:id/approve
-router.post('/:id/approve', authenticate, authorize('update', 'Org'), OrgController.approveChildOrg);
+// POST /api/v1/organizations/:id/cooperative-approve  (cooperative staff approves a coop_member)
+router.post('/:id/cooperative-approve', authenticate, authorize('approve', 'Org'), OrgController.cooperativeApprove);
+
+// POST /api/v1/organizations/:id/cooperative-reject  (cooperative staff rejects a coop_member)
+router.post('/:id/cooperative-reject', authenticate, authorize('approve', 'Org'), OrgController.cooperativeReject);
 
 // GET /api/v1/organizations/:id/logo/presigned-url?content_type=image/jpeg
 // platform admin uploads a logo for any org

@@ -12,8 +12,8 @@ const mockOrgFindFirst = vi.fn();
 const mockOrgFindUnique = vi.fn();
 const mockOrgUpdate = vi.fn().mockResolvedValue({});
 const mockUserFindMany = vi.fn().mockResolvedValue([
-  { email: 'admin1@katisha.com' },
-  { email: 'admin2@katisha.com' },
+  { email: 'admin1@katisha.com', phone_number: '+250788000010', notif_channel: ['sms', 'email'], fcm_token: null, locale: 'rw' },
+  { email: 'admin2@katisha.com', phone_number: '+250788000011', notif_channel: ['email'], fcm_token: null, locale: 'rw' },
 ]);
 const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
   const tx = {
@@ -23,16 +23,14 @@ const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => P
   return cb(tx);
 });
 
+const mockUserFindUnique = vi.fn().mockResolvedValue(null);
+
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     org: { findFirst: mockOrgFindFirst, findUnique: mockOrgFindUnique, update: mockOrgUpdate },
-    user: { findMany: mockUserFindMany },
+    user: { findUnique: mockUserFindUnique, findMany: mockUserFindMany },
     $transaction: mockTransaction,
   },
-}));
-
-vi.mock('../../src/utils/crypto.js', () => ({
-  hashToken: vi.fn().mockReturnValue('hashed-otp'),
 }));
 
 vi.mock('../../src/utils/slugify.js', () => ({
@@ -42,13 +40,26 @@ vi.mock('../../src/utils/slugify.js', () => ({
 const mockPublishMail = vi.fn();
 const mockPublishSms = vi.fn();
 const mockPublishAudit = vi.fn();
+const mockNotifyUser = vi.fn();
 
 vi.mock('../../src/utils/publishers.js', () => ({
   publishMail: mockPublishMail,
   publishSms: mockPublishSms,
   publishAudit: mockPublishAudit,
+  notifyUser: mockNotifyUser,
 }));
 
+const mockOrgOtpCreate = vi.fn().mockResolvedValue({ code: '123456', expiresIn: 300 });
+const mockOrgOtpVerify = vi.fn().mockResolvedValue(undefined);
+const mockOrgOtpHasExisting = vi.fn().mockResolvedValue(true);
+
+vi.mock('../../src/services/org-otp.service.js', () => ({
+  OrgOtpService: {
+    create: mockOrgOtpCreate,
+    verify: mockOrgOtpVerify,
+    hasExisting: mockOrgOtpHasExisting,
+  },
+}));
 
 const { OrgApplicationService } = await import('../../src/services/org-application.service.js');
 
@@ -57,25 +68,27 @@ const { OrgApplicationService } = await import('../../src/services/org-applicati
 const applyData = {
   name: 'Acme',
   org_type: 'company',
+  contact_first_name: 'Jane',
+  contact_last_name: 'Doe',
   contact_email: 'ops@acme.com',
   contact_phone: '+250788000001',
+  tin: '123456789',
   business_certificate_path: 'org-docs/org-1/cert.pdf',
   rep_id_path: 'org-docs/org-1/id.jpg',
 };
-
-const futureExpiry = new Date(Date.now() + 60_000);
-const pastExpiry = new Date(Date.now() - 60_000);
 
 const makeOrg = (overrides: Record<string, unknown> = {}) => ({
   id: 'org-1',
   name: 'Acme',
   slug: 'acme',
   org_type: 'company',
+  status: 'unverified',
+  contact_first_name: 'Jane',
+  contact_last_name: 'Doe',
   contact_email: 'ops@acme.com',
   contact_phone: '+250788000001',
   contact_email_verified_at: null,
-  contact_otp_hash: 'hashed-otp',
-  contact_otp_expires_at: futureExpiry,
+  contact_phone_verified_at: null,
   ...overrides,
 });
 
@@ -91,14 +104,14 @@ describe('OrgApplicationService.apply', () => {
     });
   });
 
-  it('creates the org and documents in a transaction', async () => {
+  it('creates the org and documents in a transaction with unverified status', async () => {
     mockOrgFindFirst.mockResolvedValueOnce(null);
     mockTxOrgCreate.mockResolvedValueOnce({ id: 'org-1', name: 'Acme' });
     const result = await OrgApplicationService.apply(applyData);
     expect(mockTransaction).toHaveBeenCalled();
     expect(mockTxOrgCreate).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ name: 'Acme', slug: 'acme', status: 'pending', contact_otp_hash: 'hashed-otp' }),
+        data: expect.objectContaining({ name: 'Acme', slug: 'acme', status: 'unverified' }),
       }),
     );
     expect(mockTxOrgDocCreateMany).toHaveBeenCalledWith(
@@ -112,12 +125,29 @@ describe('OrgApplicationService.apply', () => {
     expect(result).toMatchObject({ org_id: 'org-1' });
   });
 
+  it('creates OTPs for both phone and email channels', async () => {
+    mockOrgFindFirst.mockResolvedValueOnce(null);
+    mockTxOrgCreate.mockResolvedValueOnce({ id: 'org-1', name: 'Acme' });
+    await OrgApplicationService.apply(applyData);
+    expect(mockOrgOtpCreate).toHaveBeenCalledWith('org-1', 'phone_verification');
+    expect(mockOrgOtpCreate).toHaveBeenCalledWith('org-1', 'email_verification');
+  });
+
+  it('sends OTP SMS to contact_phone', async () => {
+    mockOrgFindFirst.mockResolvedValueOnce(null);
+    mockTxOrgCreate.mockResolvedValueOnce({ id: 'org-1', name: 'Acme' });
+    await OrgApplicationService.apply(applyData);
+    expect(mockPublishSms).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.contact_otp', phone_number: 'ops@acme.com' !== applyData.contact_phone ? applyData.contact_phone : applyData.contact_phone }),
+    );
+  });
+
   it('sends OTP email to contact_email', async () => {
     mockOrgFindFirst.mockResolvedValueOnce(null);
     mockTxOrgCreate.mockResolvedValueOnce({ id: 'org-1', name: 'Acme' });
     await OrgApplicationService.apply(applyData);
     expect(mockPublishMail).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'org.contact_otp', email: 'ops@acme.com' }),
+      expect.objectContaining({ type: 'org.contact_otp', email: applyData.contact_email }),
     );
   });
 
@@ -144,95 +174,123 @@ describe('OrgApplicationService.apply', () => {
 describe('OrgApplicationService.verifyContact', () => {
   it('throws ORG_NOT_FOUND when org does not exist', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(null);
-    await expect(OrgApplicationService.verifyContact('org-1', '123456')).rejects.toMatchObject({
+    await expect(OrgApplicationService.verifyContact('org-1', '123456', 'phone')).rejects.toMatchObject({
       code: 'ORG_NOT_FOUND', status: 404,
     });
   });
 
-  it('throws CONTACT_ALREADY_VERIFIED when email already verified', async () => {
-    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ contact_email_verified_at: new Date() }));
-    await expect(OrgApplicationService.verifyContact('org-1', '123456')).rejects.toMatchObject({
+  it('throws CONTACT_ALREADY_VERIFIED when org is not unverified', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ status: 'pending' }));
+    await expect(OrgApplicationService.verifyContact('org-1', '123456', 'phone')).rejects.toMatchObject({
       code: 'CONTACT_ALREADY_VERIFIED', status: 409,
     });
   });
 
-  it('throws INVALID_OTP when no OTP hash stored', async () => {
-    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ contact_otp_hash: null, contact_otp_expires_at: null }));
-    await expect(OrgApplicationService.verifyContact('org-1', '123456')).rejects.toMatchObject({
-      code: 'INVALID_OTP', status: 400,
+  it('throws CONTACT_ALREADY_VERIFIED when specified channel already verified', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ contact_phone_verified_at: new Date() }));
+    await expect(OrgApplicationService.verifyContact('org-1', '123456', 'phone')).rejects.toMatchObject({
+      code: 'CONTACT_ALREADY_VERIFIED', status: 409,
     });
   });
 
-  it('throws OTP_EXPIRED when OTP is past its expiry', async () => {
-    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ contact_otp_expires_at: pastExpiry }));
-    await expect(OrgApplicationService.verifyContact('org-1', '123456')).rejects.toMatchObject({
-      code: 'OTP_EXPIRED', status: 410,
-    });
-  });
-
-  it('throws INVALID_OTP when code hash does not match', async () => {
-    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ contact_otp_hash: 'wrong-hash' }));
-    await expect(OrgApplicationService.verifyContact('org-1', '000000')).rejects.toMatchObject({
-      code: 'INVALID_OTP', status: 400,
-    });
-  });
-
-  it('updates org with verified_at and clears OTP on success', async () => {
+  it('verifies OTP via OrgOtpService for the correct purpose', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
-    await OrgApplicationService.verifyContact('org-1', '123456');
+    await OrgApplicationService.verifyContact('org-1', '123456', 'phone');
+    expect(mockOrgOtpVerify).toHaveBeenCalledWith('org-1', '123456', 'phone_verification');
+  });
+
+  it('verifies email OTP with email_verification purpose', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    await OrgApplicationService.verifyContact('org-1', '123456', 'email');
+    expect(mockOrgOtpVerify).toHaveBeenCalledWith('org-1', '123456', 'email_verification');
+  });
+
+  it('updates org: sets verified_at and upgrades status to pending', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    await OrgApplicationService.verifyContact('org-1', '123456', 'phone');
     expect(mockOrgUpdate).toHaveBeenCalledWith({
       where: { id: 'org-1' },
-      data: {
-        contact_email_verified_at: expect.any(Date),
-        contact_otp_hash: null,
-        contact_otp_expires_at: null,
-      },
+      data: expect.objectContaining({
+        contact_phone_verified_at: expect.any(Date),
+        status: 'pending',
+      }),
     });
   });
 
-  it('sends confirmation email and SMS to applicant', async () => {
+  it('sends confirmation SMS to applicant', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
-    await OrgApplicationService.verifyContact('org-1', '123456');
-    expect(mockPublishMail).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'org.contact_verified', email: 'ops@acme.com' }),
-    );
+    await OrgApplicationService.verifyContact('org-1', '123456', 'phone');
     expect(mockPublishSms).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'org.contact_verified', phone_number: '+250788000001' }),
     );
   });
 
-  it('notifies all active Katisha admins by querying their role', async () => {
+  it('notifies platform notification recipients via their preferences', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
-    await OrgApplicationService.verifyContact('org-1', '123456');
+    await OrgApplicationService.verifyContact('org-1', '123456', 'phone');
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
-          user_roles: { some: { role: { slug: { in: ['platform-admin'] } } } },
-          status: 'active',
-          deleted_at: null,
-        }),
+        where: expect.objectContaining({ status: 'active', deleted_at: null }),
       }),
     );
-    expect(mockPublishMail).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'org.application_received', email: 'admin1@katisha.com' }),
-    );
-    expect(mockPublishMail).toHaveBeenCalledWith(
-      expect.objectContaining({ type: 'org.application_received', email: 'admin2@katisha.com' }),
-    );
-  });
-
-  it('skips admins without an email address', async () => {
-    mockUserFindMany.mockResolvedValueOnce([{ email: null }, { email: 'admin@katisha.com' }]);
-    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
-    await OrgApplicationService.verifyContact('org-1', '123456');
-    expect(mockPublishMail).toHaveBeenCalledTimes(2); // contact_verified + 1 admin (not the null one)
+    expect(mockNotifyUser).toHaveBeenCalledTimes(2);
   });
 
   it('publishes an audit event', async () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
-    await OrgApplicationService.verifyContact('org-1', '123456');
+    await OrgApplicationService.verifyContact('org-1', '123456', 'phone');
     expect(mockPublishAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'verify_contact', resource: 'Org', resource_id: 'org-1' }),
     );
+  });
+});
+
+// ── resendContactOtp ──────────────────────────────────────────────────────────
+
+describe('OrgApplicationService.resendContactOtp', () => {
+  it('throws ORG_NOT_FOUND when org does not exist', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(null);
+    await expect(OrgApplicationService.resendContactOtp('org-1', 'phone')).rejects.toMatchObject({
+      code: 'ORG_NOT_FOUND', status: 404,
+    });
+  });
+
+  it('throws CONTACT_ALREADY_VERIFIED when org is not unverified', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ status: 'pending' }));
+    await expect(OrgApplicationService.resendContactOtp('org-1', 'phone')).rejects.toMatchObject({
+      code: 'CONTACT_ALREADY_VERIFIED', status: 409,
+    });
+  });
+
+  it('throws OTP_FLOW_NOT_INITIATED when no existing OTP for channel', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    mockOrgOtpHasExisting.mockResolvedValueOnce(false);
+    await expect(OrgApplicationService.resendContactOtp('org-1', 'phone')).rejects.toMatchObject({
+      code: 'OTP_FLOW_NOT_INITIATED', status: 400,
+    });
+  });
+
+  it('creates new OTP and sends SMS for phone channel', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    await OrgApplicationService.resendContactOtp('org-1', 'phone');
+    expect(mockOrgOtpCreate).toHaveBeenCalledWith('org-1', 'phone_verification');
+    expect(mockPublishSms).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.contact_otp', phone_number: '+250788000001' }),
+    );
+  });
+
+  it('creates new OTP and sends mail for email channel', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    await OrgApplicationService.resendContactOtp('org-1', 'email');
+    expect(mockOrgOtpCreate).toHaveBeenCalledWith('org-1', 'email_verification');
+    expect(mockPublishMail).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.contact_otp', email: 'ops@acme.com' }),
+    );
+  });
+
+  it('returns expires_in', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    const result = await OrgApplicationService.resendContactOtp('org-1', 'phone');
+    expect(result).toMatchObject({ expires_in: 300 });
   });
 });

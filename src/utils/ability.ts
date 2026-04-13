@@ -176,6 +176,32 @@ export const buildAbilityFromRules = (rules: AppRule[]): AppAbility =>
   createMongoAbility<AppAbility>(rules);
 
 // ---------------------------------------------------------------------------
+// Scope inference
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns the effective scope a caller has for a given action + subject.
+ *
+ * Rules are examined in descending priority:
+ *   platform — rule with no conditions
+ *   org      — rule whose condition key is `org_id` or `id` on an org-like subject
+ *   own      — rule whose condition key is `id` (self-reference)
+ *   null     — no matching rule (should not happen after authorize middleware)
+ */
+export const getScopeFor = (
+  ability: AppAbility,
+  action: Actions,
+  subject: Subjects,
+): PermissionScope | null => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rules = ability.rulesFor(action, subject as any);
+  if (rules.some((r) => !r.conditions)) return 'platform';
+  if (rules.some((r) => r.conditions && 'org_id' in (r.conditions as object))) return 'org';
+  if (rules.some((r) => r.conditions && 'id' in (r.conditions as object))) return 'own';
+  return null;
+};
+
+// ---------------------------------------------------------------------------
 // Pattern validation (used by role/grant service endpoints)
 // ---------------------------------------------------------------------------
 

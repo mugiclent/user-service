@@ -11,6 +11,7 @@ const mockOrgCreate = vi.fn();
 const mockOrgUpdate = vi.fn();
 const mockOrgFindMany = vi.fn().mockResolvedValue([]);
 const mockOrgCount = vi.fn().mockResolvedValue(0);
+const mockUserFindUnique = vi.fn().mockResolvedValue(null);
 const mockUserFindMany = vi.fn().mockResolvedValue([]);
 const mockRoleFindFirst = vi.fn();
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
@@ -25,7 +26,7 @@ vi.mock('../../src/models/index.js', () => ({
       findMany: mockOrgFindMany,
       count: mockOrgCount,
     },
-    user: { findMany: mockUserFindMany },
+    user: { findUnique: mockUserFindUnique, findMany: mockUserFindMany },
     role: { findFirst: mockRoleFindFirst },
     invitation: { create: mockInvitationCreate },
   },
@@ -159,13 +160,17 @@ describe('OrgService.listOrgs', () => {
     expect(result.total).toBe(1);
   });
 
-  it('non-admin with org_id sees only their org', async () => {
+  it('non-admin with org_id sees their org and child orgs', async () => {
     mockOrgFindMany.mockResolvedValueOnce([]);
     mockOrgCount.mockResolvedValueOnce(0);
     const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1', rules: orgAdminRules('org-1') });
     await OrgService.listOrgs(authUser as never, {});
     expect(mockOrgFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ id: 'org-1' }) }),
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: [{ id: 'org-1' }, { parent_org_id: 'org-1' }],
+        }),
+      }),
     );
   });
 
@@ -366,91 +371,70 @@ describe('OrgService.updateOrg', () => {
   });
 });
 
-// ── approveChildOrg ───────────────────────────────────────────────────────────
+// ── cooperativeApprove ────────────────────────────────────────────────────────
 
-describe('OrgService.approveChildOrg', () => {
-  it('throws ORG_NOT_FOUND when org does not exist', async () => {
-    mockOrgFindUnique.mockResolvedValueOnce(null);
-    await expect(OrgService.approveChildOrg(makeAuthUser() as never, 'org-99')).rejects.toMatchObject({
-      code: 'ORG_NOT_FOUND', status: 404,
-    });
+describe('OrgService.cooperativeApprove', () => {
+  const coopOrg = (overrides: Record<string, unknown> = {}) => makeOrg({
+    org_type: 'coop_member',
+    parent_org_id: 'coop-1',
+    status: 'pending',
+    cooperative_approved_at: null,
+    ...overrides,
   });
+  const coopAdmin = () => makeAuthUser({ org_id: 'coop-1', role_slugs: ['org-admin'], rules: orgAdminRules('coop-1') });
 
-  it('throws ORG_NOT_PENDING when org is not pending', async () => {
-    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ status: 'active' }));
-    await expect(OrgService.approveChildOrg(makeAuthUser() as never, 'org-1')).rejects.toMatchObject({
-      code: 'ORG_NOT_PENDING', status: 400,
-    });
-  });
-
-  it('org_admin stamps cooperative_approved_at (step 1)', async () => {
-    const org = makeOrg({ parent_org_id: 'coop-1' });
-    mockOrgFindUnique.mockResolvedValueOnce(org);
-    const updated = makeOrg({ cooperative_approved_at: new Date() });
-    mockOrgUpdate.mockResolvedValueOnce(updated);
-    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'coop-1', rules: orgAdminRules('coop-1') });
-    await OrgService.approveChildOrg(authUser as never, 'org-1');
-    expect(mockOrgUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { cooperative_approved_at: expect.any(Date) } }),
-    );
-    expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'org.cooperative_approved' }));
-  });
-
-  it('throws FORBIDDEN when org_admin is not the parent cooperative', async () => {
-    const org = makeOrg({ parent_org_id: 'other-coop' });
-    mockOrgFindUnique.mockResolvedValueOnce(org);
-    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'my-coop', rules: orgAdminRules('my-coop') });
-    await expect(OrgService.approveChildOrg(authUser as never, 'org-1')).rejects.toMatchObject({
+  it('throws FORBIDDEN when caller has no org_id', async () => {
+    await expect(OrgService.cooperativeApprove(makeAuthUser() as never, 'org-1')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
   });
 
-  it('throws COOPERATIVE_APPROVAL_REQUIRED for cooperative without step 1', async () => {
-    const org = makeOrg({ org_type: 'cooperative', cooperative_approved_at: null });
-    mockOrgFindUnique.mockResolvedValueOnce(org);
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
-    await expect(OrgService.approveChildOrg(authUser as never, 'org-1')).rejects.toMatchObject({
-      code: 'COOPERATIVE_APPROVAL_REQUIRED', status: 400,
+  it('throws ORG_NOT_FOUND when org does not exist', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(null);
+    await expect(OrgService.cooperativeApprove(coopAdmin() as never, 'org-99')).rejects.toMatchObject({
+      code: 'ORG_NOT_FOUND', status: 404,
     });
   });
 
-  it('admin fully approves company org (step 2)', async () => {
-    const org = makeOrg({ org_type: 'company' });
-    mockOrgFindUnique.mockResolvedValueOnce(org);
-    const updated = makeOrg({ status: 'active', contact_email: 'ops@acme.com' });
-    mockOrgUpdate.mockResolvedValueOnce(updated);
-    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-org-admin' });
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
-    await OrgService.approveChildOrg(authUser as never, 'org-1');
-    expect(mockOrgUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: 'active' }) }),
-    );
-    expect(mockPublishAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'approve', resource: 'Org' }));
+  it('throws NOT_COOP_MEMBER when org type is not coop_member', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ parent_org_id: 'coop-1' })); // org_type: 'company'
+    await expect(OrgService.cooperativeApprove(coopAdmin() as never, 'org-1')).rejects.toMatchObject({
+      code: 'NOT_COOP_MEMBER', status: 400,
+    });
   });
 
-  it('admin fully approves cooperative org after step 1', async () => {
-    const org = makeOrg({ org_type: 'cooperative', cooperative_approved_at: new Date() });
-    mockOrgFindUnique.mockResolvedValueOnce(org);
-    const updated = makeOrg({ status: 'active', contact_email: 'ops@acme.com' });
-    mockOrgUpdate.mockResolvedValueOnce(updated);
-    mockRoleFindFirst.mockResolvedValueOnce(null); // no org_admin role found (no invitation created)
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
-    await OrgService.approveChildOrg(authUser as never, 'org-1');
-    expect(mockOrgUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: 'active', approved_by: 'user-admin' }) }),
-    );
+  it('throws FORBIDDEN when org_admin is not the parent cooperative', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(coopOrg({ parent_org_id: 'other-coop' }));
+    await expect(OrgService.cooperativeApprove(coopAdmin() as never, 'org-1')).rejects.toMatchObject({
+      code: 'FORBIDDEN', status: 403,
+    });
   });
 
-  it('creates org admin invitation after approval when role exists', async () => {
-    const org = makeOrg({ org_type: 'company' });
-    mockOrgFindUnique.mockResolvedValueOnce(org);
-    const updated = makeOrg({ status: 'active', contact_email: 'ops@acme.com', contact_phone: '+250788000001' });
-    mockOrgUpdate.mockResolvedValueOnce(updated);
-    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-org-admin' });
-    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
-    await OrgService.approveChildOrg(authUser as never, 'org-1');
-    expect(mockInvitationCreate).toHaveBeenCalled();
-    expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'org_approved.sms' }));
-    expect(mockPublishMail).toHaveBeenCalledWith(expect.objectContaining({ type: 'org_approved.mail' }));
+  it('throws ORG_NOT_PENDING when org is not pending', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(coopOrg({ status: 'active' }));
+    await expect(OrgService.cooperativeApprove(coopAdmin() as never, 'org-1')).rejects.toMatchObject({
+      code: 'ORG_NOT_PENDING', status: 400,
+    });
+  });
+
+  it('throws ALREADY_COOP_APPROVED when already stamped', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(coopOrg({ cooperative_approved_at: new Date() }));
+    await expect(OrgService.cooperativeApprove(coopAdmin() as never, 'org-1')).rejects.toMatchObject({
+      code: 'ALREADY_COOP_APPROVED', status: 409,
+    });
+  });
+
+  it('stamps cooperative_approved_at and publishes audit', async () => {
+    mockOrgFindUnique
+      .mockResolvedValueOnce(coopOrg())          // org lookup
+      .mockResolvedValueOnce({ name: 'Test Coop' }); // parentCoop name lookup
+    mockOrgUpdate.mockResolvedValueOnce(makeOrg({ cooperative_approved_at: new Date() }));
+    await OrgService.cooperativeApprove(coopAdmin() as never, 'org-1');
+    expect(mockOrgUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ cooperative_approved_at: expect.any(Date) }) }),
+    );
+    expect(mockPublishAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'cooperative_approve', resource: 'Org' }),
+    );
   });
 });

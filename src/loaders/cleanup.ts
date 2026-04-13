@@ -88,8 +88,7 @@ const deleteAbandonedOrgApplications = () =>
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const { count } = await prisma.org.deleteMany({
       where: {
-        status: 'pending',
-        contact_email_verified_at: null,
+        status: 'unverified',
         created_at: { lt: oneDayAgo },
         deleted_at: null,
       },

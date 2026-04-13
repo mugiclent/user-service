@@ -67,8 +67,15 @@ export type SmsEvent = (
   // ── Org status events ─────────────────────────────────────────────────────
   | { type: 'org.suspended'; phone_number: string; org_name: string }
   | { type: 'org.rejected'; phone_number: string; org_name: string; reason?: string }
-  | { type: 'org.cooperative_approved'; phone_number: string; org_name: string }
   | { type: 'org.contact_verified'; phone_number: string; org_name: string }
+  | { type: 'org.contact_otp'; phone_number: string; org_name: string; code: string; expires_in_seconds: number }
+  | { type: 'org.application_received'; phone_number: string; org_name: string; contact_email: string; org_type: string }
+  // ── Cooperative member flow ───────────────────────────────────────────────
+  | { type: 'org.member_application_received'; phone_number: string; org_name: string; coop_name: string }
+  | { type: 'org.member_coop_rejected'; phone_number: string; org_name: string; coop_name: string; reason?: string }
+  | { type: 'org.member_coop_approved'; phone_number: string; org_name: string; coop_name: string }
+  | { type: 'org.member_approved'; phone_number: string; org_name: string; invite_link: string; expires_in_seconds: number }
+  | { type: 'org.member_approved_notify_coop'; phone_number: string; org_name: string }
 ) & { locale?: Locale };
 
 export const publishSms = (event: SmsEvent): void =>
@@ -104,8 +111,13 @@ export type MailEvent = (
   | { type: 'org.rejected'; email: string; org_name: string; reason?: string }
   // ── Org application flow ──────────────────────────────────────────────────
   | { type: 'org.contact_otp'; email: string; first_name: string; org_name: string; code: string; expires_in_seconds: number }
-  | { type: 'org.contact_verified'; email: string; org_name: string; first_name: string }
   | { type: 'org.application_received'; email: string; org_name: string; contact_email: string; org_type: string }
+  // ── Cooperative member flow ───────────────────────────────────────────────
+  | { type: 'org.member_application_received'; email: string; org_name: string; coop_name: string; contact_email: string }
+  | { type: 'org.member_coop_rejected'; email: string; first_name: string; org_name: string; coop_name: string; reason?: string }
+  | { type: 'org.member_coop_approved'; email: string; org_name: string; coop_name: string; contact_email: string }
+  | { type: 'org.member_approved'; email: string; first_name: string; org_name: string; invite_link: string; expires_in_seconds: number }
+  | { type: 'org.member_approved_notify_coop'; email: string; org_name: string }
 ) & { locale?: Locale };
 
 export const publishMail = (event: MailEvent): void =>
@@ -129,9 +141,8 @@ export interface PushEvent {
     | 'security.2fa_disabled'
     | 'org.suspended'
     | 'org.rejected'
-    | 'org.cooperative_approved'
     | 'org.application_received'
-    | 'org.contact_verified'
+    | 'org.member_approved'
     | 'welcome';
   fcm_token: string;
   data?: Record<string, string>;

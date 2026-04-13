@@ -170,4 +170,55 @@ export const UserController = {
       next(err);
     }
   },
+
+  async listInvitations(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.listInvitations(user, {
+        page: req.query['page'] ? Number(req.query['page']) : undefined,
+        limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
+        org_id: req.query['org_id'] as string | undefined,
+      });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async updateInvitation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.updateInvitation(user, req.params['id']!, req.body as {
+        first_name?: string;
+        last_name?: string;
+        email?: string;
+        phone_number?: string;
+        role_slug?: string;
+        locale?: string;
+      });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async resendInvitation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.resendInvitation(user, req.params['id']!);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async deleteInvitation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      await UserService.deleteInvitation(user, req.params['id']!);
+      res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  },
 };

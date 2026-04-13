@@ -76,7 +76,7 @@ export const AuthService = {
     if (user.status === 'deleted') throw new AppError('INVALID_CREDENTIALS', 401);
 
     // Account pending deletion — restore if still within grace period, otherwise reject
-    if (user.status === 'pending_deletion') {
+    if (user.status === 'pending_deletion' || user.deleted_at) {
       const graceCutoff = new Date(user.deleted_at!.getTime() + DELETION_GRACE_DAYS * 24 * 60 * 60 * 1000);
       if (new Date() > graceCutoff) throw new AppError('ACCOUNT_DELETED', 403);
 

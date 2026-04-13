@@ -11,6 +11,7 @@ import {
   buildAbilityFromRules,
 } from '../utils/ability.js';
 import type { Subjects } from '../utils/ability.js';
+import { getScopeFor } from '../utils/ability.js';
 import { PERMISSIONS } from '../loaders/bootstrap.js';
 
 // ---------------------------------------------------------------------------
@@ -67,7 +68,7 @@ export const RoleService = {
     query: { org_id?: string },
   ): Promise<{ data: Record<string, unknown>[] }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = ability.can('manage', 'all');
+    const platform = getScopeFor(ability, 'read', 'Role') === 'platform';
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = {};
@@ -99,7 +100,7 @@ export const RoleService = {
     data: { name: string; slug?: string; description?: string; org_id?: string; patterns: string[] },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = ability.can('manage', 'all');
+    const platform = getScopeFor(ability, 'manage', 'Role') === 'platform';
 
     if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 
@@ -155,7 +156,7 @@ export const RoleService = {
     roleId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = ability.can('manage', 'all');
+    const platform = getScopeFor(ability, 'read', 'Role') === 'platform';
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
@@ -265,7 +266,7 @@ export const RoleService = {
     pattern: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = ability.can('manage', 'all');
+    const platform = getScopeFor(ability, 'manage', 'Role') === 'platform';
 
     if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
 

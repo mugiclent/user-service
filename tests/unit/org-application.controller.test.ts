@@ -118,10 +118,10 @@ describe('OrgApplicationController.apply', () => {
 
 describe('OrgApplicationController.verifyContact', () => {
   it('returns 204 on success', async () => {
-    const req = { body: { org_id: 'org-1', otp: '123456' } } as unknown as Request;
+    const req = { body: { org_id: 'org-1', otp: '123456', channel: 'phone' } } as unknown as Request;
     const res = makeRes();
     await OrgApplicationController.verifyContact(req, res, next);
-    expect(mockVerifyContact).toHaveBeenCalledWith('org-1', '123456');
+    expect(mockVerifyContact).toHaveBeenCalledWith('org-1', '123456', 'phone');
     expect(res.status).toHaveBeenCalledWith(204);
     expect(res.end).toHaveBeenCalled();
   });

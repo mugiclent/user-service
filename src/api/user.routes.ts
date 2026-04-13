@@ -12,6 +12,7 @@ import {
   validatePasswordSchema,
   loginChannelSchema,
   loginChannelConfirmSchema,
+  updateInvitationSchema,
 } from '../middleware/schemas/user.schema.js';
 
 const router = Router();
@@ -21,6 +22,18 @@ router.post('/invite', authenticate, authorize('create', 'User'), validate(invit
 
 // POST /api/v1/users/accept-invite  (public — token is the credential)
 router.post('/accept-invite', validate(acceptInviteSchema), UserController.acceptInvite);
+
+// GET    /api/v1/users/invitations
+router.get('/invitations', authenticate, authorize('invite', 'User'), UserController.listInvitations);
+
+// PATCH  /api/v1/users/invitations/:id
+router.patch('/invitations/:id', authenticate, authorize('invite', 'User'), validate(updateInvitationSchema), UserController.updateInvitation);
+
+// POST   /api/v1/users/invitations/:id/resend
+router.post('/invitations/:id/resend', authenticate, authorize('invite', 'User'), UserController.resendInvitation);
+
+// DELETE /api/v1/users/invitations/:id
+router.delete('/invitations/:id', authenticate, authorize('invite', 'User'), UserController.deleteInvitation);
 
 // GET /api/v1/users/me  (must be before /:id — no authorize, every authenticated user accesses own profile)
 router.get('/me', authenticate, UserController.getMe);

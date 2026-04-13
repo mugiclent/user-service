@@ -34,17 +34,19 @@ vi.mock('../../src/utils/s3.js', () => ({
 }));
 
 const mockRoleFindFirst = vi.fn();
+const mockRoleFindUnique = vi.fn().mockResolvedValue({ slug: 'dispatcher' }); // non-org-admin by default
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
 const mockInvitationFindUnique = vi.fn();
 const mockUserCreate = vi.fn();
 const mockUserRoleCreate = vi.fn();
 const mockInvitationUpdate = vi.fn();
-const mockUserFindUnique = vi.fn().mockResolvedValue({ first_name: 'Admin', last_name: 'User' });
+const mockUserFindUnique = vi.fn().mockResolvedValue(null);
 
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     role: {
       findFirst: mockRoleFindFirst,
+      findUnique: mockRoleFindUnique,
     },
     invitation: {
       create:     mockInvitationCreate,
@@ -53,6 +55,7 @@ vi.mock('../../src/models/index.js', () => ({
     },
     user: {
       findUnique: mockUserFindUnique,
+      findFirst: vi.fn().mockResolvedValue(null), // no existing org admin by default
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const tx = {

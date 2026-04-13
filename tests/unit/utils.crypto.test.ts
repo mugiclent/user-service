@@ -22,15 +22,15 @@ describe('hashToken', () => {
 });
 
 describe('generateRawToken', () => {
-  it('returns an 80-char hex string by default (40 bytes)', () => {
+  it('returns a 43-char base64url string by default (32 bytes)', () => {
     const t = generateRawToken();
-    expect(t).toHaveLength(80);
-    expect(t).toMatch(/^[0-9a-f]+$/);
+    expect(t).toHaveLength(43);
+    expect(t).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
   it('respects custom byte length', () => {
-    expect(generateRawToken(16)).toHaveLength(32);
-    expect(generateRawToken(32)).toHaveLength(64);
+    expect(generateRawToken(16)).toHaveLength(22);
+    expect(generateRawToken(32)).toHaveLength(43);
   });
 
   it('generates unique tokens on each call', () => {

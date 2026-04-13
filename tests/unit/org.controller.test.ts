@@ -20,7 +20,7 @@ vi.mock('../../src/services/org.service.js', () => ({
     getMyOrg: mockGetMyOrg,
     getOrgById: mockGetOrgById,
     updateOrg: mockUpdateOrg,
-    approveChildOrg: mockApproveChildOrg,
+    cooperativeApprove: mockApproveChildOrg,
   },
 }));
 
@@ -190,13 +190,13 @@ describe('OrgController.getLogoPresignedUrl', () => {
   });
 });
 
-// ── approveChildOrg ───────────────────────────────────────────────────────────
+// ── cooperativeApprove ───────────────────────────────────────────────────────────
 
-describe('OrgController.approveChildOrg', () => {
+describe('OrgController.cooperativeApprove', () => {
   it('returns 200 with approved org', async () => {
     const req = { user: authUser, params: { id: 'org-2' } } as unknown as Request;
     const res = makeRes();
-    await OrgController.approveChildOrg(req, res, next);
+    await OrgController.cooperativeApprove(req, res, next);
     expect(mockApproveChildOrg).toHaveBeenCalledWith(authUser, 'org-2');
     expect(res.status).toHaveBeenCalledWith(200);
   });
@@ -204,7 +204,7 @@ describe('OrgController.approveChildOrg', () => {
   it('calls next(err) on error', async () => {
     mockApproveChildOrg.mockRejectedValueOnce(new Error('not pending'));
     const req = { user: authUser, params: { id: 'org-2' } } as unknown as Request;
-    await OrgController.approveChildOrg(req, makeRes(), next);
+    await OrgController.cooperativeApprove(req, makeRes(), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
   });
 });

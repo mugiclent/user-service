@@ -53,6 +53,8 @@ export const OrgApplicationController = {
       const result = await OrgApplicationService.apply(req.body as {
         name: string;
         org_type: string;
+        contact_first_name: string;
+        contact_last_name: string;
         contact_email: string;
         contact_phone: string;
         address?: string;
@@ -77,9 +79,26 @@ export const OrgApplicationController = {
    */
   async verifyContact(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { org_id, otp } = req.body as { org_id: string; otp: string };
-      await OrgApplicationService.verifyContact(org_id, otp);
+      const { org_id, otp, channel } = req.body as { org_id: string; otp: string; channel: 'phone' | 'email' };
+      await OrgApplicationService.verifyContact(org_id, otp, channel);
       res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * POST /api/v1/organizations/resend-contact-otp
+   *
+   * Public — no authentication required.
+   * Resend the contact verification OTP for a specific channel.
+   * Org must be in unverified status and the flow must have been initiated.
+   */
+  async resendContactOtp(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { org_id, channel } = req.body as { org_id: string; channel: 'phone' | 'email' };
+      const result = await OrgApplicationService.resendContactOtp(org_id, channel);
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

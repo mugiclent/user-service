@@ -216,9 +216,12 @@ export interface OrgListItemDto {
   org_type: OrgType;
   status: OrgStatus;
   logo_path: string | null;
+  contact_first_name: string;
+  contact_last_name: string;
   contact_email: string;
   contact_phone: string;
   parent_org_id: string | null;
+  cooperative_approved_at: Date | null;
   approved_at: Date | null;
   created_at: Date;
 }
@@ -230,9 +233,12 @@ export const serializeOrgForList = (org: Org): OrgListItemDto => ({
   org_type: org.org_type,
   status: org.status,
   logo_path: org.logo_path,
+  contact_first_name: org.contact_first_name,
+  contact_last_name: org.contact_last_name,
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
   parent_org_id: org.parent_org_id,
+  cooperative_approved_at: org.cooperative_approved_at,
   approved_at: org.approved_at,
   created_at: org.created_at,
 });
@@ -243,6 +249,8 @@ export const serializeOrgCreated = (org: Org): Record<string, unknown> => ({
   slug: org.slug,
   org_type: org.org_type,
   status: org.status,
+  contact_first_name: org.contact_first_name,
+  contact_last_name: org.contact_last_name,
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
   parent_org_id: org.parent_org_id,
@@ -264,6 +272,8 @@ export const serializeOrgFull = (
   org_type: org.org_type,
   status: org.status,
   logo_path: org.logo_path,
+  contact_first_name: org.contact_first_name,
+  contact_last_name: org.contact_last_name,
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
   address: org.address,
@@ -271,7 +281,8 @@ export const serializeOrgFull = (
   license_number: org.license_number,
   parent_org_id: org.parent_org_id,
   parent_org: org.parent_org,
-  ...(isAdmin ? { child_orgs: org.child_orgs, approved_by: org.approved_by } : {}),
+  cooperative_approved_at: org.cooperative_approved_at,
+  ...(isAdmin ? { child_orgs: org.child_orgs, approved_by: org.approved_by, cooperative_approved_by: org.cooperative_approved_by } : {}),
   approved_at: org.approved_at,
   created_at: org.created_at,
   updated_at: org.updated_at,

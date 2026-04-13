@@ -84,6 +84,7 @@ vi.mock('../../src/models/index.js', () => ({
       create: mockInvitationCreate,
     },
     user: {
+      findUnique: vi.fn().mockResolvedValue(null),
       findMany: mockUserFindMany,
     },
   },
@@ -152,52 +153,79 @@ describe('OrgService.updateOrg', () => {
   });
 });
 
-// ── approveChildOrg — no org_admin role found ─────────────────────────────────
+// ── cooperativeApprove ────────────────────────────────────────────────────────
 
-describe('OrgService.approveChildOrg — no org_admin role in DB', () => {
+const coopMemberOrg = {
+  ...baseOrg,
+  org_type: 'coop_member',
+  parent_org_id: 'coop-1',
+  status: 'pending',
+  cooperative_approved_at: null,
+};
+
+const coopAdminUser = {
+  id: 'coop-admin-1',
+  role_slugs: ['org-admin'],
+  org_id: 'coop-1',
+  rules: [{ action: 'manage', subject: 'Org', conditions: { id: 'coop-1' } }],
+};
+
+describe('OrgService.cooperativeApprove', () => {
   beforeEach(() => {
-    mockFindUnique.mockResolvedValue({ ...baseOrg, status: 'pending', org_type: 'company', cooperative_approved_at: null });
-    mockUpdate.mockResolvedValue({ ...baseOrg, status: 'active', parent_org: null, child_orgs: [] });
-    mockRoleFindFirst.mockResolvedValue(null); // no org_admin role
+    mockFindUnique
+      .mockResolvedValueOnce(coopMemberOrg)          // org lookup
+      .mockResolvedValueOnce({ name: 'Test Coop' }); // parentCoop name lookup
+    mockUpdate.mockResolvedValue({ ...coopMemberOrg, cooperative_approved_at: new Date(), parent_org: null, child_orgs: [] });
+    mockUserFindMany.mockResolvedValue([]); // no platform admins to notify
   });
 
-  it('publishes audit approve event', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+  it('publishes audit cooperative_approve event', async () => {
+    await OrgService.cooperativeApprove(coopAdminUser as never, 'org-1');
     expect(publishAudit).toHaveBeenCalledWith(
-      expect.objectContaining({ action: 'approve', resource: 'Org', resource_id: 'org-1' }),
+      expect.objectContaining({ action: 'cooperative_approve', resource: 'Org', resource_id: 'org-1' }),
     );
   });
 
-  it('publishes exactly 1 audit event and no notifications when org_admin role missing', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+  it('publishes exactly 1 audit event and no direct SMS/mail (notifications go via notifyUser)', async () => {
+    await OrgService.cooperativeApprove(coopAdminUser as never, 'org-1');
     expect(publishAudit).toHaveBeenCalledTimes(1);
     expect(publishSms).not.toHaveBeenCalled();
     expect(publishMail).not.toHaveBeenCalled();
   });
 });
 
-// ── approveChildOrg — org_approved notifications ──────────────────────────────
+// ── updateOrg — org_approved notifications ────────────────────────────────────
 
-describe('OrgService.approveChildOrg — org_approved notifications', () => {
-  const approvedOrg = {
+describe('OrgService.updateOrg — org_approved notifications', () => {
+  const pendingOrg = {
     ...baseOrg,
-    status: 'active',
+    org_type: 'company',
+    status: 'pending',
     contact_email: 'ops@acme.com',
     contact_phone: '+250780000010',
-    name: 'Acme Bus',
+    contact_first_name: 'Jane',
+    contact_last_name: 'Doe',
+    cooperative_approved_at: null,
+  };
+  const activeOrg = {
+    ...pendingOrg,
+    status: 'active',
     parent_org: null,
     child_orgs: [],
   };
 
   beforeEach(() => {
-    mockFindUnique.mockResolvedValue({ ...baseOrg, status: 'pending', org_type: 'company', cooperative_approved_at: null });
-    mockUpdate.mockResolvedValue(approvedOrg);
+    mockFindUnique
+      .mockResolvedValueOnce(pendingOrg)  // updateOrg existence check
+      .mockResolvedValue(activeOrg);      // withRelations result after update
+    mockUpdate.mockResolvedValue(activeOrg);
     mockRoleFindFirst.mockResolvedValue({ id: 'role-org-admin', slug: 'org-admin' });
     mockInvitationCreate.mockResolvedValue({});
   });
 
   it('publishes org_approved.sms to the contact phone', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+    await OrgService.updateOrg(adminUser as never, 'org-1', { status: 'active' });
+    await flushImmediate();
     expect(publishSms).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'org_approved.sms',
@@ -209,7 +237,8 @@ describe('OrgService.approveChildOrg — org_approved notifications', () => {
   });
 
   it('publishes org_approved.mail to the contact email', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+    await OrgService.updateOrg(adminUser as never, 'org-1', { status: 'active' });
+    await flushImmediate();
     expect(publishMail).toHaveBeenCalledWith(
       expect.objectContaining({
         type: 'org_approved.mail',
@@ -221,13 +250,15 @@ describe('OrgService.approveChildOrg — org_approved notifications', () => {
   });
 
   it('invite_link uses the correct base URL', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+    await OrgService.updateOrg(adminUser as never, 'org-1', { status: 'active' });
+    await flushImmediate();
     const smsCall = publishSms.mock.calls[0][0] as { invite_link: string };
     expect(smsCall.invite_link).toMatch(/^https:\/\/app\.katisha\.com/);
   });
 
   it('creates an invitation record for the org contact', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+    await OrgService.updateOrg(adminUser as never, 'org-1', { status: 'active' });
+    await flushImmediate();
     expect(mockInvitationCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -240,7 +271,8 @@ describe('OrgService.approveChildOrg — org_approved notifications', () => {
   });
 
   it('publishes audit approve + exactly 1 SMS + 1 mail', async () => {
-    await OrgService.approveChildOrg(adminUser as never, 'org-1');
+    await OrgService.updateOrg(adminUser as never, 'org-1', { status: 'active' });
+    await flushImmediate();
     expect(publishAudit).toHaveBeenCalledTimes(1);
     expect(publishSms).toHaveBeenCalledTimes(1);
     expect(publishMail).toHaveBeenCalledTimes(1);

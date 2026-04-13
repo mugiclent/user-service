@@ -5,6 +5,7 @@ import { getRedisClient } from '../loaders/redis.js';
 import { slugify } from '../utils/slugify.js';
 import { generateRawToken, hashToken } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
+import type { Locale, NotifiableUser } from '../utils/publishers.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
 import {
@@ -12,7 +13,80 @@ import {
   serializeOrgCreated,
   serializeOrgFull,
 } from '../models/serializers.js';
-import { buildAbilityFromRules } from '../utils/ability.js';
+import { buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
+
+// ---------------------------------------------------------------------------
+// Helpers — cooperative notification recipients
+// ---------------------------------------------------------------------------
+
+const COOP_NOTIFICATION_PATTERNS = [
+  '*:*:org',
+  'Notification:*:org',
+  '*:receive:org',
+  'Notification:receive:org',
+];
+
+const getCoopNotificationRecipients = (coopOrgId: string) =>
+  prisma.user.findMany({
+    where: {
+      org_id: coopOrgId,
+      status: 'active',
+      deleted_at: null,
+      OR: [
+        {
+          user_roles: {
+            some: {
+              role: {
+                role_grants: {
+                  some: { pattern: { in: COOP_NOTIFICATION_PATTERNS } },
+                },
+              },
+            },
+          },
+        },
+        {
+          user_grants: {
+            some: { pattern: { in: COOP_NOTIFICATION_PATTERNS } },
+          },
+        },
+      ],
+    },
+    select: { email: true, phone_number: true, fcm_token: true, notif_channel: true, locale: true },
+  });
+
+const PLATFORM_NOTIFICATION_PATTERNS = [
+  '*:*:platform',
+  'Notification:*:platform',
+  '*:receive:platform',
+  'Notification:receive:platform',
+];
+
+const getPlatformNotificationRecipients = () =>
+  prisma.user.findMany({
+    where: {
+      status: 'active',
+      deleted_at: null,
+      OR: [
+        {
+          user_roles: {
+            some: {
+              role: {
+                role_grants: {
+                  some: { pattern: { in: PLATFORM_NOTIFICATION_PATTERNS } },
+                },
+              },
+            },
+          },
+        },
+        {
+          user_grants: {
+            some: { pattern: { in: PLATFORM_NOTIFICATION_PATTERNS } },
+          },
+        },
+      ],
+    },
+    select: { email: true, phone_number: true, fcm_token: true, notif_channel: true, locale: true },
+  });
 
 // 15-minute blacklist window (matches access token TTL)
 const BLACKLIST_TTL_SECONDS = 900;
@@ -34,6 +108,8 @@ export const OrgService = {
     data: {
       name: string;
       org_type: string;
+      contact_first_name: string;
+      contact_last_name: string;
       contact_email: string;
       contact_phone: string;
       address?: string;
@@ -43,8 +119,16 @@ export const OrgService = {
     },
   ): Promise<Record<string, unknown>> {
     const slug = slugify(data.name);
-    const existing = await prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] } });
+    const [existing, phoneConflict, emailConflict] = await Promise.all([
+      prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] }, select: { id: true } }),
+      prisma.user.findUnique({ where: { phone_number: data.contact_phone }, select: { id: true } }),
+      data.contact_email
+        ? prisma.user.findUnique({ where: { email: data.contact_email }, select: { id: true } })
+        : null,
+    ]);
     if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
+    if (phoneConflict) throw new AppError('CONTACT_PHONE_ALREADY_REGISTERED', 409);
+    if (emailConflict) throw new AppError('CONTACT_EMAIL_ALREADY_REGISTERED', 409);
 
     let org;
     try {
@@ -53,6 +137,8 @@ export const OrgService = {
           name: data.name,
           slug,
           org_type: data.org_type as 'company' | 'cooperative',
+          contact_first_name: data.contact_first_name,
+          contact_last_name: data.contact_last_name,
           contact_email: data.contact_email,
           contact_phone: data.contact_phone,
           address: data.address ?? null,
@@ -82,7 +168,7 @@ export const OrgService = {
     query: { page?: number; limit?: number; status?: string; org_type?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const admin = ability.can('manage', 'all');
+    const admin = getScopeFor(ability, 'read', 'Org') === 'platform';
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 20));
@@ -91,8 +177,18 @@ export const OrgService = {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = { deleted_at: null };
     if (!admin) {
-      // Non-admin staff can only see their own org (scope by conditions)
-      if (requestingUser.org_id) where['id'] = requestingUser.org_id;
+      if (requestingUser.org_id) {
+        const canApprove = ability.can('approve', 'Org');
+        if (canApprove) {
+          // Cooperative admins can see their own org + their coop_members
+          where['OR'] = [
+            { id: requestingUser.org_id },
+            { parent_org_id: requestingUser.org_id },
+          ];
+        } else {
+          where['id'] = requestingUser.org_id;
+        }
+      }
     }
     if (query.status) where['status'] = query.status;
     if (query.org_type) where['org_type'] = query.org_type;
@@ -124,7 +220,7 @@ export const OrgService = {
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
     const ability = buildAbilityFromRules(requestingUser.rules);
-    return serializeOrgFull(org, ability.can('manage', 'all'));
+    return serializeOrgFull(org, getScopeFor(ability, 'read', 'Org') === 'platform');
   },
 
   // ---------------------------------------------------------------------------
@@ -136,7 +232,7 @@ export const OrgService = {
     orgId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const admin = ability.can('manage', 'all');
+    const admin = getScopeFor(ability, 'read', 'Org') === 'platform';
 
     const org = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
@@ -159,6 +255,8 @@ export const OrgService = {
     orgId: string,
     data: {
       name?: string;
+      contact_first_name?: string;
+      contact_last_name?: string;
       contact_email?: string;
       contact_phone?: string;
       address?: string;
@@ -168,7 +266,7 @@ export const OrgService = {
     },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const admin = ability.can('manage', 'all');
+    const admin = getScopeFor(ability, 'update', 'Org') === 'platform';
     const orgAdmin = !admin && ability.can('update', 'Org') && !!requestingUser.org_id;
 
     if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
@@ -179,7 +277,7 @@ export const OrgService = {
 
     const existing = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
-      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true },
+      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true, org_type: true, cooperative_approved_at: true },
     });
     if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
     const oldLogoPath = existing.logo_path;
@@ -189,12 +287,19 @@ export const OrgService = {
       updateData['name'] = data.name;
       updateData['slug'] = slugify(data.name);
     }
+    if (data.contact_first_name !== undefined) updateData['contact_first_name'] = data.contact_first_name;
+    if (data.contact_last_name !== undefined) updateData['contact_last_name'] = data.contact_last_name;
     if (data.contact_email !== undefined) updateData['contact_email'] = data.contact_email;
     if (data.contact_phone !== undefined) updateData['contact_phone'] = data.contact_phone;
     if (data.address !== undefined) updateData['address'] = data.address;
     if (data.logo_path !== undefined) updateData['logo_path'] = data.logo_path;
 
     if (data.status !== undefined && admin) {
+      // coop_member requires cooperative sign-off before admin can activate
+      if (data.status === 'active' && existing.org_type === 'coop_member' && !existing.cooperative_approved_at) {
+        throw new AppError('COOPERATIVE_APPROVAL_REQUIRED', 400);
+      }
+
       updateData['status'] = data.status;
 
       if (data.status === 'active') {
@@ -211,6 +316,51 @@ export const OrgService = {
       data: updateData,
       ...withRelations,
     });
+
+    // On activation: create org-admin invitation and send approval notification
+    if (data.status === 'active' && admin) {
+      const orgAdminRole = await prisma.role.findFirst({ where: { slug: 'org-admin', org_id: null } });
+      if (orgAdminRole) {
+        const rawToken = generateRawToken();
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        await prisma.invitation.create({
+          data: {
+            email: org.contact_email,
+            phone_number: org.contact_phone,
+            first_name: org.contact_first_name,
+            last_name: org.contact_last_name,
+            role_id: orgAdminRole.id,
+            org_id: org.id,
+            invited_by: requestingUser.id,
+            token_hash: hashToken(rawToken),
+            expires_at: expiresAt,
+          },
+        });
+
+        const inviteLink = `${config.staffAppUrl}/i?t=${rawToken}`;
+        const expiresInSeconds = 7 * 24 * 60 * 60;
+
+        if (org.org_type === 'coop_member') {
+          // Notify the member contact
+          publishSms({ type: 'org.member_approved', phone_number: org.contact_phone, org_name: org.name, invite_link: inviteLink, expires_in_seconds: expiresInSeconds });
+          publishMail({ type: 'org.member_approved', email: org.contact_email, first_name: org.contact_first_name, org_name: org.name, invite_link: inviteLink, expires_in_seconds: expiresInSeconds });
+
+          // Notify cooperative admins
+          if (org.parent_org_id) {
+            const coopRecipients = await getCoopNotificationRecipients(org.parent_org_id);
+            for (const r of coopRecipients) {
+              notifyUser(r as NotifiableUser, {
+                sms:  r.phone_number ? { type: 'org.member_approved_notify_coop', phone_number: r.phone_number, org_name: org.name, locale: r.locale as Locale } : undefined,
+                mail: r.email ? { type: 'org.member_approved_notify_coop', email: r.email, org_name: org.name, locale: r.locale as Locale } : undefined,
+              });
+            }
+          }
+        } else {
+          publishSms({ type: 'org_approved.sms', phone_number: org.contact_phone, org_name: org.name, invite_link: inviteLink, expires_in_seconds: expiresInSeconds });
+          publishMail({ type: 'org_approved.mail', email: org.contact_email, org_name: org.name, invite_link: inviteLink, expires_in_seconds: expiresInSeconds });
+        }
+      }
+    }
 
     // After DB commit: delete old logo from S3 if logo_path changed
     if ('logo_path' in data && oldLogoPath) {
@@ -272,89 +422,76 @@ export const OrgService = {
   },
 
   // ---------------------------------------------------------------------------
-  // POST /organizations/:id/approve — two-step cooperative approval
+  // POST /organizations/:id/cooperative-approve
+  // Cooperative staff approves a pending coop_member application (step 1 of 2)
   // ---------------------------------------------------------------------------
 
-  async approveChildOrg(
+  async cooperativeApprove(
     requestingUser: AuthenticatedUser,
     orgId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const admin = ability.can('manage', 'all');
-    const orgAdmin = !admin && ability.can('approve', 'Org') && !!requestingUser.org_id;
+    if (!ability.can('approve', 'Org') || !requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
 
     const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
-
+    if (org.org_type !== 'coop_member') throw new AppError('NOT_COOP_MEMBER', 400);
+    if (org.parent_org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
     if (org.status !== 'pending') throw new AppError('ORG_NOT_PENDING', 400);
-
-    // Step 1: parent cooperative org_admin stamps cooperative_approved_at
-    if (orgAdmin && !admin) {
-      if (!requestingUser.org_id || org.parent_org_id !== requestingUser.org_id) {
-        throw new AppError('FORBIDDEN', 403);
-      }
-      const updated = await prisma.org.update({
-        where: { id: orgId },
-        data: { cooperative_approved_at: new Date() },
-        ...withRelations,
-      });
-
-      // Notify the child org's contact that step 1 of approval is done
-      publishSms({ type: 'org.cooperative_approved', phone_number: updated.contact_phone, org_name: updated.name });
-
-      return serializeOrgFull(updated, false);
-    }
-
-    // Step 2: katisha_admin fully approves (requires step 1 for cooperatives)
-    if (org.org_type === 'cooperative' && !org.cooperative_approved_at) {
-      throw new AppError('COOPERATIVE_APPROVAL_REQUIRED', 400);
-    }
+    if (org.cooperative_approved_at) throw new AppError('ALREADY_COOP_APPROVED', 409);
 
     const updated = await prisma.org.update({
       where: { id: orgId },
-      data: { status: 'active', approved_by: requestingUser.id, approved_at: new Date() },
+      data: { cooperative_approved_at: new Date(), cooperative_approved_by: requestingUser.id },
       ...withRelations,
     });
 
-    // Create an invitation for the org admin account using the org contact details.
-    // The contact email/phone belongs to the person who will manage this org.
-    const orgAdminRole = await prisma.role.findFirst({ where: { slug: 'org-admin', org_id: null } });
-    if (orgAdminRole) {
-      const rawToken = generateRawToken();
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-      await prisma.invitation.create({
-        data: {
-          email: updated.contact_email,
-          phone_number: updated.contact_phone,
-          first_name: updated.name,
-          last_name: 'Admin',
-          role_id: orgAdminRole.id,
-          org_id: updated.id,
-          invited_by: requestingUser.id,
-          token_hash: hashToken(rawToken),
-          expires_at: expiresAt,
-        },
-      });
-
-      const inviteLink = `${config.staffAppUrl}/accept-invite?token=${rawToken}`;
-      const expiresInSeconds = 7 * 24 * 60 * 60;
-      publishSms({
-        type: 'org_approved.sms',
-        phone_number: updated.contact_phone,
-        org_name: updated.name,
-        invite_link: inviteLink,
-        expires_in_seconds: expiresInSeconds,
-      });
-      publishMail({
-        type: 'org_approved.mail',
-        email: updated.contact_email,
-        org_name: updated.name,
-        invite_link: inviteLink,
-        expires_in_seconds: expiresInSeconds,
+    // Notify Katisha platform admins that this member is ready for final review
+    const parentCoop = await prisma.org.findUnique({ where: { id: requestingUser.org_id }, select: { name: true } });
+    const coopName = parentCoop?.name ?? '';
+    const platformRecipients = await getPlatformNotificationRecipients();
+    for (const r of platformRecipients) {
+      notifyUser(r as NotifiableUser, {
+        sms:  r.phone_number ? { type: 'org.member_coop_approved', phone_number: r.phone_number, org_name: org.name, coop_name: coopName, locale: r.locale as Locale } : undefined,
+        mail: r.email ? { type: 'org.member_coop_approved', email: r.email, org_name: org.name, coop_name: coopName, contact_email: org.contact_email, locale: r.locale as Locale } : undefined,
       });
     }
 
-    publishAudit({ actor_id: requestingUser.id, action: 'approve', resource: 'Org', resource_id: orgId });
-    return serializeOrgFull(updated, true);
+    publishAudit({ actor_id: requestingUser.id, action: 'cooperative_approve', resource: 'Org', resource_id: orgId });
+    return serializeOrgFull(updated, false);
+  },
+
+  // ---------------------------------------------------------------------------
+  // POST /organizations/:id/cooperative-reject
+  // Cooperative staff rejects a pending coop_member application
+  // ---------------------------------------------------------------------------
+
+  async cooperativeReject(
+    requestingUser: AuthenticatedUser,
+    orgId: string,
+    reason?: string,
+  ): Promise<void> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    if (!ability.can('approve', 'Org') || !requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+
+    const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null } });
+    if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+    if (org.org_type !== 'coop_member') throw new AppError('NOT_COOP_MEMBER', 400);
+    if (org.parent_org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+    if (org.status !== 'pending') throw new AppError('ORG_NOT_PENDING', 400);
+
+    const parentCoop = await prisma.org.findUnique({ where: { id: requestingUser.org_id }, select: { name: true } });
+    const coopName = parentCoop?.name ?? '';
+
+    await prisma.org.update({
+      where: { id: orgId },
+      data: { status: 'rejected', rejection_reason: reason ?? null },
+    });
+
+    // Notify the coop_member contact
+    publishSms({ type: 'org.member_coop_rejected', phone_number: org.contact_phone, org_name: org.name, coop_name: coopName, reason });
+    publishMail({ type: 'org.member_coop_rejected', email: org.contact_email, first_name: org.contact_first_name, org_name: org.name, coop_name: coopName, reason });
+
+    publishAudit({ actor_id: requestingUser.id, action: 'cooperative_reject', resource: 'Org', resource_id: orgId });
   },
 };

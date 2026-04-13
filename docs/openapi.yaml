@@ -40,19 +40,45 @@ info:
     | `driver` | `user:read:own`, `user:update:own` |
     | `passenger` | `user:read:own`, `user:update:own` |
 
+    ## Organization Types
+
+    | `org_type` | Description | Parent required |
+    |---|---|---|
+    | `company` | Independent transport company | No |
+    | `cooperative` | Collective transport organization | No |
+    | `coop_member` | Individual owner-operator under a cooperative | Yes (`parent_org_id` → active cooperative) |
+
+    A `coop_member` belongs to exactly one cooperative. The `parent_org_id` field is only
+    meaningful for `coop_member` orgs. `company` and `cooperative` may not have a parent.
+
     ## Organization Application Flow (public, no auth)
 
-    New organizations apply through a 3-step self-service flow:
+    New organizations apply through a self-service flow:
 
     1. **Get presigned URLs** — `GET /organizations/apply/documents/presigned-url` twice
        (once per document type) and upload files directly to SeaweedFS.
     2. **Submit application** — `POST /organizations/apply` with document paths.
-       Creates the org in `pending` status and sends an OTP to `contact_email`.
-    3. **Verify contact** — `POST /organizations/verify-contact` with the OTP.
-       Sets `contact_email_verified_at` and triggers admin review notification.
+       Creates the org in `unverified` status and sends **separate** 6-digit OTPs to both
+       `contact_phone` (SMS) and `contact_email` (email). For `coop_member`, also validates
+       that `parent_org_id` points to an active `cooperative`.
+    3. **Verify contact** — `POST /organizations/verify-contact` with the OTP and `channel`
+       (`"phone"` or `"email"`). Verifying either channel promotes the org to `pending` and
+       triggers notifications. For `coop_member`, the parent cooperative admins are notified
+       in addition to Katisha platform admins.
+    4. **(Optional) Resend OTP** — `POST /organizations/apply/resend-contact-otp`.
 
-    Platform admins then use `POST /organizations/:id/approve` or `PATCH /organizations/:id`
-    (with `status: rejected`) to act on the application.
+    ## Approval Flow by Org Type
+
+    **`company` / `cooperative`** — single step:
+    - Katisha admin: `PATCH /organizations/:id` `{ "status": "active" }` → creates invitation, sends `org_approved` notification
+
+    **`coop_member`** — two steps:
+    - Step 1 (cooperative): `POST /organizations/:id/cooperative-approve` → sets `cooperative_approved_at`, notifies Katisha admins
+    - Step 2 (Katisha admin): `PATCH /organizations/:id` `{ "status": "active" }` → creates invitation, sends `org.member_approved` notification
+    - Cooperative may also reject at step 1: `POST /organizations/:id/cooperative-reject`
+
+    **Rejection (any type):**
+    - Katisha admin: `PATCH /organizations/:id` `{ "status": "rejected", "rejection_reason": "..." }` → sends `org.rejected` notification
 
     ## Presigned URL Upload Pattern
 
@@ -125,7 +151,7 @@ tags:
   - name: Organization Applications
     description: |
       Public self-service flow for new organizations to apply for Katisha membership.
-      No authentication required. Three ordered steps: upload documents → submit application → verify contact email.
+      No authentication required. Four ordered steps: upload documents → submit application → verify contact (phone or email) → (optional) resend OTP.
   - name: Users
     description: |
       User profiles, avatar uploads, staff invitations, 2FA, login channel management, and user administration.
@@ -430,51 +456,62 @@ components:
       type: object
       description: Response body for `POST /organizations`. Lighter shape — logo and approval fields are not set yet.
       properties:
-        id:            { type: string, format: uuid }
-        name:          { type: string }
-        slug:          { type: string, description: URL-safe version of name, auto-generated. }
-        org_type:      { type: string, enum: [company, cooperative] }
-        status:        { type: string, enum: [pending, active, suspended, rejected] }
-        contact_email: { type: string, format: email }
-        contact_phone: { type: string }
-        parent_org_id: { type: string, format: uuid, nullable: true }
-        created_at:    { type: string, format: date-time }
+        id:                   { type: string, format: uuid }
+        name:                 { type: string }
+        slug:                 { type: string, description: URL-safe version of name, auto-generated. }
+        org_type:             { type: string, enum: [company, cooperative, coop_member] }
+        status:               { type: string, enum: [unverified, pending, active, suspended, rejected] }
+        contact_first_name:   { type: string, example: Jane }
+        contact_last_name:    { type: string, example: Doe }
+        contact_email:        { type: string, format: email }
+        contact_phone:        { type: string }
+        parent_org_id:        { type: string, format: uuid, nullable: true }
+        created_at:           { type: string, format: date-time }
 
     OrgListItem:
       type: object
       description: Compact org row returned by `GET /organizations`.
       properties:
-        id:             { type: string, format: uuid }
-        name:           { type: string }
-        slug:           { type: string }
-        org_type:       { type: string, enum: [company, cooperative] }
-        status:         { type: string, enum: [pending, active, suspended, rejected] }
-        logo_path:      { type: string, nullable: true }
-        contact_email:  { type: string, format: email }
-        contact_phone:  { type: string }
-        parent_org_id:  { type: string, format: uuid, nullable: true }
-        approved_at:    { type: string, format: date-time, nullable: true }
-        created_at:     { type: string, format: date-time }
+        id:                          { type: string, format: uuid }
+        name:                        { type: string }
+        slug:                        { type: string }
+        org_type:                    { type: string, enum: [company, cooperative, coop_member] }
+        status:                      { type: string, enum: [unverified, pending, active, suspended, rejected] }
+        logo_path:                   { type: string, nullable: true }
+        contact_first_name:          { type: string, example: Jane }
+        contact_last_name:           { type: string, example: Doe }
+        contact_email:               { type: string, format: email }
+        contact_phone:               { type: string }
+        contact_phone_verified_at:   { type: string, format: date-time, nullable: true }
+        contact_email_verified_at:   { type: string, format: date-time, nullable: true }
+        parent_org_id:               { type: string, format: uuid, nullable: true }
+        cooperative_approved_at:     { type: string, format: date-time, nullable: true, description: 'Set when the parent cooperative pre-approves a coop_member.' }
+        approved_at:                 { type: string, format: date-time, nullable: true }
+        created_at:                  { type: string, format: date-time }
 
     OrgFull:
       type: object
       description: |
         Full organization detail. Returned by `GET /organizations/:id`, `GET /organizations/me`,
-        `PATCH /organizations/:id`, and `POST /organizations/:id/approve`.
+        `PATCH /organizations/:id`, `POST /organizations/:id/cooperative-approve`.
         Some fields are omitted for non-admin callers (see field descriptions).
       properties:
-        id:             { type: string, format: uuid }
-        name:           { type: string }
-        slug:           { type: string }
-        org_type:       { type: string, enum: [company, cooperative] }
-        status:         { type: string, enum: [pending, active, suspended, rejected] }
-        logo_path:      { type: string, nullable: true }
-        contact_email:  { type: string, format: email }
-        contact_phone:  { type: string }
-        address:        { type: string, nullable: true }
-        tin:            { type: string, nullable: true }
-        license_number: { type: string, nullable: true }
-        parent_org_id:  { type: string, format: uuid, nullable: true }
+        id:                          { type: string, format: uuid }
+        name:                        { type: string }
+        slug:                        { type: string }
+        org_type:                    { type: string, enum: [company, cooperative, coop_member] }
+        status:                      { type: string, enum: [unverified, pending, active, suspended, rejected] }
+        logo_path:                   { type: string, nullable: true }
+        contact_first_name:          { type: string, example: Jane }
+        contact_last_name:           { type: string, example: Doe }
+        contact_email:               { type: string, format: email }
+        contact_phone:               { type: string }
+        contact_phone_verified_at:   { type: string, format: date-time, nullable: true, description: 'Set when contact verifies via phone OTP.' }
+        contact_email_verified_at:   { type: string, format: date-time, nullable: true, description: 'Set when contact verifies via email OTP.' }
+        address:                     { type: string, nullable: true }
+        tin:                         { type: string, nullable: true }
+        license_number:              { type: string, nullable: true }
+        parent_org_id:               { type: string, format: uuid, nullable: true }
         parent_org:
           nullable: true
           type: object
@@ -493,11 +530,21 @@ components:
               name:   { type: string }
               slug:   { type: string }
               status: { type: string }
+        cooperative_approved_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Set when a cooperative pre-approves a coop_member (step 1 of 2). Always null for company/cooperative orgs.
         approved_by:
           type: string
           format: uuid
           nullable: true
           description: Admin only — UUID of the platform-admin who ran the final approval.
+        cooperative_approved_by:
+          type: string
+          format: uuid
+          nullable: true
+          description: Admin only — UUID of the cooperative staff member who ran the cooperative pre-approval.
         approved_at:    { type: string, format: date-time, nullable: true }
         created_at:     { type: string, format: date-time }
         updated_at:     { type: string, format: date-time }
@@ -804,7 +851,14 @@ paths:
       tags: [Auth]
       summary: Validate an invite token (frontend pre-check)
       description: |
-        Called by the frontend when the accept-invite page loads (before showing the set-password form).
+        Called by the frontend when the invite page loads (before showing the set-password form).
+
+        The invite URL sent to users has the format:
+        ```
+        <APP_URL>/i?t=<raw_token>
+        ```
+        Extract the `t` query parameter and pass it here as `token`.
+
         Returns masked contact details so the user knows who the invite is for.
         Returns `404` if the token is invalid or already used, `410` if expired.
       security: []
@@ -813,7 +867,7 @@ paths:
           in: query
           required: true
           schema: { type: string }
-          description: Raw invite token from the URL
+          description: 'Raw invite token — the value of the `t` query parameter from the invite URL.'
       responses:
         '200':
           description: Token valid
@@ -1193,7 +1247,8 @@ paths:
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  ORGANIZATIONS                                                           ║
   # ║  Create and understand organizations before inviting users into them.    ║
-  # ║  Order: create → list/read → update → approve → logo uploads            ║
+  # ║  Order: create → list/read → update → cooperative-approve/reject →      ║
+  # ║         logo uploads                                                    ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
 
   /organizations:
@@ -1214,16 +1269,18 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, org_type, contact_email, contact_phone, tin]
+              required: [name, org_type, contact_first_name, contact_last_name, contact_email, contact_phone, tin]
               properties:
-                name:           { type: string, maxLength: 200 }
-                org_type:       { type: string, enum: [company, cooperative] }
-                contact_email:  { type: string, format: email, maxLength: 255 }
-                contact_phone:  { type: string, description: 'E.164 format (e.g. +250788000001).' }
-                address:        { type: string, maxLength: 500 }
-                tin:            { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
-                license_number: { type: string, maxLength: 100 }
-                parent_org_id:  { type: string, format: uuid, description: Parent cooperative org for member companies. }
+                name:                 { type: string, maxLength: 200 }
+                org_type:             { type: string, enum: [company, cooperative, coop_member] }
+                contact_first_name:   { type: string, maxLength: 100, example: Jane }
+                contact_last_name:    { type: string, maxLength: 100, example: Doe }
+                contact_email:        { type: string, format: email, maxLength: 255 }
+                contact_phone:        { type: string, pattern: '^\+\d{7,15}$', description: 'E.164 format (e.g. +250788000001).' }
+                address:              { type: string, maxLength: 500 }
+                tin:                  { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
+                license_number:       { type: string, maxLength: 100 }
+                parent_org_id:        { type: string, format: uuid, description: 'Required when org_type is coop_member. Must point to an active cooperative.' }
       responses:
         '201':
           description: Organization created
@@ -1233,11 +1290,13 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '409':
-          description: Organization name already exists
+          description: |
+            Organization name already exists (`ORG_ALREADY_EXISTS`), or the contact
+            phone (`CONTACT_PHONE_ALREADY_REGISTERED`) or email (`CONTACT_EMAIL_ALREADY_REGISTERED`)
+            is already registered to a user account.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: ORG_ALREADY_EXISTS } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
     get:
@@ -1247,6 +1306,8 @@ paths:
         **Required permission:** `read:Org`
 
         Platform admins see all orgs. `org-admin` and `dispatcher` see only their own org.
+        Cooperative `org-admin` users with `approve:Org` permission also see their own org plus all
+        `coop_member` orgs that have `parent_org_id` matching their org.
       parameters:
         - in: query
           name: page
@@ -1256,10 +1317,10 @@ paths:
           schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
         - in: query
           name: status
-          schema: { type: string, enum: [pending, active, suspended, rejected] }
+          schema: { type: string, enum: [unverified, pending, active, suspended, rejected] }
         - in: query
           name: org_type
-          schema: { type: string, enum: [company, cooperative] }
+          schema: { type: string, enum: [company, cooperative, coop_member] }
       responses:
         '200':
           description: Paginated org list
@@ -1335,7 +1396,13 @@ paths:
         - `logo_path` — use `path` from the logo presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
         - `status: suspended` — blacklists all active access tokens for this org's users in Redis (15 min TTL). Sends `org.suspended` notifications directly to the org contact and fans out to all active org users via their `notif_channel` preference.
         - `status: rejected` — sends `org.rejected` notifications to the org contact.
-        - `status: active` — can be used by admins to directly approve without the two-step flow.
+        - `status: active` — final approval by platform admins. For `coop_member` orgs, the parent
+          cooperative must have pre-approved first (`cooperative_approved_at` must be set) — attempting
+          activation without it returns `400 COOPERATIVE_APPROVAL_REQUIRED`. On activation, creates an
+          `Invitation` for the org contact and sends the invite link (`<STAFF_APP_URL>/i?t=<token>`,
+          7-day expiry). Notification type varies by org_type: `company`/`cooperative` receive
+          `org_approved.sms`/`org_approved.mail`; `coop_member` receives `org.member_approved`
+          (with invite link) and the parent cooperative's admins are notified via `org.member_approved_notify_coop`.
       requestBody:
         required: true
         content:
@@ -1344,16 +1411,18 @@ paths:
               type: object
               minProperties: 1
               properties:
-                name:             { type: string, maxLength: 200 }
-                contact_email:    { type: string, format: email, maxLength: 255 }
-                contact_phone:    { type: string, maxLength: 20 }
-                address:          { type: string, maxLength: 500 }
-                logo_path:        { type: string, maxLength: 500, nullable: true, description: 'S3 path from logo presigned-url. null removes the logo.' }
+                name:                 { type: string, maxLength: 200 }
+                contact_first_name:   { type: string, maxLength: 100, example: Jane }
+                contact_last_name:    { type: string, maxLength: 100, example: Doe }
+                contact_email:        { type: string, format: email, maxLength: 255 }
+                contact_phone:        { type: string, pattern: '^\+\d{7,15}$', description: 'E.164 format (e.g. +250788000001).' }
+                address:              { type: string, maxLength: 500 }
+                logo_path:            { type: string, maxLength: 500, nullable: true, description: 'S3 path from logo presigned-url. null removes the logo.' }
                 status:
                   type: string
                   enum: [active, suspended, rejected]
                   description: Admin only. suspended triggers token blacklist and notifications.
-                rejection_reason: { type: string, maxLength: 1000, description: Admin only. Include when setting status to rejected. }
+                rejection_reason:     { type: string, maxLength: 1000, description: Admin only. Include when setting status to rejected. }
       responses:
         '200':
           description: Updated organization
@@ -1365,38 +1434,25 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
-  /organizations/{id}/approve:
+  /organizations/{id}/cooperative-approve:
     post:
       tags: [Organizations]
-      summary: Approve a pending organization (two-step)
+      summary: Cooperative pre-approval of a coop_member org
       description: |
-        Handles a **two-step approval** process. Behavior depends on the caller's role:
+        **Required permission:** `approve:Org`
+        → `org-admin` of the parent cooperative in practice.
 
-        ---
+        Pre-approves a `coop_member` org application before it reaches Katisha admins for final review.
 
-        **Step 1 — Cooperative pre-approval** (`org-admin` of the parent cooperative)
+        - The caller's `org_id` must match the target org's `parent_org_id`, otherwise `403`.
+        - The target org must be of type `coop_member` and in `pending` status.
+        - Sets `cooperative_approved_at` and `cooperative_approved_by` on the org record. Status remains `pending`.
+        - Notifies platform notification recipients (`Notification:receive:platform`) that the member
+          application has been pre-approved and is ready for final Katisha review.
+        - Sends `org.member_coop_approved` SMS + email to the coop_member org's contact.
 
-        Applies only to `cooperative` child orgs that require parent sign-off.
-        Sets `cooperative_approved_at` on the child org. Org status remains `pending`.
-        Sends an `org.cooperative_approved` SMS to the child org's contact phone.
-        The caller's `org_id` must match the child org's `parent_org_id`, otherwise `403`.
-
-        ---
-
-        **Step 2 — Final Katisha approval** (`platform-admin`)
-
-        Transitions the org from `pending` to `active`. Sets `approved_by` and `approved_at`.
-
-        For `cooperative` orgs, Step 1 must be completed first — attempting Step 2 without
-        `cooperative_approved_at` set returns `400 COOPERATIVE_APPROVAL_REQUIRED`.
-
-        On final approval:
-        - Creates an `Invitation` record for the org contact to register as `org-admin`.
-        - Sends `org_approved.sms` and `org_approved.mail` to the org contact with the invite link (7-day expiry).
-
-        ---
-
-        **Required permission:** `update:Org`
+        After this step, a Katisha admin must use `PATCH /organizations/:id` with `status: active`
+        to complete the final approval.
       parameters:
         - in: path
           name: id
@@ -1404,16 +1460,56 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
-          description: |
-            Step 1: Pre-approved (status still `pending`, `cooperative_approved_at` is set).
-            Step 2: Fully approved (status `active`, invite sent to org contact).
+          description: Pre-approved. `cooperative_approved_at` is set; status remains `pending`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrgFull' }
         '400':
           description: |
             Org is not in `pending` status (`ORG_NOT_PENDING`) or
-            cooperative pre-approval has not been completed (`COOPERATIVE_APPROVAL_REQUIRED`).
+            org type is not `coop_member` (`ORG_NOT_COOP_MEMBER`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /organizations/{id}/cooperative-reject:
+    post:
+      tags: [Organizations]
+      summary: Cooperative rejection of a coop_member org
+      description: |
+        **Required permission:** `approve:Org`
+        → `org-admin` of the parent cooperative in practice.
+
+        Rejects a `coop_member` org application on behalf of the parent cooperative.
+
+        - The caller's `org_id` must match the target org's `parent_org_id`, otherwise `403`.
+        - The target org must be of type `coop_member` and in `pending` status.
+        - Sets the org status to `rejected`.
+        - Sends `org.member_coop_rejected` SMS + email to the coop_member org's contact (includes
+          optional `reason`).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 1000, description: 'Optional rejection reason shown to the applicant.' }
+      responses:
+        '204':
+          description: Rejected. No response body.
+        '400':
+          description: |
+            Org is not in `pending` status (`ORG_NOT_PENDING`) or
+            org type is not `coop_member` (`ORG_NOT_COOP_MEMBER`).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1520,8 +1616,9 @@ paths:
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  ORGANIZATION APPLICATIONS                                               ║
-  # ║  Public 3-step flow. No auth required.                                  ║
-  # ║  Order: upload docs → submit application → verify contact email         ║
+  # ║  Public 4-step flow. No auth required.                                  ║
+  # ║  Order: upload docs → submit → verify contact (phone or email) →        ║
+  # ║         (optional) resend OTP                                            ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
 
   /organizations/apply/documents/presigned-url:
@@ -1598,15 +1695,20 @@ paths:
       description: |
         Public endpoint — no authentication required.
 
-        Creates an org record in `pending` status with the uploaded document paths and sends
-        a 6-digit OTP to `contact_email` for ownership verification.
+        Creates an org record in `unverified` status with the uploaded document paths and sends
+        **separate** 6-digit OTPs to both channels:
+        - **Phone OTP** — always sent via SMS to `contact_phone`
+        - **Email OTP** — sent via email to `contact_email`
+
+        Both OTPs are independent (different codes). The applicant only needs to verify **one**
+        channel via `POST /organizations/verify-contact` to advance the org to `pending` status.
 
         **Prerequisites:** upload both documents using `GET /organizations/apply/documents/presigned-url`
         and supply the returned `path` values as `business_certificate_path` and `rep_id_path`.
 
         No admin review is triggered until `POST /organizations/verify-contact` succeeds.
-        The OTP expires after **10 minutes**. If it expires, the application must be resubmitted
-        (duplicate name check will return `409` — applicant should contact support).
+        Unverified orgs are automatically purged by a cleanup job after a grace period.
+        If a duplicate-name conflict arises after purge, the applicant should contact support.
       security: []
       requestBody:
         required: true
@@ -1614,16 +1716,30 @@ paths:
           application/json:
             schema:
               type: object
-              required: [name, org_type, contact_email, contact_phone, tin, business_certificate_path, rep_id_path]
+              required: [name, org_type, contact_first_name, contact_last_name, contact_email, contact_phone, tin, business_certificate_path, rep_id_path]
               properties:
-                name:           { type: string, maxLength: 200 }
-                org_type:       { type: string, enum: [company, cooperative] }
-                contact_email:  { type: string, format: email, maxLength: 255, description: A 6-digit OTP will be emailed here for verification. }
-                contact_phone:  { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
-                address:        { type: string, maxLength: 500 }
-                tin:            { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
-                license_number: { type: string, maxLength: 100 }
-                parent_org_id:  { type: string, format: uuid, description: ID of the parent cooperative org, if applicable. }
+                name:                 { type: string, maxLength: 200 }
+                org_type:
+                  type: string
+                  enum: [company, cooperative, coop_member]
+                  description: |
+                    Type of organization. `coop_member` represents an individual driver-owner or
+                    fleet manager operating under a cooperative. `parent_org_id` is required when
+                    `org_type` is `coop_member`.
+                contact_first_name:   { type: string, maxLength: 100, example: Jane, description: 'Contact representative first name.' }
+                contact_last_name:    { type: string, maxLength: 100, example: Doe, description: 'Contact representative last name.' }
+                contact_email:        { type: string, format: email, maxLength: 255, description: 'Required. A 6-digit OTP is sent here.' }
+                contact_phone:        { type: string, pattern: '^\+\d{7,15}$', description: 'Required. E.164 format. A separate 6-digit OTP is sent here via SMS.' }
+                address:              { type: string, maxLength: 500 }
+                tin:                  { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
+                license_number:       { type: string, maxLength: 100 }
+                parent_org_id:
+                  type: string
+                  format: uuid
+                  description: |
+                    **Required when `org_type` is `coop_member`.** Must be the UUID of an active
+                    `cooperative` org. The coop_member will appear in that cooperative's pending
+                    member list for pre-approval before reaching Katisha admins.
                 business_certificate_path:
                   type: string
                   maxLength: 500
@@ -1634,7 +1750,7 @@ paths:
                   description: S3 path from GET /organizations/apply/documents/presigned-url with doc_type=rep_id.
       responses:
         '202':
-          description: Application received — OTP sent to contact_email
+          description: Application received — OTPs sent to contact_phone (SMS) and contact_email
           content:
             application/json:
               schema:
@@ -1643,34 +1759,47 @@ paths:
                   org_id:
                     type: string
                     format: uuid
-                    description: Pass to POST /organizations/verify-contact.
+                    description: 'Pass to POST /organizations/verify-contact along with the OTP and channel.'
                   message:
                     type: string
-                    example: 'Application received. Please check your email for a verification code.'
+                    example: 'Application received. Verification codes have been sent to your phone and email.'
         '409':
-          description: Organization name or slug already registered
+          description: |
+            Organization name or slug already registered (`ORG_ALREADY_EXISTS`), or the contact
+            phone (`CONTACT_PHONE_ALREADY_REGISTERED`) or email (`CONTACT_EMAIL_ALREADY_REGISTERED`)
+            is already registered to a user account. These are checked upfront so the applicant
+            does not discover the conflict only when accepting the invitation later.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: ORG_ALREADY_EXISTS } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /organizations/verify-contact:
     post:
       tags: [Organization Applications]
-      summary: 'Step 3 — Verify org contact email with OTP'
+      summary: 'Step 3 — Verify org contact (phone or email) with OTP'
       description: |
         Public endpoint — no authentication required.
 
-        Verifies the 6-digit OTP emailed during `POST /organizations/apply`.
+        Verifies the 6-digit OTP sent to the chosen `channel` during `POST /organizations/apply`.
+        Either channel (`phone` or `email`) is sufficient — verifying one is enough to advance.
 
         On success:
-        - Sets `contact_email_verified_at` on the org record.
+        - Sets `contact_phone_verified_at` or `contact_email_verified_at` on the org record.
+        - Promotes the org from `unverified` → `pending` status.
         - Sends a confirmation SMS + email to the applicant.
-        - Notifies all active platform admins (users with `platform-admin` role) via email to trigger manual review.
+        - Notifies platform notification recipients (users with `Notification:receive:platform`
+          permission) via their preferred channels (`notif_channel`) to trigger manual review.
+        - For `coop_member` orgs, also notifies the parent cooperative's admins (users with
+          `Notification:receive:org` permission in that cooperative) that a member application
+          is awaiting their pre-approval.
 
-        Katisha admins then use `POST /organizations/:id/approve` or
-        `PATCH /organizations/:id` with `status: rejected` to finalize the application.
+        **Next steps by org_type:**
+        - `company` / `cooperative`: Katisha admins finalize via `PATCH /organizations/:id`
+          (`status: active` or `status: rejected`).
+        - `coop_member`: cooperative admins pre-approve via `POST /organizations/:id/cooperative-approve`
+          (or reject via `POST /organizations/:id/cooperative-reject`), then Katisha admins
+          finalize via `PATCH /organizations/:id` with `status: active`.
       security: []
       requestBody:
         required: true
@@ -1678,12 +1807,23 @@ paths:
           application/json:
             schema:
               type: object
-              required: [org_id, otp]
+              required: [org_id, otp, channel]
               properties:
-                org_id: { type: string, format: uuid }
-                otp:    { type: string, minLength: 6, maxLength: 6 }
+                org_id:
+                  type: string
+                  format: uuid
+                  description: The org ID returned by POST /organizations/apply.
+                otp:
+                  type: string
+                  minLength: 6
+                  maxLength: 6
+                  description: 6-digit code received on the selected channel.
+                channel:
+                  type: string
+                  enum: [phone, email]
+                  description: 'The channel the OTP was received on. Must match the OTP sent to that channel.'
       responses:
-        '204': { description: Contact verified — admins notified }
+        '204': { description: Contact verified — org promoted to pending, admins notified }
         '400':
           description: Invalid OTP
           content:
@@ -1692,7 +1832,9 @@ paths:
               example: { error: { code: INVALID_OTP } }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: Contact email already verified for this org
+          description: |
+            One of:
+            - `CONTACT_ALREADY_VERIFIED` — the specified channel is already verified, or the org is no longer in `unverified` status.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1703,6 +1845,71 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: OTP_EXPIRED } }
+
+  /organizations/apply/resend-contact-otp:
+    post:
+      tags: [Organization Applications]
+      summary: 'Step 3 (optional) — Resend contact OTP'
+      description: |
+        Public endpoint — no authentication required.
+
+        Resends the OTP for the chosen `channel` (`phone` or `email`). Creates a new OTP
+        (invalidating the previous unused one) and re-sends it via SMS or email.
+
+        **Prerequisites:** the OTP flow must have been initiated — i.e. the org was created via
+        `POST /organizations/apply`. Returns `OTP_FLOW_NOT_INITIATED` (400) if no prior OTP
+        record exists for the given org and channel.
+
+        Returns `CONTACT_ALREADY_VERIFIED` (409) if the org is no longer in `unverified` status
+        (either already verified or approved/rejected).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [org_id, channel]
+              properties:
+                org_id:
+                  type: string
+                  format: uuid
+                  description: The org ID returned by POST /organizations/apply.
+                channel:
+                  type: string
+                  enum: [phone, email]
+                  description: The channel to resend the OTP to.
+      responses:
+        '200':
+          description: OTP resent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expires_in:
+                    type: integer
+                    description: OTP TTL in seconds.
+                    example: 300
+        '400':
+          description: '`OTP_FLOW_NOT_INITIATED` — no prior OTP exists for this org and channel.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: OTP_FLOW_NOT_INITIATED } }
+        '404':
+          description: Organization not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: ORG_NOT_FOUND } }
+        '409':
+          description: '`CONTACT_ALREADY_VERIFIED` — org is no longer in `unverified` status.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: CONTACT_ALREADY_VERIFIED } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  USERS                                                                   ║
@@ -2019,13 +2226,18 @@ paths:
         Creates an `Invitation` record (7-day expiry) and sends an invite link via SMS and/or email.
         At least one of `phone_number` or `email` must be provided.
 
-        The invitee calls `POST /users/accept-invite` with the raw token to activate their account.
+        The invite link is constructed as:
+        ```
+        <APP_URL>/i?t=<raw_token>
+        ```
+        The invitee opens the link, the frontend calls `GET /auth/invite/validate?token=<t>` to
+        pre-check the token, then `POST /users/accept-invite` with the raw token to activate their account.
 
         **Required permission:** `invite:User`
-        → `platform-admin`, `org-admin`, `dispatcher`
 
-        `org-admin` callers are automatically scoped to their own org — the `org_id` body field
-        is ignored and the caller's `org_id` is used instead.
+        Scoping rules (derived from the caller's `invite:User` grant):
+        - `platform` scope — may specify any `org_id` in the body.
+        - `org` scope — automatically scoped to the caller's own org; `org_id` body field is ignored.
       requestBody:
         required: true
         content:
@@ -2055,7 +2267,7 @@ paths:
                 properties:
                   invite_token:
                     type: string
-                    description: Raw invite token. Embed in the invite link as `?token=<value>` and send to the invitee.
+                    description: 'Raw invite token. The invite link is already sent via SMS/email in the format `<APP_URL>/i?t=<invite_token>`. This field is returned for reference only.'
                   expires_at: { type: string, format: date-time }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -2089,7 +2301,7 @@ paths:
               type: object
               required: [token, password]
               properties:
-                token:    { type: string, description: Raw invite token from the invitation link. }
+                token:    { type: string, description: 'Raw invite token — the value of the `t` query parameter from the invite URL (`<APP_URL>/i?t=<token>`).' }
                 password: { type: string, minLength: 8, maxLength: 128 }
       responses:
         '200':
@@ -2103,11 +2315,18 @@ paths:
                   user_id:  { type: string, format: uuid }
                   channels: { type: array, items: { type: string, enum: [phone, email] }, example: [phone, email] }
         '400':
-          description: Token invalid or already used
+          description: Token invalid or already used (`INVALID_TOKEN`)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: INVALID_TOKEN } }
+        '409':
+          description: |
+            Phone number (`PHONE_ALREADY_REGISTERED`) or email (`EMAIL_ALREADY_REGISTERED`)
+            on the invitation is already registered to an existing user account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '410':
           description: Invitation expired
           content:
@@ -2116,6 +2335,189 @@ paths:
               example: { error: { code: TOKEN_EXPIRED } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
+  /users/invitations:
+    get:
+      tags: [Users]
+      summary: List pending invitations
+      description: |
+        Returns all invitations that have not yet been accepted.
+
+        **Required permission:** `invite:User`
+
+        Scoping rules:
+        - `platform` scope — sees all orgs' invitations; optional `?org_id` filter applies.
+        - `org` scope — sees only invitations for their own org.
+
+        Each item includes an `expired` boolean derived from `expires_at` vs. now,
+        so the frontend can surface "resend" actions for stale invites.
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+        - in: query
+          name: org_id
+          schema: { type: string, format: uuid }
+          description: Platform scope only — filter by organization.
+      responses:
+        '200':
+          description: Paginated invitation list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:           { type: string, format: uuid }
+                        first_name:   { type: string }
+                        last_name:    { type: string }
+                        email:        { type: string, format: email, nullable: true }
+                        phone_number: { type: string, nullable: true }
+                        role_slug:    { type: string, nullable: true }
+                        org_id:       { type: string, format: uuid, nullable: true }
+                        invited_by:   { type: string, format: uuid }
+                        expires_at:   { type: string, format: date-time }
+                        expired:      { type: boolean, description: true if expires_at is in the past. }
+                        created_at:   { type: string, format: date-time }
+                  total: { type: integer }
+                  page:  { type: integer }
+                  limit: { type: integer }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /users/invitations/{id}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+
+    patch:
+      tags: [Users]
+      summary: Update a pending invitation
+      description: |
+        Edits fields on an invitation that has not yet been accepted. Useful for correcting
+        a wrong phone number, email, name, or role before the invitee opens the link.
+
+        **Required permission:** `invite:User`
+
+        Scoping: org-scope callers may only update invitations belonging to their own org.
+
+        Phone/email conflicts are checked against the `users` table only when the value
+        changes — the existing value is always allowed through.
+
+        Returns `409 INVITE_ALREADY_ACCEPTED` if the invitation has already been used.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                first_name:   { type: string, maxLength: 100 }
+                last_name:    { type: string, maxLength: 100 }
+                email:        { type: string, format: email, maxLength: 255 }
+                phone_number: { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
+                role_slug:    { type: string, description: Must match an existing non-passenger role slug. }
+                locale:       { type: string, enum: [rw, en, fr] }
+      responses:
+        '200':
+          description: Updated invitation
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:           { type: string, format: uuid }
+                  first_name:   { type: string }
+                  last_name:    { type: string }
+                  email:        { type: string, format: email, nullable: true }
+                  phone_number: { type: string, nullable: true }
+                  role_slug:    { type: string, nullable: true }
+                  org_id:       { type: string, format: uuid, nullable: true }
+                  expires_at:   { type: string, format: date-time }
+                  expired:      { type: boolean }
+                  created_at:   { type: string, format: date-time }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            Invitation already accepted (`INVITE_ALREADY_ACCEPTED`), or
+            phone/email already registered to an existing user (`PHONE_ALREADY_REGISTERED` / `EMAIL_ALREADY_REGISTERED`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+    delete:
+      tags: [Users]
+      summary: Revoke a pending invitation
+      description: |
+        Permanently deletes an invitation record, preventing the invitee from ever
+        using the link. Returns `409` if the invitation was already accepted.
+
+        **Required permission:** `invite:User`
+
+        Scoping: org-scope callers may only delete invitations belonging to their own org.
+      responses:
+        '204': { description: Invitation revoked. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Invitation already accepted — cannot revoke.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVITE_ALREADY_ACCEPTED } }
+
+  /users/invitations/{id}/resend:
+    post:
+      tags: [Users]
+      summary: Resend an invitation
+      description: |
+        Regenerates the invite token (invalidating the previous one) and resets
+        `expires_at` to 7 days from now. Re-sends the invite link to all channels
+        on the invitation (SMS and/or email).
+
+        Works for both valid (not yet expired) and already-expired invitations —
+        either way a fresh link is issued. Returns `409` if already accepted.
+
+        **Required permission:** `invite:User`
+
+        Scoping: org-scope callers may only resend invitations belonging to their own org.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Token regenerated and invite re-sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  expires_at: { type: string, format: date-time, description: New expiry — 7 days from now. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Invitation already accepted — cannot resend.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVITE_ALREADY_ACCEPTED } }
+
   /users:
     get:
       tags: [Users]
@@ -2123,11 +2525,12 @@ paths:
       description: |
         **Required permission:** `read:User`
 
-        Scoping rules:
-        - `platform-admin` sees all users and may filter by `org_id`.
-        - `org-admin` and `dispatcher` see only users within their own org (scoped automatically).
+        Scoping rules (derived from the caller's `read:User` grant, not role name):
+        - `platform` scope — sees all users; optional `?org_id` filter applies.
+        - `org` scope — sees only users within their own org (scoped automatically).
+        - `own` scope — sees only themselves.
 
-        The `phone_number` field is masked to `+250***123` format for non-admin callers.
+        The `phone_number` field is masked to `+250***123` format for non-platform callers.
       parameters:
         - in: query
           name: page
@@ -2232,11 +2635,17 @@ paths:
       tags: [Users]
       summary: Soft-delete user
       description: |
-        **Required permission:** `delete:User` → `platform-admin` only.
+        **Required permission:** `delete:User`
 
-        Sets `deleted_at` (soft delete) and revokes all active refresh tokens.
-        Active access tokens are blacklisted in Redis for 15 min (matching the JWT TTL)
-        so in-flight sessions cannot be used after deletion.
+        Scoping rules (derived from the caller's `delete:User` grant):
+        - `platform` scope — can delete any user.
+        - `org` scope — can only delete users within their own org.
+        - `own` scope — can only delete themselves.
+
+        Sets `status: pending_deletion` and `deleted_at`, revokes all active refresh tokens,
+        and blacklists active access tokens in Redis for 15 min. The account is permanently
+        anonymized after the grace period (`DELETION_GRACE_DAYS`, default 30 days) by a pg_cron job.
+        Logging in during the grace period restores the account.
       responses:
         '204': { description: User soft-deleted — tokens revoked and blacklisted }
         '401': { $ref: '#/components/responses/Unauthorized' }

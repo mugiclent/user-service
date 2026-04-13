@@ -10,10 +10,10 @@ export const hashToken = (raw: string): string =>
 
 /**
  * Generate a cryptographically random opaque token.
- * Default 40 bytes → 80 hex characters.
+ * Default 32 bytes → 43 base64url characters.
  */
-export const generateRawToken = (bytes = 40): string =>
-  randomBytes(bytes).toString('hex');
+export const generateRawToken = (bytes = 32): string =>
+  randomBytes(bytes).toString('base64url');
 
 /**
  * Hash a password with Argon2id.

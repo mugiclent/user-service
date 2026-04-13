@@ -5,6 +5,7 @@ import { validate } from '../middleware/validate.js';
 import {
   applyOrgSchema,
   verifyOrgContactSchema,
+  resendOrgContactOtpSchema,
 } from '../middleware/schemas/org-application.schema.js';
 
 const router = Router();
@@ -19,7 +20,11 @@ router.get('/apply/documents/presigned-url', OrgApplicationController.getDocumen
 router.post('/apply', validate(applyOrgSchema), OrgApplicationController.apply);
 
 // POST /api/v1/organizations/verify-contact
-// Public: verify the email OTP sent during application
+// Public: verify the phone or email OTP sent during application
 router.post('/verify-contact', validate(verifyOrgContactSchema), OrgApplicationController.verifyContact);
+
+// POST /api/v1/organizations/apply/resend-contact-otp
+// Public: resend contact verification OTP for a specific channel
+router.post('/apply/resend-contact-otp', validate(resendOrgContactOtpSchema), OrgApplicationController.resendContactOtp);
 
 export default router;

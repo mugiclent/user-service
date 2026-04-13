@@ -11,6 +11,8 @@ export const OrgController = {
       const result = await OrgService.createOrg(user, req.body as {
         name: string;
         org_type: string;
+        contact_first_name: string;
+        contact_last_name: string;
         contact_email: string;
         contact_phone: string;
         address?: string;
@@ -96,11 +98,22 @@ export const OrgController = {
     }
   },
 
-  async approveChildOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async cooperativeApprove(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const result = await OrgService.approveChildOrg(user, req.params['id']!);
+      const result = await OrgService.cooperativeApprove(user, req.params['id']!);
       res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async cooperativeReject(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { reason } = req.body as { reason?: string };
+      await OrgService.cooperativeReject(user, req.params['id']!, reason);
+      res.status(204).end();
     } catch (err) {
       next(err);
     }

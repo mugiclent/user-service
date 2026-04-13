@@ -8,10 +8,12 @@ import type * as AbilityModule from '../../src/utils/ability.js';
 
 const mockUserFindUniqueOrThrow = vi.fn();
 const mockUserFindUnique = vi.fn();
+const mockUserFindFirst = vi.fn().mockResolvedValue(null); // no existing org admin by default
 const mockUserFindMany = vi.fn().mockResolvedValue([]);
 const mockUserCount = vi.fn().mockResolvedValue(0);
 const mockUserUpdate = vi.fn();
 const mockRoleFindFirst = vi.fn();
+const mockRoleFindUnique = vi.fn().mockResolvedValue({ slug: 'dispatcher' }); // non-org-admin by default
 const mockInvitationFindUnique = vi.fn();
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
 
@@ -44,11 +46,12 @@ vi.mock('../../src/models/index.js', () => ({
     user: {
       findUniqueOrThrow: mockUserFindUniqueOrThrow,
       findUnique: mockUserFindUnique,
+      findFirst: mockUserFindFirst,
       findMany: mockUserFindMany,
       count: mockUserCount,
       update: mockUserUpdate,
     },
-    role: { findFirst: mockRoleFindFirst },
+    role: { findFirst: mockRoleFindFirst, findUnique: mockRoleFindUnique },
     invitation: { findUnique: mockInvitationFindUnique, create: mockInvitationCreate },
     refreshToken: { updateMany: mockRefreshTokenUpdateMany },
     $transaction: mockTransaction,
@@ -215,7 +218,10 @@ describe('UserService.updateMe', () => {
 
 describe('UserService.listUsers', () => {
   it('adds org_id filter for org-scoped non-admin', async () => {
-    const authUser = makeAuthUser({ org_id: 'org-1' });
+    const authUser = makeAuthUser({
+      org_id: 'org-1',
+      rules: [{ action: 'read', subject: 'User', conditions: { org_id: 'org-1' } }],
+    });
     await UserService.listUsers(authUser as never, {});
     expect(mockUserFindMany).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ org_id: 'org-1' }) }),
@@ -399,7 +405,11 @@ describe('UserService.deleteUser', () => {
 
   it('throws FORBIDDEN for org_admin deleting user outside their org', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ org_id: 'other-org' }));
-    const authUser = makeAuthUser({ org_id: 'org-1', role_slugs: ['org-admin'] });
+    const authUser = makeAuthUser({
+      org_id: 'org-1',
+      role_slugs: ['org-admin'],
+      rules: [{ action: 'manage', subject: 'User', conditions: { org_id: 'org-1' } }],
+    });
     await expect(UserService.deleteUser(authUser as never, 'user-2')).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });

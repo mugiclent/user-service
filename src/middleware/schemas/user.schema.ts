@@ -59,3 +59,12 @@ export const loginChannelConfirmSchema = Joi.object({
   channel: Joi.string().valid('phone', 'email').required(),
   otp: Joi.string().trim().length(6).required(),
 });
+
+export const updateInvitationSchema = Joi.object({
+  first_name: Joi.string().trim().max(100).optional(),
+  last_name: Joi.string().trim().max(100).optional(),
+  email: Joi.string().trim().email().max(255).optional(),
+  phone_number: phoneSchema.optional(),
+  role_slug: Joi.string().trim().optional(),
+  locale: Joi.string().valid('rw', 'en', 'fr').optional(),
+}).min(1);

@@ -110,7 +110,7 @@ describe('validatePasswordSchema', () => {
 // ── Org schemas ────────────────────────────────────────────────────────────────
 
 describe('createOrgSchema', () => {
-  const base = { name: 'Acme', org_type: 'company', contact_email: 'a@b.com', contact_phone: '+250788000001', tin: '123456789' };
+  const base = { name: 'Acme', org_type: 'company', contact_first_name: 'Jane', contact_last_name: 'Doe', contact_email: 'a@b.com', contact_phone: '+250788000001', tin: '123456789' };
   it('accepts valid org creation', () => ok(createOrgSchema, base));
   it('rejects invalid org_type', () => fail(createOrgSchema, { ...base, org_type: 'partnership' }));
   it('rejects missing name', () => fail(createOrgSchema, { ...base, name: undefined }));
@@ -132,7 +132,8 @@ describe('updateOrgSchema', () => {
 
 describe('applyOrgSchema', () => {
   const base = {
-    name: 'Acme', org_type: 'company', contact_email: 'a@b.com', tin: '123456789',
+    name: 'Acme', org_type: 'company', contact_first_name: 'Jane', contact_last_name: 'Doe',
+    contact_email: 'a@b.com', tin: '123456789',
     contact_phone: '+250788000001', business_certificate_path: 'org-docs/p/cert.pdf',
     rep_id_path: 'org-docs/p/id.jpg',
   };
@@ -143,7 +144,11 @@ describe('applyOrgSchema', () => {
 });
 
 describe('verifyOrgContactSchema', () => {
-  it('accepts valid payload', () => ok(verifyOrgContactSchema, { org_id: '550e8400-e29b-41d4-a716-446655440000', otp: '123456' }));
-  it('rejects otp != 6 chars', () => fail(verifyOrgContactSchema, { org_id: '550e8400-e29b-41d4-a716-446655440000', otp: '12345' }));
-  it('rejects non-UUID org_id', () => fail(verifyOrgContactSchema, { org_id: 'not-uuid', otp: '123456' }));
+  const base = { org_id: '550e8400-e29b-41d4-a716-446655440000', otp: '123456', channel: 'phone' };
+  it('accepts valid payload (phone)', () => ok(verifyOrgContactSchema, base));
+  it('accepts valid payload (email)', () => ok(verifyOrgContactSchema, { ...base, channel: 'email' }));
+  it('rejects otp != 6 chars', () => fail(verifyOrgContactSchema, { ...base, otp: '12345' }));
+  it('rejects non-UUID org_id', () => fail(verifyOrgContactSchema, { ...base, org_id: 'not-uuid' }));
+  it('rejects invalid channel', () => fail(verifyOrgContactSchema, { ...base, channel: 'sms' }));
+  it('rejects missing channel', () => fail(verifyOrgContactSchema, { org_id: base.org_id, otp: base.otp }));
 });
