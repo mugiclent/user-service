@@ -4,6 +4,7 @@ import { AppError } from '../utils/AppError.js';
 import { OtpService } from './otp.service.js';
 import { publishSms, publishMail, publishAudit, notifyUser } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
+import { normalizePhone } from '../utils/phone.js';
 
 const isEmail = (identifier: string): boolean => identifier.includes('@');
 
@@ -15,9 +16,10 @@ export const PasswordService = {
    */
   async forgotPassword(identifier: string): Promise<void> {
     const viaEmail = isEmail(identifier);
+    const normalized = viaEmail ? identifier : normalizePhone(identifier);
 
     const user = await prisma.user.findFirst({
-      where: viaEmail ? { email: identifier } : { phone_number: identifier },
+      where: viaEmail ? { email: normalized } : { phone_number: normalized },
     });
 
     if (!user) return; // silent — no enumeration
@@ -54,9 +56,10 @@ export const PasswordService = {
    */
   async resetPassword(identifier: string, otp: string, newPassword: string): Promise<void> {
     const viaEmail = isEmail(identifier);
+    const normalized = viaEmail ? identifier : normalizePhone(identifier);
 
     const user = await prisma.user.findFirst({
-      where: viaEmail ? { email: identifier } : { phone_number: identifier },
+      where: viaEmail ? { email: normalized } : { phone_number: normalized },
     });
 
     if (!user) throw new AppError('INVALID_OTP', 400);
