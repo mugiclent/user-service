@@ -67,6 +67,7 @@ export const UserController = {
         status?: string;
         user_type?: string;
         org_id?: string;
+        q?: string;
       };
       const result = await UserService.listUsers(user, {
         page: query.page ? parseInt(query.page, 10) : undefined,
@@ -74,6 +75,7 @@ export const UserController = {
         status: query.status,
         user_type: query.user_type,
         org_id: query.org_id,
+        q: query.q,
       });
       res.status(200).json(result);
     } catch (err) {
@@ -178,6 +180,7 @@ export const UserController = {
         page: req.query['page'] ? Number(req.query['page']) : undefined,
         limit: req.query['limit'] ? Number(req.query['limit']) : undefined,
         org_id: req.query['org_id'] as string | undefined,
+        q: req.query['q'] as string | undefined,
       });
       res.status(200).json(result);
     } catch (err) {

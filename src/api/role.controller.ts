@@ -8,6 +8,7 @@ export const RoleController = {
       const user = req.user as AuthenticatedUser;
       const result = await RoleService.listRoles(user, {
         org_id: req.query['org_id'] as string | undefined,
+        q: req.query['q'] as string | undefined,
       });
       res.status(200).json(result);
     } catch (err) {

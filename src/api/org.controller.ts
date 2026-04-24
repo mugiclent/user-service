@@ -34,12 +34,14 @@ export const OrgController = {
         limit?: string;
         status?: string;
         org_type?: string;
+        q?: string;
       };
       const result = await OrgService.listOrgs(user, {
         page: query.page ? parseInt(query.page, 10) : undefined,
         limit: query.limit ? parseInt(query.limit, 10) : undefined,
         status: query.status,
         org_type: query.org_type,
+        q: query.q,
       });
       res.status(200).json(result);
     } catch (err) {

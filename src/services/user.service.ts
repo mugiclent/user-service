@@ -117,7 +117,7 @@ export const UserService = {
 
   async listUsers(
     requestingUser: AuthenticatedUser,
-    query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string },
+    query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const scope = getScopeFor(ability, 'read', 'User');
@@ -140,6 +140,16 @@ export const UserService = {
 
     if (query.status) where['status'] = query.status;
     if (query.user_type) where['user_type'] = query.user_type;
+    if (query.q) {
+      const q = query.q;
+      if (!where['AND']) where['AND'] = [];
+      where['AND'].push({ OR: [
+        { first_name:   { contains: q, mode: 'insensitive' } },
+        { last_name:    { contains: q, mode: 'insensitive' } },
+        { email:        { contains: q, mode: 'insensitive' } },
+        { phone_number: { contains: q, mode: 'insensitive' } },
+      ]});
+    }
 
     const [users, total] = await Promise.all([
       prisma.user.findMany({ where, skip, take: limit, orderBy: { created_at: 'desc' }, ...withRoles }),
@@ -566,7 +576,7 @@ export const UserService = {
 
   async listInvitations(
     requestingUser: AuthenticatedUser,
-    query: { page?: number; limit?: number; org_id?: string },
+    query: { page?: number; limit?: number; org_id?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const hasPlatformScope = getScopeFor(ability, 'invite', 'User') === 'platform';
@@ -582,6 +592,17 @@ export const UserService = {
       if (query.org_id) where['org_id'] = query.org_id;
     } else {
       where['org_id'] = requestingUser.org_id;
+    }
+
+    if (query.q) {
+      const q = query.q;
+      if (!where['AND']) where['AND'] = [];
+      where['AND'].push({ OR: [
+        { first_name:   { contains: q, mode: 'insensitive' } },
+        { last_name:    { contains: q, mode: 'insensitive' } },
+        { email:        { contains: q, mode: 'insensitive' } },
+        { phone_number: { contains: q, mode: 'insensitive' } },
+      ]});
     }
 
     const [invitations, total] = await Promise.all([

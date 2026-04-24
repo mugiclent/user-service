@@ -165,7 +165,7 @@ export const OrgService = {
 
   async listOrgs(
     requestingUser: AuthenticatedUser,
-    query: { page?: number; limit?: number; status?: string; org_type?: string },
+    query: { page?: number; limit?: number; status?: string; org_type?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const admin = getScopeFor(ability, 'read', 'Org') === 'platform';
@@ -192,6 +192,17 @@ export const OrgService = {
     }
     if (query.status) where['status'] = query.status;
     if (query.org_type) where['org_type'] = query.org_type;
+    if (query.q) {
+      const q = query.q;
+      if (!where['AND']) where['AND'] = [];
+      where['AND'].push({ OR: [
+        { name:               { contains: q, mode: 'insensitive' } },
+        { contact_first_name: { contains: q, mode: 'insensitive' } },
+        { contact_last_name:  { contains: q, mode: 'insensitive' } },
+        { contact_email:      { contains: q, mode: 'insensitive' } },
+        { contact_phone:      { contains: q, mode: 'insensitive' } },
+      ]});
+    }
 
     const [orgs, total] = await Promise.all([
       prisma.org.findMany({ where, skip, take: limit, orderBy: { created_at: 'desc' } }),

@@ -1335,6 +1335,10 @@ paths:
         - in: query
           name: org_type
           schema: { type: string, enum: [company, cooperative, coop_member] }
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 200 }
+          description: Full-text search across org name, contact name, email, and phone (case-insensitive substring match).
       responses:
         '200':
           description: Paginated org list
@@ -2369,6 +2373,10 @@ paths:
           name: org_id
           schema: { type: string, format: uuid }
           description: Platform scope only — filter by organization.
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 200 }
+          description: Search by invitee name, email, or phone number (case-insensitive substring match).
       responses:
         '200':
           description: Paginated invitation list
@@ -2556,6 +2564,10 @@ paths:
           name: org_id
           schema: { type: string, format: uuid }
           description: Platform admin only — filter by organization.
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 200 }
+          description: Search by first name, last name, email, or phone number (case-insensitive substring match).
       responses:
         '200':
           description: Paginated user list
@@ -2684,6 +2696,10 @@ paths:
           name: org_id
           schema: { type: string, format: uuid }
           description: Platform admin only — filter by organization.
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 200 }
+          description: Search by role name (case-insensitive substring match).
       responses:
         '200':
           description: List of roles

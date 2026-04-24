@@ -66,7 +66,7 @@ export const RoleService = {
 
   async listRoles(
     requestingUser: AuthenticatedUser,
-    query: { org_id?: string },
+    query: { org_id?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[] }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const platform = getScopeFor(ability, 'read', 'Role') === 'platform';
@@ -82,6 +82,11 @@ export const RoleService = {
       // excluding the passenger system role
       where['OR'] = [{ org_id: null }, { org_id: requestingUser.org_id ?? null }];
       where['slug'] = { not: 'passenger' };
+    }
+
+    if (query.q) {
+      if (!where['AND']) where['AND'] = [];
+      where['AND'].push({ name: { contains: query.q, mode: 'insensitive' } });
     }
 
     const roles = await prisma.role.findMany({
