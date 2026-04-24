@@ -7,6 +7,7 @@ import { publishAudit } from '../utils/publishers.js';
 import {
   isValidPattern,
   maxScopeFromPatterns,
+  compressPatterns,
   SCOPE_RANK,
   buildAbilityFromRules,
 } from '../utils/ability.js';
@@ -130,13 +131,15 @@ export const RoleService = {
     const existing = await prisma.role.findFirst({ where: { slug, org_id } });
     if (existing) throw new AppError('ROLE_ALREADY_EXISTS', 409);
 
+    const compressed = compressPatterns(data.patterns, PERMISSIONS);
+
     const role = await prisma.$transaction(async (tx) => {
       const created = await tx.role.create({
         data: { name: data.name, slug, description: data.description ?? null, org_id },
       });
-      if (data.patterns.length > 0) {
+      if (compressed.length > 0) {
         await tx.roleGrant.createMany({
-          data: data.patterns.map((pattern) => ({ role_id: created.id, pattern })),
+          data: compressed.map((pattern) => ({ role_id: created.id, pattern })),
         });
       }
       return tx.role.findUniqueOrThrow({ where: { id: created.id }, ...withGrants });
@@ -290,24 +293,38 @@ export const RoleService = {
       }
     }
 
-    // Idempotent: if pattern already exists just return the role
-    const existing = await prisma.roleGrant.findUnique({
-      where: { role_id_pattern: { role_id: roleId, pattern } },
-    });
-    if (existing) {
+    // Compute compressed pattern set after adding the new pattern, then diff
+    const existingPatterns = role.role_grants.map((g) => g.pattern);
+    const compressed = compressPatterns([...existingPatterns, pattern], PERMISSIONS);
+    const existingSet = new Set(existingPatterns);
+    const compressedSet = new Set(compressed);
+    const toDelete = existingPatterns.filter((p) => !compressedSet.has(p));
+    const toAdd = compressed.filter((p) => !existingSet.has(p));
+
+    // No change — new pattern already subsumed by an existing wildcard
+    if (toAdd.length === 0 && toDelete.length === 0) {
       return serializeRole(role);
     }
 
-    await prisma.roleGrant.create({ data: { role_id: roleId, pattern } });
-
-    const updated = await prisma.role.findUniqueOrThrow({ where: { id: roleId }, ...withGrants });
+    const updated = await prisma.$transaction(async (tx) => {
+      if (toDelete.length > 0) {
+        await tx.roleGrant.deleteMany({ where: { role_id: roleId, pattern: { in: toDelete } } });
+      }
+      if (toAdd.length > 0) {
+        await tx.roleGrant.createMany({ data: toAdd.map((p) => ({ role_id: roleId, pattern: p })) });
+      }
+      return tx.role.findUniqueOrThrow({ where: { id: roleId }, ...withGrants });
+    });
 
     setImmediate(() => publishAudit({
       actor_id: requestingUser.id,
       action: 'update',
       resource: 'Role',
       resource_id: roleId,
-      delta: { grant_added: { from: null, to: pattern } },
+      delta: {
+        grants_added: toAdd,
+        ...(toDelete.length > 0 ? { grants_consolidated: toDelete } : {}),
+      },
     }));
 
     return serializeRole(updated);

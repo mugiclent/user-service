@@ -4,6 +4,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type * as AbilityModule from '../../src/utils/ability.js';
 
+const mockCompressPatterns = vi.fn().mockImplementation((patterns: string[]) => patterns);
+
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
 const mockRoleFindMany = vi.fn();
@@ -17,18 +19,20 @@ const mockRoleFindUniqueOrThrow = vi.fn();
 const mockRoleGrantFindUnique = vi.fn();
 const mockRoleGrantCreate = vi.fn();
 const mockRoleGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
+const mockRoleGrantDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockRoleGrantDelete = vi.fn();
 
 const mockInvitationCount = vi.fn().mockResolvedValue(0);
 
 const mockTxRoleCreate = vi.fn();
 const mockTxRoleGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
+const mockTxRoleGrantDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxRoleFindUniqueOrThrow = vi.fn();
 
 const mockTransaction = vi.fn().mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
   const tx = {
     role: { create: mockTxRoleCreate, findUniqueOrThrow: mockTxRoleFindUniqueOrThrow },
-    roleGrant: { createMany: mockTxRoleGrantCreateMany },
+    roleGrant: { createMany: mockTxRoleGrantCreateMany, deleteMany: mockTxRoleGrantDeleteMany },
   };
   return fn(tx);
 });
@@ -48,6 +52,7 @@ vi.mock('../../src/models/index.js', () => ({
       findUnique: mockRoleGrantFindUnique,
       create: mockRoleGrantCreate,
       createMany: mockRoleGrantCreateMany,
+      deleteMany: mockRoleGrantDeleteMany,
       delete: mockRoleGrantDelete,
     },
     invitation: {
@@ -68,6 +73,7 @@ vi.mock('../../src/utils/ability.js', async (importOriginal) => {
     ...actual,
     isValidPattern: vi.fn().mockReturnValue(true),
     maxScopeFromPatterns: vi.fn().mockReturnValue('org'),
+    compressPatterns: mockCompressPatterns,
     SCOPE_RANK: { own: 0, org: 1, platform: 2 },
   };
 });
@@ -255,6 +261,23 @@ describe('RoleService.createRole', () => {
     );
   });
 
+  it('compresses patterns before saving to the DB', async () => {
+    mockRoleFindFirst.mockResolvedValueOnce(null);
+    const created = makeRole({ id: 'new-role' });
+    mockTxRoleCreate.mockResolvedValueOnce(created);
+    mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce({ ...created, role_grants: [] });
+    mockCompressPatterns.mockReturnValueOnce(['user:*:org']);
+
+    await RoleService.createRole(makePlatformAdmin() as never, {
+      name: 'Viewer',
+      patterns: ['user:read:org', 'user:update:org', 'user:delete:org'],
+    });
+
+    expect(mockTxRoleGrantCreateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: [{ role_id: 'new-role', pattern: 'user:*:org' }] }),
+    );
+  });
+
   it('publishes audit event', async () => {
     mockRoleFindFirst.mockResolvedValueOnce(null);
     mockTxRoleCreate.mockResolvedValueOnce(makeRole({ id: 'new-role' }));
@@ -423,29 +446,87 @@ describe('RoleService.addGrant', () => {
     });
   });
 
-  it('creates new grant and returns updated role', async () => {
-    const role = makeRole({ org_id: null, is_managed: false });
+  it('creates new grant via transaction and returns updated role', async () => {
+    const role = makeRole({ org_id: null, is_managed: false, role_grants: [] });
     const updatedRole = makeRole({ role_grants: [makeGrant()] });
     mockRoleFindUnique.mockResolvedValueOnce(role);
-    mockRoleGrantFindUnique.mockResolvedValueOnce(null); // no existing grant
-    mockRoleGrantCreate.mockResolvedValueOnce(makeGrant());
-    mockRoleFindUniqueOrThrow.mockResolvedValueOnce(updatedRole);
+    // compressPatterns default: returns patterns unchanged → toAdd=['user:read:org'], toDelete=[]
+    mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(updatedRole);
 
     const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org');
-    expect(mockRoleGrantCreate).toHaveBeenCalledWith({
-      data: { role_id: 'role-1', pattern: 'user:read:org' },
+
+    expect(mockTransaction).toHaveBeenCalled();
+    expect(mockTxRoleGrantCreateMany).toHaveBeenCalledWith({
+      data: [{ role_id: 'role-1', pattern: 'user:read:org' }],
+    });
+    expect(mockTxRoleGrantDeleteMany).not.toHaveBeenCalled();
+    expect((result as Record<string, unknown>)['grants']).toHaveLength(1);
+  });
+
+  it('is idempotent when new pattern is already subsumed by existing set', async () => {
+    // existing has 'user:read:org'; compress(['user:read:org', 'user:read:org']) → ['user:read:org']
+    // toAdd=[], toDelete=[] → no-op
+    const role = makeRole({ role_grants: [makeGrant({ pattern: 'user:read:org' })] });
+    mockRoleFindUnique.mockResolvedValueOnce(role);
+
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org');
+
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ id: 'role-1' });
+  });
+
+  it('consolidates to wildcard when adding the last action that completes full coverage', async () => {
+    const existingGrants = [
+      makeGrant({ id: 'g-1', pattern: 'user:read:org' }),
+      makeGrant({ id: 'g-2', pattern: 'user:update:org' }),
+    ];
+    const role = makeRole({ org_id: null, is_managed: false, role_grants: existingGrants });
+    mockRoleFindUnique.mockResolvedValueOnce(role);
+    // simulate compression: all 3 user:*:org actions now present → produce wildcard
+    mockCompressPatterns.mockReturnValueOnce(['user:*:org']);
+    const updatedRole = makeRole({ role_grants: [makeGrant({ pattern: 'user:*:org' })] });
+    mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(updatedRole);
+
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:delete:org');
+
+    expect(mockTransaction).toHaveBeenCalled();
+    expect(mockTxRoleGrantDeleteMany).toHaveBeenCalledWith({
+      where: { role_id: 'role-1', pattern: { in: expect.arrayContaining(['user:read:org', 'user:update:org']) } },
+    });
+    expect(mockTxRoleGrantCreateMany).toHaveBeenCalledWith({
+      data: [{ role_id: 'role-1', pattern: 'user:*:org' }],
     });
     expect((result as Record<string, unknown>)['grants']).toHaveLength(1);
   });
 
-  it('is idempotent when grant already exists', async () => {
-    const role = makeRole({ role_grants: [makeGrant({ pattern: 'user:read:org' })] });
+  it('is no-op when new pattern is subsumed by an existing wildcard', async () => {
+    // existing has user:*:org; adding user:read:org → compress returns ['user:*:org'] (unchanged)
+    // toAdd=[], toDelete=[] → no-op
+    const role = makeRole({ role_grants: [makeGrant({ pattern: 'user:*:org' })] });
     mockRoleFindUnique.mockResolvedValueOnce(role);
-    mockRoleGrantFindUnique.mockResolvedValueOnce(makeGrant()); // already exists
+    mockCompressPatterns.mockReturnValueOnce(['user:*:org']);
 
     const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org');
-    expect(mockRoleGrantCreate).not.toHaveBeenCalled();
+
+    expect(mockTransaction).not.toHaveBeenCalled();
     expect(result).toMatchObject({ id: 'role-1' });
+  });
+
+  it('publishes correct delta with grants_consolidated when compression occurs', async () => {
+    const existingGrants = [makeGrant({ id: 'g-1', pattern: 'user:read:org' })];
+    const role = makeRole({ org_id: null, is_managed: false, role_grants: existingGrants });
+    mockRoleFindUnique.mockResolvedValueOnce(role);
+    mockCompressPatterns.mockReturnValueOnce(['user:*:org']);
+    mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(makeRole({ role_grants: [makeGrant({ pattern: 'user:*:org' })] }));
+
+    await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:update:org');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(mockPublishAudit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delta: expect.objectContaining({ grants_added: ['user:*:org'], grants_consolidated: ['user:read:org'] }),
+      }),
+    );
   });
 });
 

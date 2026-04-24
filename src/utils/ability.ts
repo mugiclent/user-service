@@ -202,6 +202,83 @@ export const getScopeFor = (
 };
 
 // ---------------------------------------------------------------------------
+// Pattern compression
+// ---------------------------------------------------------------------------
+
+const ENUM_TO_SUBJECT_CODE: Record<string, string> = Object.fromEntries(
+  Object.entries(SUBJECT_CODE_TO_ENUM).map(([code, e]) => [e as string, code]),
+);
+
+/**
+ * Given a set of grant patterns, return the minimal equivalent set by
+ * folding individual action patterns into wildcards where all valid actions
+ * for a (subject, scope) pair are present.
+ *
+ * Compression hierarchy (highest wins):
+ *   subject:action:scope  →  subject:*:scope  (all actions covered)
+ *   subject:*:scope × N   →  *:*:scope        (all subjects covered)
+ *   *:*:platform          →  subsumes everything
+ *
+ * Also removes patterns already subsumed by an existing wildcard in the
+ * input (e.g. user:read:org when user:*:org is also present).
+ */
+export const compressPatterns = (
+  patterns: string[],
+  catalog: Array<{ action: PermissionAction; subject: PermissionSubject; scopes: PermissionScope[] }>,
+): string[] => {
+  if (patterns.includes('*:*:platform')) return ['*:*:platform'];
+
+  const working = new Set(patterns);
+
+  // Build subjectCode → scope → Set<valid action> from catalog
+  const validAt = new Map<string, Map<PermissionScope, Set<PermissionAction>>>();
+  for (const p of catalog) {
+    const code = ENUM_TO_SUBJECT_CODE[p.subject as string];
+    if (!code) continue;
+    if (!validAt.has(code)) validAt.set(code, new Map());
+    for (const scope of p.scopes) {
+      if (!validAt.get(code)!.has(scope)) validAt.get(code)!.set(scope, new Set());
+      validAt.get(code)!.get(scope)!.add(p.action);
+    }
+  }
+
+  // Phase 1: drop patterns already covered by a wildcard in the input
+  for (const p of Array.from(working)) {
+    const [subjCode, action, scope] = p.split(':') as [string, string, PermissionScope];
+    if (subjCode === '*' && action === '*') continue;
+    if (working.has(`*:*:${scope}`)) { working.delete(p); continue; }
+    if (action !== '*' && working.has(`${subjCode}:*:${scope}`)) { working.delete(p); continue; }
+  }
+
+  // Phase 2: subject:action:scope → subject:*:scope when all actions are present
+  for (const [code, scopeMap] of validAt) {
+    for (const [scope, actions] of scopeMap) {
+      if (working.has(`*:*:${scope}`) || working.has(`${code}:*:${scope}`)) continue;
+      if (actions.size === 0) continue;
+      if (Array.from(actions).every(a => working.has(`${code}:${a}:${scope}`))) {
+        for (const a of actions) working.delete(`${code}:${a}:${scope}`);
+        working.add(`${code}:*:${scope}`);
+      }
+    }
+  }
+
+  // Phase 3: subject:*:scope × all-subjects → *:*:scope
+  for (const scope of ['own', 'org', 'platform'] as PermissionScope[]) {
+    if (working.has(`*:*:${scope}`)) continue;
+    const subjectsAtScope = Array.from(validAt.entries())
+      .filter(([, sm]) => sm.has(scope))
+      .map(([code]) => code);
+    if (subjectsAtScope.length > 0 && subjectsAtScope.every(code => working.has(`${code}:*:${scope}`))) {
+      for (const code of subjectsAtScope) working.delete(`${code}:*:${scope}`);
+      working.add(`*:*:${scope}`);
+    }
+  }
+
+  if (working.has('*:*:platform')) return ['*:*:platform'];
+  return Array.from(working);
+};
+
+// ---------------------------------------------------------------------------
 // Pattern validation (used by role/grant service endpoints)
 // ---------------------------------------------------------------------------
 

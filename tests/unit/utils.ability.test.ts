@@ -17,6 +17,7 @@ import {
   buildAbilityFromRules,
   isValidPattern,
   maxScopeFromPatterns,
+  compressPatterns,
   SCOPE_RANK,
   ALL_SUBJECTS,
 } from '../../src/utils/ability.js';
@@ -450,6 +451,123 @@ describe('maxScopeFromPatterns', () => {
 
   it('returns own for empty list (default baseline)', () => {
     expect(maxScopeFromPatterns([])).toBe<PermissionScope>('own');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// compressPatterns
+// ---------------------------------------------------------------------------
+
+// Small catalog: User at org has exactly {read, update, delete}
+const compressCatalog: Array<{ action: import('@prisma/client').PermissionAction; subject: import('@prisma/client').PermissionSubject; scopes: PermissionScope[] }> = [
+  { action: 'read',    subject: 'User',         scopes: ['own', 'org'] },
+  { action: 'update',  subject: 'User',         scopes: ['own', 'org'] },
+  { action: 'delete',  subject: 'User',         scopes: ['own', 'org'] },
+  { action: 'receive', subject: 'Notification', scopes: ['own'] },
+  { action: 'read',    subject: 'Role',         scopes: ['org'] },
+  { action: 'create',  subject: 'Role',         scopes: ['org'] },
+];
+
+describe('compressPatterns — no-op cases', () => {
+  it('returns empty array unchanged', () => {
+    expect(compressPatterns([], compressCatalog)).toEqual([]);
+  });
+
+  it('single pattern with no compression possible → unchanged', () => {
+    expect(compressPatterns(['user:read:org'], compressCatalog)).toEqual(['user:read:org']);
+  });
+
+  it('partial action coverage → unchanged', () => {
+    const result = compressPatterns(['user:read:org', 'user:update:org'], compressCatalog);
+    expect(result).toContain('user:read:org');
+    expect(result).toContain('user:update:org');
+    expect(result).not.toContain('user:*:org');
+  });
+
+  it('empty catalog → patterns returned unchanged', () => {
+    const result = compressPatterns(['user:read:org', 'user:update:org'], []);
+    expect(result).toContain('user:read:org');
+    expect(result).toContain('user:update:org');
+  });
+});
+
+describe('compressPatterns — action-level compression (→ subject:*:scope)', () => {
+  it('all 3 User org actions → user:*:org', () => {
+    const result = compressPatterns(
+      ['user:read:org', 'user:update:org', 'user:delete:org'],
+      compressCatalog,
+    );
+    expect(result).toEqual(['user:*:org']);
+  });
+
+  it('all 3 User own actions → user:*:own', () => {
+    const result = compressPatterns(
+      ['user:read:own', 'user:update:own', 'user:delete:own'],
+      compressCatalog,
+    );
+    expect(result).toEqual(['user:*:own']);
+  });
+
+  it('compresses User but leaves Role untouched when Role is incomplete', () => {
+    const result = compressPatterns(
+      ['user:read:org', 'user:update:org', 'user:delete:org', 'role:read:org'],
+      compressCatalog,
+    );
+    expect(result).toContain('user:*:org');
+    expect(result).toContain('role:read:org');
+    expect(result).not.toContain('role:*:org');
+  });
+});
+
+describe('compressPatterns — subject-level compression (→ *:*:scope)', () => {
+  it('all subjects wildcarded at org → *:*:org', () => {
+    // catalog has User + Role at org scope
+    const result = compressPatterns(
+      ['user:read:org', 'user:update:org', 'user:delete:org', 'role:read:org', 'role:create:org'],
+      compressCatalog,
+    );
+    expect(result).toEqual(['*:*:org']);
+  });
+
+  it('all subjects at org but one incomplete → no *:*:org', () => {
+    const result = compressPatterns(
+      ['user:read:org', 'user:update:org', 'user:delete:org', 'role:read:org'],
+      compressCatalog,
+    );
+    expect(result).toContain('user:*:org');
+    expect(result).toContain('role:read:org');
+    expect(result).not.toContain('*:*:org');
+  });
+});
+
+describe('compressPatterns — *:*:platform fast path', () => {
+  it('returns only *:*:platform when present', () => {
+    expect(compressPatterns(['*:*:platform'], compressCatalog)).toEqual(['*:*:platform']);
+  });
+
+  it('drops everything else when *:*:platform is present', () => {
+    const result = compressPatterns(
+      ['user:read:org', 'user:update:org', '*:*:platform'],
+      compressCatalog,
+    );
+    expect(result).toEqual(['*:*:platform']);
+  });
+});
+
+describe('compressPatterns — Phase 1: remove patterns subsumed by existing wildcards', () => {
+  it('user:read:org removed when user:*:org is also present', () => {
+    const result = compressPatterns(['user:*:org', 'user:read:org'], compressCatalog);
+    expect(result).toEqual(['user:*:org']);
+  });
+
+  it('specific patterns removed when *:*:org is present', () => {
+    const result = compressPatterns(['*:*:org', 'user:read:org', 'role:create:org'], compressCatalog);
+    expect(result).toEqual(['*:*:org']);
+  });
+
+  it('subject:*:scope removed when *:*:scope is present', () => {
+    const result = compressPatterns(['*:*:org', 'user:*:org'], compressCatalog);
+    expect(result).toEqual(['*:*:org']);
   });
 });
 
