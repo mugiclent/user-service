@@ -100,27 +100,6 @@ const makeOrgAdmin = () => ({
   user_type: 'staff',
 });
 
-const makeAcceptedUser = (overrides: Record<string, unknown> = {}) => ({
-  id: 'user-new-1',
-  first_name: 'Bob',
-  last_name: 'Invited',
-  phone_number: '+250780000099',
-  email: null,
-  password_hash: 'hash',
-  user_type: 'staff',
-  status: 'active',
-  two_factor_enabled: false,
-  org_id: 'org-1',
-  avatar_path: null,
-  phone_verified_at: new Date(),
-  email_verified_at: null,
-  created_at: new Date(),
-  updated_at: new Date(),
-  deleted_at: null,
-  user_roles: [{ role: { slug: 'org_staff' } }],
-  ...overrides,
-});
-
 const baseRole = { id: 'role-org-staff', slug: 'org_staff', org_id: null };
 
 beforeEach(() => {
