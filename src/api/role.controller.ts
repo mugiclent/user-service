@@ -65,7 +65,7 @@ export const RoleController = {
   async addGrant(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const result = await RoleService.addGrant(user, req.params['id']!, (req.body as { pattern: string }).pattern);
+      const result = await RoleService.addGrant(user, req.params['id']!, (req.body as { patterns: string[] }).patterns);
       res.status(200).json(result);
     } catch (err) {
       next(err);

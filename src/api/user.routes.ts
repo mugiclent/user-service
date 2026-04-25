@@ -13,6 +13,7 @@ import {
   loginChannelSchema,
   loginChannelConfirmSchema,
   updateInvitationSchema,
+  addUserGrantsSchema,
 } from '../middleware/schemas/user.schema.js';
 
 const router = Router();
@@ -64,5 +65,11 @@ router.patch('/:id', authenticate, authorize('update', 'User'), validate(updateU
 
 // DELETE /api/v1/users/:id
 router.delete('/:id', authenticate, authorize('delete', 'User'), UserController.deleteUser);
+
+// POST /api/v1/users/:id/grants
+router.post('/:id/grants', authenticate, authorize('assign_role', 'User'), validate(addUserGrantsSchema), UserController.addUserGrants);
+
+// DELETE /api/v1/users/:id/grants/:grantId
+router.delete('/:id/grants/:grantId', authenticate, authorize('assign_role', 'User'), UserController.removeUserGrant);
 
 export default router;

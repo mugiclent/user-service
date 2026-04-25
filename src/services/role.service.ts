@@ -248,12 +248,8 @@ export const RoleService = {
     }
 
     // Block deletion if there are pending invitations referencing this role.
-    // Accepted invitations are historical records and are fine — Prisma's FK
-    // RESTRICT would still block them, so we check all invitations and only
-    // surface the pending ones in the error message (accepted ones are resolved
-    // by the schema migration that makes role_id nullable + SetNull).
-    const pendingInvitations = await prisma.invitation.count({
-      where: { role_id: roleId, accepted_at: null },
+    const pendingInvitations = await prisma.invitationRole.count({
+      where: { role_id: roleId, invitation: { accepted_at: null } },
     });
     if (pendingInvitations > 0) {
       throw new AppError('ROLE_HAS_PENDING_INVITATIONS', 409);
@@ -271,7 +267,7 @@ export const RoleService = {
   async addGrant(
     requestingUser: AuthenticatedUser,
     roleId: string,
-    pattern: string,
+    patterns: string[],
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const platform = getScopeFor(ability, 'manage', 'Role') === 'platform';
@@ -287,20 +283,22 @@ export const RoleService = {
       throw new AppError('FORBIDDEN', 403);
     }
 
-    // Validate pattern
-    if (!isValidPattern(pattern, PERMISSIONS)) throw new AppError('INVALID_GRANT_PATTERN', 422);
+    // Validate all patterns
+    for (const pattern of patterns) {
+      if (!isValidPattern(pattern, PERMISSIONS)) throw new AppError('INVALID_GRANT_PATTERN', 422);
+    }
 
     // Escalation guard for org admins
     if (!platform) {
-      const allPatterns = [...role.role_grants.map((g) => g.pattern), pattern];
+      const allPatterns = [...role.role_grants.map((g) => g.pattern), ...patterns];
       if (SCOPE_RANK[maxScopeFromPatterns(allPatterns)] >= SCOPE_RANK['platform']) {
         throw new AppError('GRANT_SCOPE_ESCALATION', 403);
       }
     }
 
-    // Compute compressed pattern set after adding the new pattern, then diff
+    // Compute compressed pattern set after adding the new patterns, then diff
     const existingPatterns = role.role_grants.map((g) => g.pattern);
-    const compressed = compressPatterns([...existingPatterns, pattern], PERMISSIONS);
+    const compressed = compressPatterns([...existingPatterns, ...patterns], PERMISSIONS);
     const existingSet = new Set(existingPatterns);
     const compressedSet = new Set(compressed);
     const toDelete = existingPatterns.filter((p) => !compressedSet.has(p));
@@ -327,7 +325,7 @@ export const RoleService = {
       resource: 'Role',
       resource_id: roleId,
       delta: {
-        grants_added: toAdd,
+        ...(toAdd.length > 0 ? { grants_added: toAdd } : {}),
         ...(toDelete.length > 0 ? { grants_consolidated: toDelete } : {}),
       },
     }));

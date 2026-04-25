@@ -116,6 +116,8 @@ export const OrgService = {
       tin: string;
       license_number?: string;
       parent_org_id?: string;
+      story?: string;
+      status?: string;
     },
   ): Promise<Record<string, unknown>> {
     const slug = slugify(data.name);
@@ -136,7 +138,7 @@ export const OrgService = {
         data: {
           name: data.name,
           slug,
-          org_type: data.org_type as 'company' | 'cooperative',
+          org_type: data.org_type as 'company' | 'cooperative' | 'coop_member',
           contact_first_name: data.contact_first_name,
           contact_last_name: data.contact_last_name,
           contact_email: data.contact_email,
@@ -145,6 +147,8 @@ export const OrgService = {
           tin: data.tin,
           license_number: data.license_number ?? null,
           parent_org_id: data.parent_org_id ?? null,
+          story: data.story ?? null,
+          ...(data.status ? { status: data.status as 'active' | 'pending' | 'suspended' } : {}),
         },
       });
     } catch (err) {
@@ -272,6 +276,7 @@ export const OrgService = {
       contact_phone?: string;
       address?: string;
       logo_path?: string | null;
+      story?: string | null;
       status?: string;
       rejection_reason?: string;
     },
@@ -304,6 +309,7 @@ export const OrgService = {
     if (data.contact_phone !== undefined) updateData['contact_phone'] = data.contact_phone;
     if (data.address !== undefined) updateData['address'] = data.address;
     if (data.logo_path !== undefined) updateData['logo_path'] = data.logo_path;
+    if (data.story !== undefined) updateData['story'] = data.story;
 
     if (data.status !== undefined && admin) {
       // coop_member requires cooperative sign-off before admin can activate
@@ -340,7 +346,7 @@ export const OrgService = {
             phone_number: org.contact_phone,
             first_name: org.contact_first_name,
             last_name: org.contact_last_name,
-            role_id: orgAdminRole.id,
+            invitation_roles: { create: [{ role_id: orgAdminRole.id }] },
             org_id: org.id,
             invited_by: requestingUser.id,
             token_hash: hashToken(rawToken),

@@ -421,6 +421,11 @@ components:
         roles:
           type: array
           items: { type: string }
+          description: Role slugs assigned to this user.
+        grants:
+          type: array
+          description: Direct grant patterns assigned to this user (outside of roles).
+          items: { $ref: '#/components/schemas/Grant' }
         login_channel:
           type: string
           enum: [phone, email]
@@ -466,6 +471,7 @@ components:
         contact_email:        { type: string, format: email }
         contact_phone:        { type: string }
         parent_org_id:        { type: string, format: uuid, nullable: true }
+        story:                { type: string, nullable: true, description: Free-form text the org provided about themselves. }
         created_at:           { type: string, format: date-time }
 
     OrgListItem:
@@ -511,6 +517,7 @@ components:
         address:                     { type: string, nullable: true }
         tin:                         { type: string, nullable: true }
         license_number:              { type: string, nullable: true }
+        story:                       { type: string, nullable: true, description: Free-form text the org provided about themselves. }
         parent_org_id:               { type: string, format: uuid, nullable: true }
         parent_org:
           nullable: true
@@ -1277,6 +1284,9 @@ paths:
         → `platform-admin`
 
         The org name is slugified automatically. Duplicate names return `409`.
+
+        The optional `status` field lets the admin set an initial status other than `pending`
+        (e.g. create an org already in `active` state without going through the review flow).
       requestBody:
         required: true
         content:
@@ -1295,6 +1305,8 @@ paths:
                 tin:                  { type: string, pattern: '^\d{9}$', minLength: 9, maxLength: 9, description: 'Exactly 9 digits. Required and unique across all orgs.' }
                 license_number:       { type: string, maxLength: 100 }
                 parent_org_id:        { type: string, format: uuid, description: 'Required when org_type is coop_member. Must point to an active cooperative.' }
+                story:                { type: string, maxLength: 5000, description: Free-form description of the organization. }
+                status:               { type: string, enum: [active, pending, suspended], description: 'Initial status. Defaults to `pending` if omitted.' }
       responses:
         '201':
           description: Organization created
@@ -1436,6 +1448,7 @@ paths:
                 contact_phone:        { type: string, pattern: '^\+\d{7,15}$', description: 'E.164 format (e.g. +250788000001).' }
                 address:              { type: string, maxLength: 500 }
                 logo_path:            { type: string, maxLength: 500, nullable: true, description: 'S3 path from logo presigned-url. null removes the logo.' }
+                story:                { type: string, maxLength: 5000, nullable: true, description: 'Free-form description. null clears it.' }
                 status:
                   type: string
                   enum: [active, suspended, rejected]
@@ -1760,6 +1773,10 @@ paths:
                   type: string
                   maxLength: 500
                   description: S3 path from GET /organizations/apply/documents/presigned-url with doc_type=rep_id.
+                story:
+                  type: string
+                  maxLength: 5000
+                  description: Free-form description of the organization — background, services, why they are applying.
       responses:
         '202':
           description: Application received — OTPs sent to contact_phone (SMS) and contact_email
@@ -2256,11 +2273,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [first_name, last_name, role_slug]
+              required: [first_name, last_name, role_slugs]
               properties:
                 first_name:   { type: string, maxLength: 100 }
                 last_name:    { type: string, maxLength: 100 }
-                role_slug:    { type: string, example: dispatcher, description: Must match an existing role slug. }
+                role_slugs:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+                  example: [dispatcher, driver]
+                  description: One or more role slugs to assign. Each must match an existing non-passenger role.
                 org_id:       { type: string, format: uuid, description: Target org. Ignored for org-admin callers. }
                 email:        { type: string, format: email, maxLength: 255 }
                 phone_number: { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
@@ -2395,7 +2417,10 @@ paths:
                         last_name:    { type: string }
                         email:        { type: string, format: email, nullable: true }
                         phone_number: { type: string, nullable: true }
-                        role_slug:    { type: string, nullable: true }
+                        role_slugs:
+                          type: array
+                          items: { type: string }
+                          description: Roles assigned to this invitation.
                         org_id:       { type: string, format: uuid, nullable: true }
                         invited_by:   { type: string, format: uuid }
                         expires_at:   { type: string, format: date-time }
@@ -2441,7 +2466,11 @@ paths:
                 last_name:    { type: string, maxLength: 100 }
                 email:        { type: string, format: email, maxLength: 255 }
                 phone_number: { type: string, pattern: '^\+\d{7,15}$', description: E.164 format. }
-                role_slug:    { type: string, description: Must match an existing non-passenger role slug. }
+                role_slugs:
+                  type: array
+                  minItems: 1
+                  items: { type: string }
+                  description: Replaces all current roles on the invitation. Each slug must match an existing non-passenger role.
                 locale:       { type: string, enum: [rw, en, fr] }
       responses:
         '200':
@@ -2456,7 +2485,9 @@ paths:
                   last_name:    { type: string }
                   email:        { type: string, format: email, nullable: true }
                   phone_number: { type: string, nullable: true }
-                  role_slug:    { type: string, nullable: true }
+                  role_slugs:
+                    type: array
+                    items: { type: string }
                   org_id:       { type: string, format: uuid, nullable: true }
                   expires_at:   { type: string, format: date-time }
                   expired:      { type: boolean }
@@ -2565,6 +2596,10 @@ paths:
           schema: { type: string, format: uuid }
           description: Platform admin only — filter by organization.
         - in: query
+          name: role
+          schema: { type: string }
+          description: Filter by role slug (e.g. `driver`, `org-admin`).
+        - in: query
           name: q
           schema: { type: string, maxLength: 200 }
           description: Search by first name, last name, email, or phone number (case-insensitive substring match).
@@ -2670,6 +2705,98 @@ paths:
         '204': { description: User soft-deleted — tokens revoked and blacklisted }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/grants:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+        description: User ID
+
+    post:
+      tags: [Users]
+      summary: Add direct grants to a user
+      description: |
+        Adds one or more grant patterns directly to a user, bypassing roles.
+        Patterns are compressed at save time.
+
+        **Required permission:** `assign_role:User`
+
+        Scoping:
+        - `platform` scope — can grant to any user.
+        - `org` scope — own-org users only; `platform`-scoped patterns are rejected with `403 GRANT_SCOPE_ESCALATION`.
+
+        Changes take effect on the user's **next token refresh**.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patterns]
+              properties:
+                patterns:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[\w*][\w_*]*:[\w*]+:(own|org|platform)$'
+                    example: 'audit_log:read:org'
+                  description: 'Grant patterns in `subject:action:scope` format. Use `GET /permissions` for valid subjects and actions.'
+      responses:
+        '200':
+          description: Updated user profile (includes refreshed `grants` array)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserFullProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden or privilege escalation attempt
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: GRANT_SCOPE_ESCALATION } }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422':
+          description: Invalid pattern format or unknown subject/action
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: INVALID_GRANT_PATTERN } }
+
+  /users/{id}/grants/{grantId}:
+    parameters:
+      - in: path
+        name: id
+        required: true
+        schema: { type: string, format: uuid }
+        description: User ID
+      - in: path
+        name: grantId
+        required: true
+        schema: { type: string, format: uuid }
+        description: Grant ID (from the user's `grants` array in `GET /users/:id`)
+
+    delete:
+      tags: [Users]
+      summary: Remove a direct grant from a user
+      description: |
+        **Required permission:** `assign_role:User`
+
+        Returns `403 MANAGED_GRANT_IMMUTABLE` if the grant has `is_managed: true`.
+
+        Changes take effect on the user's **next token refresh**.
+      responses:
+        '204': { description: Grant removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: Forbidden or managed grant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { error: { code: MANAGED_GRANT_IMMUTABLE } }
         '404': { $ref: '#/components/responses/NotFound' }
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
@@ -2917,12 +3044,13 @@ paths:
 
     post:
       tags: [Roles]
-      summary: Add a grant to a role
+      summary: Add grants to a role
       description: |
         **Required permission:** `update:Role`
 
-        Adds a single grant pattern to the role. Idempotent — if the pattern already exists,
-        the current role is returned unchanged (no error, no duplicate created).
+        Adds one or more grant patterns to the role. Patterns already covered by an existing
+        wildcard are silently ignored (idempotent). Patterns are compressed at save time
+        (e.g. all actions for a subject → `subject:*:scope`).
 
         Returns `403 MANAGED_ROLE_IMMUTABLE` for managed roles.
 
@@ -2933,13 +3061,16 @@ paths:
           application/json:
             schema:
               type: object
-              required: [pattern]
+              required: [patterns]
               properties:
-                pattern:
-                  type: string
-                  pattern: '^[\w*][\w_*]*:[\w*]+:(own|org|platform)$'
-                  example: 'audit_log:read:org'
-                  description: 'Grant pattern in `subject:action:scope` format.'
+                patterns:
+                  type: array
+                  minItems: 1
+                  items:
+                    type: string
+                    pattern: '^[\w*][\w_*]*:[\w*]+:(own|org|platform)$'
+                    example: 'audit_log:read:org'
+                  description: 'Grant patterns in `subject:action:scope` format. Use `GET /permissions` for valid subjects and actions.'
       responses:
         '200':
           description: Role with the new grant added (or unchanged if already present)

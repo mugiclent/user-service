@@ -1,6 +1,12 @@
 import Joi from 'joi';
 import { phoneSchema } from '../../utils/phone.js';
 
+const patternItem = Joi.string()
+  .trim()
+  .max(80)
+  .pattern(/^[\w*][\w_*]*:[\w*]+:(own|org|platform)$/)
+  .message('pattern must be subject:action:scope where scope is own, org, or platform');
+
 const password = Joi.string().min(8).max(128);
 
 export const updateMeSchema = Joi.object({
@@ -25,7 +31,7 @@ export const updateUserSchema = Joi.object({
 export const inviteUserSchema = Joi.object({
   first_name: Joi.string().trim().max(100).required(),
   last_name: Joi.string().trim().max(100).required(),
-  role_slug: Joi.string().trim().required(),
+  role_slugs: Joi.array().items(Joi.string().trim()).min(1).required(),
   org_id: Joi.string().uuid().optional(),
   email: Joi.string().trim().email().max(255).optional(),
   phone_number: phoneSchema.optional(),
@@ -65,6 +71,10 @@ export const updateInvitationSchema = Joi.object({
   last_name: Joi.string().trim().max(100).optional(),
   email: Joi.string().trim().email().max(255).optional(),
   phone_number: phoneSchema.optional(),
-  role_slug: Joi.string().trim().optional(),
+  role_slugs: Joi.array().items(Joi.string().trim()).min(1).optional(),
   locale: Joi.string().valid('rw', 'en', 'fr').optional(),
 }).min(1);
+
+export const addUserGrantsSchema = Joi.object({
+  patterns: Joi.array().items(patternItem).min(1).required(),
+});

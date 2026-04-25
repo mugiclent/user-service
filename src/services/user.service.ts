@@ -3,7 +3,16 @@ import type { Prisma, AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile, maskPhone } from '../models/serializers.js';
-import { buildRulesFromGrants, buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
+import {
+  buildRulesFromGrants,
+  buildAbilityFromRules,
+  getScopeFor,
+  isValidPattern,
+  maxScopeFromPatterns,
+  compressPatterns,
+  SCOPE_RANK,
+} from '../utils/ability.js';
+import { PERMISSIONS } from '../loaders/bootstrap.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
 import { OtpService } from './otp.service.js';
@@ -117,7 +126,7 @@ export const UserService = {
 
   async listUsers(
     requestingUser: AuthenticatedUser,
-    query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string; q?: string },
+    query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string; role?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const scope = getScopeFor(ability, 'read', 'User');
@@ -140,6 +149,7 @@ export const UserService = {
 
     if (query.status) where['status'] = query.status;
     if (query.user_type) where['user_type'] = query.user_type;
+    if (query.role) where['user_roles'] = { some: { role: { slug: query.role } } };
     if (query.q) {
       const q = query.q;
       if (!where['AND']) where['AND'] = [];
@@ -331,7 +341,7 @@ export const UserService = {
 
   async inviteUser(
     requestingUser: AuthenticatedUser,
-    data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slug: string; org_id?: string; locale?: string },
+    data: { email?: string; phone_number?: string; first_name: string; last_name: string; role_slugs: string[]; org_id?: string; locale?: string },
   ): Promise<{ invite_token: string; expires_at: Date }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const platform = getScopeFor(ability, 'invite', 'User') === 'platform';
@@ -340,17 +350,39 @@ export const UserService = {
 
     if (!data.email && !data.phone_number) throw new AppError('VALIDATION_ERROR', 422);
 
-    // Prefer an org-specific role with this slug; fall back to a global template.
-    // The passenger role is excluded — it cannot be assigned to staff via invitation.
-    const role = await prisma.role.findFirst({
-      where: {
-        slug: data.role_slug,
-        OR: [{ org_id: org_id ?? null }, { org_id: null }],
-        NOT: { slug: 'passenger' },
-      },
-      orderBy: { org_id: 'asc' }, // non-null org_id sorts before null → org-specific wins
-    });
-    if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
+    // Reject if a user account already exists for the contact
+    const [phoneExists, emailExists] = await Promise.all([
+      data.phone_number
+        ? prisma.user.findUnique({ where: { phone_number: data.phone_number }, select: { id: true } })
+        : null,
+      data.email
+        ? prisma.user.findUnique({ where: { email: data.email }, select: { id: true } })
+        : null,
+    ]);
+    if (phoneExists) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
+    if (emailExists) throw new AppError('EMAIL_ALREADY_REGISTERED', 409);
+
+    // Resolve each slug — prefer org-specific over global template.
+    // Passenger is excluded — cannot be assigned via invitation.
+    const roleResults = await Promise.all(
+      data.role_slugs.map((slug) =>
+        prisma.role.findFirst({
+          where: {
+            slug,
+            OR: [{ org_id: org_id ?? null }, { org_id: null }],
+            NOT: { slug: 'passenger' },
+          },
+          orderBy: { org_id: 'asc' }, // non-null sorts first → org-specific wins
+        }),
+      ),
+    );
+    for (const role of roleResults) {
+      if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
+    }
+    // Deduplicate by ID (two slugs might resolve to the same role after org-specific fallback)
+    const uniqueRoles = Array.from(
+      new Map((roleResults as NonNullable<typeof roleResults[0]>[]).map((r) => [r.id, r])).values(),
+    );
 
     const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
@@ -364,12 +396,14 @@ export const UserService = {
         phone_number: data.phone_number ?? null,
         first_name: data.first_name,
         last_name: data.last_name,
-        role_id: role.id,
         org_id,
         invited_by: requestingUser.id,
         locale: data.locale ?? null,
         token_hash: tokenHash,
         expires_at: expiresAt,
+        invitation_roles: {
+          create: uniqueRoles.map((r) => ({ role_id: r.id })),
+        },
       },
     });
 
@@ -419,9 +453,17 @@ export const UserService = {
   ): Promise<{ user_id: string; channels: ('phone' | 'email')[] }> {
     const tokenHash = hashToken(token);
 
-    const invitation = await prisma.invitation.findUnique({ where: { token_hash: tokenHash } });
+    const invitation = await prisma.invitation.findUnique({
+      where: { token_hash: tokenHash },
+      include: { invitation_roles: { include: { role: { select: { slug: true } } } } },
+    });
     if (!invitation || invitation.accepted_at) throw new AppError('INVALID_TOKEN', 400);
     if (invitation.expires_at < new Date()) throw new AppError('TOKEN_EXPIRED', 410);
+
+    if (invitation.org_id) {
+      const org = await prisma.org.findUnique({ where: { id: invitation.org_id }, select: { status: true } });
+      if (!org || org.status !== 'active') throw new AppError('ORG_NOT_ACTIVE', 403);
+    }
 
     // Check for conflicting registrations before attempting the create
     const [phoneConflict, emailConflict] = await Promise.all([
@@ -444,21 +486,18 @@ export const UserService = {
     let emailVerifiedAt: Date | null = null;
     let loginChannel: 'phone' | 'email' | null = null;
 
-    if (invitation.org_id && invitation.role_id) {
-      const [invitedRole, existingOrgAdmin] = await Promise.all([
-        prisma.role.findUnique({ where: { id: invitation.role_id }, select: { slug: true } }),
-        prisma.user.findFirst({
-          where: {
-            org_id: invitation.org_id,
-            user_roles: { some: { role: { slug: 'org-admin' } } },
-          },
-          select: { id: true },
-        }),
-      ]);
+    const hasOrgAdminRole = invitation.invitation_roles.some((ir) => ir.role.slug === 'org-admin');
 
-      const isFirstOrgAdmin = invitedRole?.slug === 'org-admin' && !existingOrgAdmin;
+    if (invitation.org_id && hasOrgAdminRole) {
+      const existingOrgAdmin = await prisma.user.findFirst({
+        where: {
+          org_id: invitation.org_id,
+          user_roles: { some: { role: { slug: 'org-admin' } } },
+        },
+        select: { id: true },
+      });
 
-      if (isFirstOrgAdmin) {
+      if (!existingOrgAdmin) {
         const org = await prisma.org.findUnique({
           where: { id: invitation.org_id },
           select: { contact_phone_verified_at: true, contact_email_verified_at: true },
@@ -498,8 +537,11 @@ export const UserService = {
           locale,
         },
       });
-      if (invitation.role_id) {
-        await tx.userRole.create({ data: { user_id: created.id, role_id: invitation.role_id } });
+      if (invitation.invitation_roles.length > 0) {
+        await tx.userRole.createMany({
+          data: invitation.invitation_roles.map((ir) => ({ user_id: created.id, role_id: ir.role_id })),
+          skipDuplicates: true,
+        });
       }
       await tx.invitation.update({
         where: { token_hash: tokenHash },
@@ -611,7 +653,7 @@ export const UserService = {
         skip,
         take: limit,
         orderBy: { created_at: 'desc' },
-        include: { role: { select: { slug: true } } },
+        include: { invitation_roles: { include: { role: { select: { slug: true } } } } },
       }),
       prisma.invitation.count({ where }),
     ]);
@@ -623,7 +665,7 @@ export const UserService = {
         last_name: inv.last_name,
         email: inv.email,
         phone_number: inv.phone_number,
-        role_slug: inv.role?.slug ?? null,
+        role_slugs: inv.invitation_roles.map((ir) => ir.role.slug),
         org_id: inv.org_id,
         invited_by: inv.invited_by,
         expires_at: inv.expires_at,
@@ -643,14 +685,13 @@ export const UserService = {
   async updateInvitation(
     requestingUser: AuthenticatedUser,
     invitationId: string,
-    data: { first_name?: string; last_name?: string; email?: string; phone_number?: string; role_slug?: string; locale?: string },
+    data: { first_name?: string; last_name?: string; email?: string; phone_number?: string; role_slugs?: string[]; locale?: string },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const hasPlatformScope = getScopeFor(ability, 'invite', 'User') === 'platform';
 
     const invitation = await prisma.invitation.findUnique({
       where: { id: invitationId },
-      include: { role: { select: { slug: true, org_id: true } } },
     });
     if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
     if (invitation.accepted_at) throw new AppError('INVITE_ALREADY_ACCEPTED', 409);
@@ -669,31 +710,49 @@ export const UserService = {
     if (phoneConflict) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
     if (emailConflict) throw new AppError('EMAIL_ALREADY_REGISTERED', 409);
 
-    let roleId = invitation.role_id;
-    if (data.role_slug) {
-      const role = await prisma.role.findFirst({
-        where: {
-          slug: data.role_slug,
-          OR: [{ org_id: invitation.org_id ?? null }, { org_id: null }],
-          NOT: { slug: 'passenger' },
-        },
-        orderBy: { org_id: 'asc' },
-      });
-      if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-      roleId = role.id;
+    // Resolve new roles if provided
+    let uniqueRoles: { id: string }[] | null = null;
+    if (data.role_slugs) {
+      const roleResults = await Promise.all(
+        data.role_slugs.map((slug) =>
+          prisma.role.findFirst({
+            where: {
+              slug,
+              OR: [{ org_id: invitation.org_id ?? null }, { org_id: null }],
+              NOT: { slug: 'passenger' },
+            },
+            orderBy: { org_id: 'asc' },
+          }),
+        ),
+      );
+      for (const role of roleResults) {
+        if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
+      }
+      uniqueRoles = Array.from(
+        new Map((roleResults as NonNullable<typeof roleResults[0]>[]).map((r) => [r.id, r])).values(),
+      );
     }
 
-    const updated = await prisma.invitation.update({
-      where: { id: invitationId },
-      data: {
-        first_name: data.first_name ?? invitation.first_name,
-        last_name: data.last_name ?? invitation.last_name,
-        email: data.email !== undefined ? (data.email ?? null) : invitation.email,
-        phone_number: data.phone_number !== undefined ? (data.phone_number ?? null) : invitation.phone_number,
-        role_id: roleId,
-        locale: data.locale ?? invitation.locale,
-      },
-      include: { role: { select: { slug: true } } },
+    const updated = await prisma.$transaction(async (tx) => {
+      if (uniqueRoles !== null) {
+        await tx.invitationRole.deleteMany({ where: { invitation_id: invitationId } });
+        if (uniqueRoles.length > 0) {
+          await tx.invitationRole.createMany({
+            data: uniqueRoles.map((r) => ({ invitation_id: invitationId, role_id: r.id })),
+          });
+        }
+      }
+      return tx.invitation.update({
+        where: { id: invitationId },
+        data: {
+          first_name: data.first_name ?? invitation.first_name,
+          last_name: data.last_name ?? invitation.last_name,
+          email: data.email !== undefined ? (data.email ?? null) : invitation.email,
+          phone_number: data.phone_number !== undefined ? (data.phone_number ?? null) : invitation.phone_number,
+          locale: data.locale ?? invitation.locale,
+        },
+        include: { invitation_roles: { include: { role: { select: { slug: true } } } } },
+      });
     });
 
     publishAudit({ actor_id: requestingUser.id, action: 'update', resource: 'Invitation', resource_id: invitationId });
@@ -704,7 +763,7 @@ export const UserService = {
       last_name: updated.last_name,
       email: updated.email,
       phone_number: updated.phone_number,
-      role_slug: updated.role?.slug ?? null,
+      role_slugs: updated.invitation_roles.map((ir) => ir.role.slug),
       org_id: updated.org_id,
       expires_at: updated.expires_at,
       expired: updated.expires_at < new Date(),
@@ -725,15 +784,11 @@ export const UserService = {
 
     const invitation = await prisma.invitation.findUnique({
       where: { id: invitationId },
-      include: { role: { select: { slug: true } } },
     });
     if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
     if (invitation.accepted_at) throw new AppError('INVITE_ALREADY_ACCEPTED', 409);
 
     if (!hasPlatformScope && invitation.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
-
-    // Require that the invite either has a valid token or is expired — disallow resend of already-deleted invites
-    // (accepted_at check above covers the accepted case; the token_hash always exists so we just proceed)
 
     const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
@@ -948,5 +1003,106 @@ export const UserService = {
 
     const valid = await verifyPassword(password, user.password_hash);
     if (!valid) throw new AppError('INVALID_CREDENTIALS', 401);
+  },
+
+  // ---------------------------------------------------------------------------
+  // POST /users/:id/grants — batch-add direct grant patterns to a user
+  // ---------------------------------------------------------------------------
+
+  async addUserGrants(
+    requestingUser: AuthenticatedUser,
+    targetUserId: string,
+    patterns: string[],
+  ): Promise<Record<string, unknown>> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    if (!ability.can('assign_role', 'User')) throw new AppError('FORBIDDEN', 403);
+
+    const isAdmin = getScopeFor(ability, 'assign_role', 'User') === 'platform';
+
+    const target = await prisma.user.findUnique({ where: { id: targetUserId, deleted_at: null }, ...withRoles });
+    if (!target) throw new AppError('USER_NOT_FOUND', 404);
+
+    if (!isAdmin && target.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+
+    for (const pattern of patterns) {
+      if (!isValidPattern(pattern, PERMISSIONS)) throw new AppError('INVALID_GRANT_PATTERN', 422);
+    }
+
+    if (!isAdmin) {
+      if (SCOPE_RANK[maxScopeFromPatterns(patterns)] >= SCOPE_RANK['platform']) {
+        throw new AppError('GRANT_SCOPE_ESCALATION', 403);
+      }
+    }
+
+    const existingPatterns = target.user_grants.map((g) => g.pattern);
+    const compressed = compressPatterns([...existingPatterns, ...patterns], PERMISSIONS);
+    const existingSet = new Set(existingPatterns);
+    const compressedSet = new Set(compressed);
+    const toDelete = existingPatterns.filter((p) => !compressedSet.has(p));
+    const toAdd = compressed.filter((p) => !existingSet.has(p));
+
+    if (toAdd.length === 0 && toDelete.length === 0) {
+      return serializeUserFullProfile(target, isAdmin);
+    }
+
+    await prisma.$transaction(async (tx) => {
+      if (toDelete.length > 0) {
+        await tx.userGrant.deleteMany({ where: { user_id: targetUserId, pattern: { in: toDelete } } });
+      }
+      if (toAdd.length > 0) {
+        await tx.userGrant.createMany({ data: toAdd.map((p) => ({ user_id: targetUserId, pattern: p })) });
+      }
+    });
+
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: targetUserId }, ...withRoles });
+
+    setImmediate(() => publishAudit({
+      actor_id: requestingUser.id,
+      action: 'update',
+      resource: 'User',
+      resource_id: targetUserId,
+      delta: {
+        grants_added: toAdd,
+        ...(toDelete.length > 0 ? { grants_consolidated: toDelete } : {}),
+      },
+    }));
+
+    return serializeUserFullProfile(updated, isAdmin);
+  },
+
+  // ---------------------------------------------------------------------------
+  // DELETE /users/:id/grants/:grantId — remove a direct grant from a user
+  // ---------------------------------------------------------------------------
+
+  async removeUserGrant(
+    requestingUser: AuthenticatedUser,
+    targetUserId: string,
+    grantId: string,
+  ): Promise<void> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    if (!ability.can('assign_role', 'User')) throw new AppError('FORBIDDEN', 403);
+
+    const grant = await prisma.userGrant.findUnique({ where: { id: grantId } });
+    if (!grant || grant.user_id !== targetUserId) throw new AppError('GRANT_NOT_FOUND', 404);
+    if (grant.is_managed) throw new AppError('MANAGED_GRANT_IMMUTABLE', 403);
+
+    const isAdmin = getScopeFor(ability, 'assign_role', 'User') === 'platform';
+    const target = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { org_id: true, deleted_at: true },
+    });
+    if (!target || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
+
+    if (!isAdmin && target.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+
+    await prisma.userGrant.delete({ where: { id: grantId } });
+
+    setImmediate(() => publishAudit({
+      actor_id: requestingUser.id,
+      action: 'update',
+      resource: 'User',
+      resource_id: targetUserId,
+      delta: { grant_removed: { from: grant.pattern, to: null } },
+    }));
   },
 };

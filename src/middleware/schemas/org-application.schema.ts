@@ -18,6 +18,7 @@ export const applyOrgSchema = Joi.object({
   }),
   business_certificate_path: Joi.string().trim().max(500).required(),
   rep_id_path: Joi.string().trim().max(500).required(),
+  story: Joi.string().trim().max(5000).optional().allow('', null),
 });
 
 export const verifyOrgContactSchema = Joi.object({

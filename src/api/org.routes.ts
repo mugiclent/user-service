@@ -8,7 +8,7 @@ import { createOrgSchema, updateOrgSchema } from '../middleware/schemas/org.sche
 
 const router = Router();
 
-// POST /api/v1/organizations
+// POST /api/v1/organizations  (admin only)
 router.post('/', authenticate, authorize('create', 'Org'), validate(createOrgSchema), OrgController.createOrg);
 
 // GET /api/v1/organizations

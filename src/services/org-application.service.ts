@@ -104,6 +104,7 @@ export const OrgApplicationService = {
     parent_org_id?: string;
     business_certificate_path: string;
     rep_id_path: string;
+    story?: string;
   }): Promise<{ org_id: string; message: string }> {
     const slug = slugify(data.name);
 
@@ -140,6 +141,7 @@ export const OrgApplicationService = {
           tin: data.tin!,
           license_number: data.license_number ?? null,
           parent_org_id: data.parent_org_id ?? null,
+          story: data.story ?? null,
           status: 'unverified',
         },
       });

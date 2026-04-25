@@ -20,5 +20,5 @@ export const updateRoleSchema = Joi.object({
 }).min(1);
 
 export const addGrantSchema = Joi.object({
-  pattern: patternItem.required(),
+  patterns: Joi.array().items(patternItem).min(1).required(),
 });

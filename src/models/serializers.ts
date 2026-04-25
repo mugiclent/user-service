@@ -190,6 +190,12 @@ export const serializeUserFullProfile = (
   status: user.status,
   org_id: user.org_id,
   roles: user.user_roles.map((ur) => ur.role.slug),
+  grants: user.user_grants.map((g) => ({
+    id: g.id,
+    pattern: g.pattern,
+    is_managed: g.is_managed,
+    created_at: g.created_at,
+  })),
   login_channel: user.login_channel,
   notif_channel: user.notif_channel,
   locale: user.locale,
@@ -254,6 +260,7 @@ export const serializeOrgCreated = (org: Org): Record<string, unknown> => ({
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
   parent_org_id: org.parent_org_id,
+  story: org.story,
   created_at: org.created_at,
 });
 
@@ -279,6 +286,7 @@ export const serializeOrgFull = (
   address: org.address,
   tin: org.tin,
   license_number: org.license_number,
+  story: org.story,
   parent_org_id: org.parent_org_id,
   parent_org: org.parent_org,
   cooperative_approved_at: org.cooperative_approved_at,

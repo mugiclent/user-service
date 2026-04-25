@@ -67,6 +67,7 @@ export const UserController = {
         status?: string;
         user_type?: string;
         org_id?: string;
+        role?: string;
         q?: string;
       };
       const result = await UserService.listUsers(user, {
@@ -75,6 +76,7 @@ export const UserController = {
         status: query.status,
         user_type: query.user_type,
         org_id: query.org_id,
+        role: query.role,
         q: query.q,
       });
       res.status(200).json(result);
@@ -127,7 +129,7 @@ export const UserController = {
         phone_number?: string;
         first_name: string;
         last_name: string;
-        role_slug: string;
+        role_slugs: string[];
         org_id?: string;
         locale?: string;
       });
@@ -196,7 +198,7 @@ export const UserController = {
         last_name?: string;
         email?: string;
         phone_number?: string;
-        role_slug?: string;
+        role_slugs?: string[];
         locale?: string;
       });
       res.status(200).json(result);
@@ -220,6 +222,30 @@ export const UserController = {
       const user = req.user as AuthenticatedUser;
       await UserService.deleteInvitation(user, req.params['id']!);
       res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async addUserGrants(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.addUserGrants(
+        user,
+        req.params['id']!,
+        (req.body as { patterns: string[] }).patterns,
+      );
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async removeUserGrant(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      await UserService.removeUserGrant(user, req.params['id']!, req.params['grantId']!);
+      res.status(204).end();
     } catch (err) {
       next(err);
     }

@@ -63,6 +63,7 @@ export const OrgApplicationController = {
         parent_org_id?: string;
         business_certificate_path: string;
         rep_id_path: string;
+        story?: string;
       });
       res.status(202).json(result);
     } catch (err) {

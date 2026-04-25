@@ -98,6 +98,7 @@ model Org {
   rejection_reason           String?
   cooperative_approved_at    DateTime?
   cooperative_approved_by    String?
+  story                      String?   @db.Text
   contact_email_verified_at  DateTime?
   contact_phone_verified_at  DateTime?
   created_at                 DateTime  @default(now())
@@ -123,10 +124,10 @@ model Role {
   is_managed  Boolean  @default(false)
   created_at  DateTime @default(now())
 
-  org          Org?         @relation(fields: [org_id], references: [id])
-  user_roles   UserRole[]
-  invitations  Invitation[]
-  role_grants  RoleGrant[]
+  org              Org?             @relation(fields: [org_id], references: [id])
+  user_roles       UserRole[]
+  invitation_roles InvitationRole[]
+  role_grants      RoleGrant[]
 
   @@unique([slug, org_id])
   @@map("roles")
@@ -262,7 +263,6 @@ model Invitation {
   phone_number String?   @db.VarChar(20)
   first_name   String    @db.VarChar(100)
   last_name    String    @db.VarChar(100)
-  role_id      String?
   org_id       String?
   invited_by   String
   locale       String?   @db.VarChar(5)
@@ -271,9 +271,21 @@ model Invitation {
   accepted_at  DateTime?
   created_at   DateTime  @default(now())
 
-  role Role? @relation(fields: [role_id], references: [id], onDelete: SetNull)
+  invitation_roles InvitationRole[]
 
   @@map("invitations")
+}
+
+model InvitationRole {
+  invitation_id String
+  role_id       String
+  created_at    DateTime @default(now())
+
+  invitation Invitation @relation(fields: [invitation_id], references: [id], onDelete: Cascade)
+  role       Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+
+  @@id([invitation_id, role_id])
+  @@map("invitation_roles")
 }
 
 model OrgDocument {

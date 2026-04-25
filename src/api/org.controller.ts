@@ -19,6 +19,8 @@ export const OrgController = {
         tin: string;
         license_number?: string;
         parent_org_id?: string;
+        story?: string;
+        status?: string;
       });
       res.status(201).json(result);
     } catch (err) {
@@ -78,6 +80,7 @@ export const OrgController = {
         contact_phone?: string;
         address?: string;
         logo_path?: string;
+        story?: string | null;
         status?: string;
         rejection_reason?: string;
       });

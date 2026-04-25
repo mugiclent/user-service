@@ -8,7 +8,7 @@ const adapter = new PrismaPg({ connectionString: config.db.url });
 export const prisma = new PrismaClient({ adapter });
 
 // Re-export Prisma types used across the service
-export type { User, Org, Role, UserRole, RoleGrant, UserGrant, Permission, RefreshToken, Otp, Invitation } from '@prisma/client';
+export type { User, Org, Role, UserRole, RoleGrant, UserGrant, Permission, RefreshToken, Otp, Invitation, InvitationRole } from '@prisma/client';
 export { Prisma } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
