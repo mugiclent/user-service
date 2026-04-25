@@ -90,10 +90,10 @@ describe('updateUserSchema', () => {
 });
 
 describe('inviteUserSchema', () => {
-  it('accepts invite with email', () => ok(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slug: 'org_admin', email: 'a@b.com' }));
-  it('accepts invite with phone_number', () => ok(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slug: 'org_admin', phone_number: '+250788000001' }));
-  it('rejects when neither email nor phone_number', () => fail(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slug: 'org_admin' }));
-  it('rejects invalid phone format', () => fail(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slug: 'r', phone_number: 'bad' }));
+  it('accepts invite with email', () => ok(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slugs: ['org_admin'], email: 'a@b.com' }));
+  it('accepts invite with phone_number', () => ok(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slugs: ['org_admin'], phone_number: '+250788000001' }));
+  it('rejects when neither email nor phone_number', () => fail(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slugs: ['org_admin'] }));
+  it('rejects invalid phone format', () => fail(inviteUserSchema, { first_name: 'A', last_name: 'B', role_slugs: ['r'], phone_number: 'bad' }));
 });
 
 describe('acceptInviteSchema', () => {

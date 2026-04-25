@@ -22,7 +22,7 @@ const mockRoleGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockRoleGrantDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockRoleGrantDelete = vi.fn();
 
-const mockInvitationCount = vi.fn().mockResolvedValue(0);
+const mockInvitationRoleCount = vi.fn().mockResolvedValue(0);
 
 const mockTxRoleCreate = vi.fn();
 const mockTxRoleGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
@@ -55,8 +55,8 @@ vi.mock('../../src/models/index.js', () => ({
       deleteMany: mockRoleGrantDeleteMany,
       delete: mockRoleGrantDelete,
     },
-    invitation: {
-      count: mockInvitationCount,
+    invitationRole: {
+      count: mockInvitationRoleCount,
     },
     $transaction: mockTransaction,
   },
@@ -404,7 +404,7 @@ describe('RoleService.deleteRole', () => {
 
   it('throws ROLE_HAS_PENDING_INVITATIONS when pending invitations exist', async () => {
     mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, is_managed: false }));
-    mockInvitationCount.mockResolvedValueOnce(2);
+    mockInvitationRoleCount.mockResolvedValueOnce(2);
     await expect(RoleService.deleteRole(makePlatformAdmin() as never, 'role-1')).rejects.toMatchObject({
       code: 'ROLE_HAS_PENDING_INVITATIONS', status: 409,
     });
@@ -413,7 +413,7 @@ describe('RoleService.deleteRole', () => {
 
   it('deletes role and publishes audit', async () => {
     mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, is_managed: false }));
-    mockInvitationCount.mockResolvedValueOnce(0);
+    mockInvitationRoleCount.mockResolvedValueOnce(0);
     mockRoleDelete.mockResolvedValueOnce({});
     await RoleService.deleteRole(makePlatformAdmin() as never, 'role-1');
     expect(mockRoleDelete).toHaveBeenCalledWith({ where: { id: 'role-1' } });
@@ -427,21 +427,21 @@ describe('RoleService.deleteRole', () => {
 
 describe('RoleService.addGrant', () => {
   it('throws FORBIDDEN for non-admin', async () => {
-    await expect(RoleService.addGrant(makeOtherUser() as never, 'role-1', 'user:read:org')).rejects.toMatchObject({
+    await expect(RoleService.addGrant(makeOtherUser() as never, 'role-1', ['user:read:org'])).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
     });
   });
 
   it('throws ROLE_NOT_FOUND when role does not exist', async () => {
     mockRoleFindUnique.mockResolvedValueOnce(null);
-    await expect(RoleService.addGrant(makePlatformAdmin() as never, 'ghost', 'user:read:org')).rejects.toMatchObject({
+    await expect(RoleService.addGrant(makePlatformAdmin() as never, 'ghost', ['user:read:org'])).rejects.toMatchObject({
       code: 'ROLE_NOT_FOUND', status: 404,
     });
   });
 
   it('throws MANAGED_ROLE_IMMUTABLE for managed role', async () => {
     mockRoleFindUnique.mockResolvedValueOnce(makeRole({ is_managed: true }));
-    await expect(RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org')).rejects.toMatchObject({
+    await expect(RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:read:org'])).rejects.toMatchObject({
       code: 'MANAGED_ROLE_IMMUTABLE', status: 403,
     });
   });
@@ -453,7 +453,7 @@ describe('RoleService.addGrant', () => {
     // compressPatterns default: returns patterns unchanged → toAdd=['user:read:org'], toDelete=[]
     mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(updatedRole);
 
-    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org');
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:read:org']);
 
     expect(mockTransaction).toHaveBeenCalled();
     expect(mockTxRoleGrantCreateMany).toHaveBeenCalledWith({
@@ -469,7 +469,7 @@ describe('RoleService.addGrant', () => {
     const role = makeRole({ role_grants: [makeGrant({ pattern: 'user:read:org' })] });
     mockRoleFindUnique.mockResolvedValueOnce(role);
 
-    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org');
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:read:org']);
 
     expect(mockTransaction).not.toHaveBeenCalled();
     expect(result).toMatchObject({ id: 'role-1' });
@@ -487,7 +487,7 @@ describe('RoleService.addGrant', () => {
     const updatedRole = makeRole({ role_grants: [makeGrant({ pattern: 'user:*:org' })] });
     mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(updatedRole);
 
-    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:delete:org');
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:delete:org']);
 
     expect(mockTransaction).toHaveBeenCalled();
     expect(mockTxRoleGrantDeleteMany).toHaveBeenCalledWith({
@@ -506,7 +506,7 @@ describe('RoleService.addGrant', () => {
     mockRoleFindUnique.mockResolvedValueOnce(role);
     mockCompressPatterns.mockReturnValueOnce(['user:*:org']);
 
-    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:read:org');
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:read:org']);
 
     expect(mockTransaction).not.toHaveBeenCalled();
     expect(result).toMatchObject({ id: 'role-1' });
@@ -519,7 +519,7 @@ describe('RoleService.addGrant', () => {
     mockCompressPatterns.mockReturnValueOnce(['user:*:org']);
     mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(makeRole({ role_grants: [makeGrant({ pattern: 'user:*:org' })] }));
 
-    await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', 'user:update:org');
+    await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:update:org']);
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(mockPublishAudit).toHaveBeenCalledWith(

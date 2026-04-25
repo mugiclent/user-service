@@ -34,19 +34,18 @@ vi.mock('../../src/utils/s3.js', () => ({
 }));
 
 const mockRoleFindFirst = vi.fn();
-const mockRoleFindUnique = vi.fn().mockResolvedValue({ slug: 'dispatcher' }); // non-org-admin by default
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
 const mockInvitationFindUnique = vi.fn();
 const mockUserCreate = vi.fn();
-const mockUserRoleCreate = vi.fn();
+const mockUserRoleCreateMany = vi.fn().mockResolvedValue({ count: 1 });
 const mockInvitationUpdate = vi.fn();
 const mockUserFindUnique = vi.fn().mockResolvedValue(null);
+const mockOrgFindUnique = vi.fn().mockResolvedValue({ status: 'active' });
 
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     role: {
       findFirst: mockRoleFindFirst,
-      findUnique: mockRoleFindUnique,
     },
     invitation: {
       create:     mockInvitationCreate,
@@ -55,15 +54,17 @@ vi.mock('../../src/models/index.js', () => ({
     },
     user: {
       findUnique: mockUserFindUnique,
-      findFirst: vi.fn().mockResolvedValue(null), // no existing org admin by default
+      findFirst: vi.fn().mockResolvedValue(null),
+    },
+    org: {
+      findUnique: mockOrgFindUnique,
     },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
       const tx = {
         user: {
-          create:           mockUserCreate,
-          findUniqueOrThrow: vi.fn().mockResolvedValue(makeAcceptedUser()),
+          create: mockUserCreate,
         },
-        userRole: { create: mockUserRoleCreate },
+        userRole: { createMany: mockUserRoleCreateMany },
         invitation: { update: mockInvitationUpdate },
       };
       return fn(tx);
@@ -144,7 +145,7 @@ describe('UserService.inviteUser — phone only', () => {
     phone_number: '+250780000099',
     first_name: 'Bob',
     last_name: 'Invited',
-    role_slug: 'org_staff',
+    role_slugs: ['org_staff'],
   };
 
   it('publishes invite.sms with correct fields', async () => {
@@ -191,7 +192,7 @@ describe('UserService.inviteUser — email only', () => {
     email: 'bob@example.com',
     first_name: 'Bob',
     last_name: 'Invited',
-    role_slug: 'org_staff',
+    role_slugs: ['org_staff'],
   };
 
   it('publishes invite.mail with correct fields', async () => {
@@ -227,7 +228,7 @@ describe('UserService.inviteUser — phone + email', () => {
     email: 'bob@example.com',
     first_name: 'Bob',
     last_name: 'Invited',
-    role_slug: 'org_staff',
+    role_slugs: ['org_staff'],
   };
 
   it('publishes both invite.sms and invite.mail', async () => {
@@ -252,7 +253,7 @@ describe('UserService.inviteUser — sent by org_admin', () => {
       phone_number: '+250780000099',
       first_name: 'Bob',
       last_name: 'Invited',
-      role_slug: 'org_staff',
+      role_slugs: ['org_staff'],
     });
     expect(publishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'invite.sms' }));
   });
@@ -268,7 +269,7 @@ describe('UserService.acceptInvite', () => {
       last_name: 'Invited',
       phone_number: '+250780000099',
       email: null,
-      role_id: 'role-org-staff',
+      invitation_roles: [{ role_id: 'role-org-staff', role: { slug: 'org_staff' } }],
       org_id: 'org-1',
       accepted_at: null,
       expires_at: new Date(Date.now() + 3_600_000),
@@ -301,7 +302,7 @@ describe('UserService.acceptInvite', () => {
       last_name: 'Staff',
       phone_number: '+250780000088',
       email: 'carol@example.com',
-      role_id: 'role-org-staff',
+      invitation_roles: [{ role_id: 'role-org-staff', role: { slug: 'org_staff' } }],
       org_id: 'org-1',
       accepted_at: null,
       expires_at: new Date(Date.now() + 3_600_000),

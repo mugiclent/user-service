@@ -459,7 +459,7 @@ describe('maxScopeFromPatterns', () => {
 // ---------------------------------------------------------------------------
 
 // Small catalog: User at org has exactly {read, update, delete}
-const compressCatalog: Array<{ action: import('@prisma/client').PermissionAction; subject: import('@prisma/client').PermissionSubject; scopes: PermissionScope[] }> = [
+const compressCatalog: Array<{ action: PermissionAction; subject: PermissionSubject; scopes: PermissionScope[] }> = [
   { action: 'read',    subject: 'User',         scopes: ['own', 'org'] },
   { action: 'update',  subject: 'User',         scopes: ['own', 'org'] },
   { action: 'delete',  subject: 'User',         scopes: ['own', 'org'] },

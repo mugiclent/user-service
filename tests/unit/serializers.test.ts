@@ -40,6 +40,7 @@ const makeUser = (overrides: Record<string, unknown> = {}) => ({
   updated_at: now,
   deleted_at: null,
   user_roles: [{ role: { slug: 'org_admin', role_permissions: [] } }],
+  user_grants: [],
   user_permissions: [],
   ...overrides,
 });

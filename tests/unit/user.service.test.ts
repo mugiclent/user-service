@@ -53,6 +53,7 @@ vi.mock('../../src/models/index.js', () => ({
     },
     role: { findFirst: mockRoleFindFirst, findUnique: mockRoleFindUnique },
     invitation: { findUnique: mockInvitationFindUnique, create: mockInvitationCreate },
+    org: { findUnique: vi.fn().mockResolvedValue({ status: 'active' }) },
     refreshToken: { updateMany: mockRefreshTokenUpdateMany },
     $transaction: mockTransaction,
   },
@@ -453,7 +454,7 @@ describe('UserService.deleteUser', () => {
 // ── inviteUser ────────────────────────────────────────────────────────────────
 
 describe('UserService.inviteUser', () => {
-  const base = { first_name: 'Bob', last_name: 'Smith', role_slug: 'dispatcher' };
+  const base = { first_name: 'Bob', last_name: 'Smith', role_slugs: ['dispatcher'] };
 
   it('throws VALIDATION_ERROR when neither email nor phone provided', async () => {
     const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
@@ -522,7 +523,7 @@ describe('UserService.acceptInvite', () => {
     last_name: 'Smith',
     email: null,
     phone_number: '+250788000002',
-    role_id: 'role-1',
+    invitation_roles: [{ role_id: 'role-1', role: { slug: 'org_staff' } }],
     org_id: 'org-1',
     accepted_at: null,
     expires_at: futureExpiry,
@@ -560,7 +561,7 @@ describe('UserService.acceptInvite', () => {
         data: expect.objectContaining({ user_type: 'staff', status: 'pending_verification', password_hash: 'hashed-password' }),
       }),
     );
-    expect(mockTxUserRoleCreate).toHaveBeenCalledWith({ data: { user_id: 'new-user', role_id: 'role-1' } });
+    expect(mockTxUserRoleCreateMany).toHaveBeenCalledWith({ data: [{ user_id: 'new-user', role_id: 'role-1' }], skipDuplicates: true });
     expect(mockTxInvitationUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: { accepted_at: expect.any(Date) } }),
     );
