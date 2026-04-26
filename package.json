@@ -38,6 +38,7 @@
     "libphonenumber-js": "^1.12.41",
     "node-cron": "^4.2.1",
     "swagger-ui-express": "^5.0.1",
+    "prisma": "^7.8.0",
     "yaml": "^2.8.3"
   },
   "devDependencies": {
@@ -55,7 +56,6 @@
     "@vitest/coverage-v8": "^3.0.9",
     "eslint": "^9.22.0",
     "globals": "^17.4.0",
-    "prisma": "^7.8.0",
     "supertest": "^7.0.0",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
