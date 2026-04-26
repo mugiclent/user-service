@@ -134,11 +134,20 @@ jobs:
               --domain=http://localhost:8080 \
               --plain 2>/dev/null)
 
+            # First deploy only: baseline existing schema so migrate deploy doesn't
+            # try to CREATE tables that already exist. Fails harmlessly on subsequent
+            # deploys (migration already recorded) — the || true absorbs the error.
             docker run --rm \
               --network katisha-net \
-              -e DATABASE_URL="postgresql://user_svc:${DB_PASSWORD}@pgbouncer:6432/katisha_users?pgbouncer=true&connect_timeout=5&pool_timeout=5" \
+              -e DIRECT_DATABASE_URL="postgresql://user_svc:${DB_PASSWORD}@db:5432/katisha_users" \
               ${{ secrets.DOCKER_USERNAME }}/user-svc:${{ needs.build-and-push.outputs.image_tag }} \
-              npm run db:push
+              npx prisma migrate resolve --applied 20260426212901_init || true
+
+            docker run --rm \
+              --network katisha-net \
+              -e DIRECT_DATABASE_URL="postgresql://user_svc:${DB_PASSWORD}@db:5432/katisha_users" \
+              ${{ secrets.DOCKER_USERNAME }}/user-svc:${{ needs.build-and-push.outputs.image_tag }} \
+              npm run db:deploy
 
             infisical run \
               --token="$INFISICAL_TOKEN" \

@@ -1,12 +1,15 @@
 import { defineConfig } from 'prisma/config';
-import { PrismaPg } from '@prisma/adapter-pg';
 import 'dotenv/config';
 
-// Uses the JS-based schema engine (driver adapter) for Prisma CLI operations.
-// The app runtime also uses PrismaPg — see src/models/index.ts.
+// Prisma 7: connection config lives here, not in schema.prisma.
+// datasource.url is used by CLI commands (migrate dev, migrate deploy, etc.).
+// All CLI migration commands use DIRECT_DATABASE_URL (db:5432) to bypass
+// PgBouncer — migrations need a real session connection for advisory locks and DDL.
+// The app runtime uses DATABASE_URL (PgBouncer) via src/models/index.ts.
 export default defineConfig({
   schema: './prisma/schema.prisma',
-  experimental: { adapter: true },
-  engine: 'js',
-  adapter: async () => new PrismaPg({ connectionString: process.env['DATABASE_URL']! }),
+datasource: {
+    url: process.env['DIRECT_DATABASE_URL']!,
+    shadowDatabaseUrl: process.env['SHADOW_DATABASE_URL'],
+  },
 });
