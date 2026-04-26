@@ -1,205 +1,177 @@
 # PRISMA.md — Prisma & Database Conventions
 
+## Version
+
+**Prisma 7** (`prisma` + `@prisma/client` + `@prisma/adapter-pg`).  
+`prisma` CLI must be in **`dependencies`** (not `devDependencies`) so it
+survives `npm prune --omit=dev` and is available in the production container
+for `migrate deploy`.
+
+---
+
 ## Schema conventions
 
 - **Field names**: `snake_case` always. Prisma maps to camelCase in the client automatically.
-- **Primary keys**: `id  String  @id @default(uuid()) @db.Uuid` — UUIDs everywhere, no auto-increment integers.
-- **Timestamps**: every table gets `created_at DateTime @default(now())` and `updated_at DateTime @updatedAt`.
+- **Primary keys**: `id  String  @id @default(uuid())` — UUIDs everywhere, no auto-increment integers.
+- **Timestamps**: every table gets `created_at DateTime @default(now())`. Tables that change get `updated_at DateTime @updatedAt`.
 - **Soft deletes**: use `deleted_at DateTime?` — never hard-delete user or org records.
 - **Enums**: define in schema as Prisma enums, not DB strings. Keeps TypeScript types tight.
+- **No `url` in datasource block**: Prisma 7 does not require it. Connection is configured in `prisma.config.ts`.
 
-## Core models
+---
 
-```prisma
-// prisma/schema.prisma
+## prisma.config.ts
 
-model User {
-  id            String    @id @default(uuid()) @db.Uuid
-  first_name    String    @db.VarChar(100)
-  last_name     String    @db.VarChar(100)
-  phone_number  String?   @unique @db.VarChar(20)
-  email         String?   @unique @db.VarChar(255)
-  password_hash String
-  user_type     UserType
-  status        UserStatus @default(pending_verification)
-  avatar_path   String?    // S3 object key only — e.g. "avatars/user-id/uuid.jpg"
-                           // Frontend builds URL: CDN_URL + "/" + avatar_path
-  two_factor_enabled Boolean @default(false)
-  org_id        String?   @db.Uuid  // null for passengers
-  org           Org?      @relation(fields: [org_id], references: [id])
-  user_roles    UserRole[]
-  user_permissions UserPermission[]
-  refresh_tokens RefreshToken[]
-  created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
-  deleted_at    DateTime?
+Every service that uses Prisma must have this file at the project root:
 
-  @@map("users")
-}
+```typescript
+import { defineConfig } from 'prisma/config';
+import 'dotenv/config';
 
-model Org {
-  id            String    @id @default(uuid()) @db.Uuid
-  name          String
-  slug          String    @unique
-  org_type      String
-  status        OrgStatus @default(pending)
-  logo_path     String?   // S3 object key only — e.g. "logos/org-id/uuid.png"
-  contact_email String?
-  contact_phone String?
-  parent_org_id String?   @db.Uuid
-  parent_org    Org?      @relation("OrgToOrg", fields: [parent_org_id], references: [id])
-  child_orgs    Org[]     @relation("OrgToOrg")
-  approved_by   String?
-  approved_at   DateTime?
-  created_at    DateTime  @default(now())
-  updated_at    DateTime  @updatedAt
-  deleted_at    DateTime?
-
-  @@map("organizations")
-}
-
-model RefreshToken {
-  id          String    @id @default(uuid()) @db.Uuid
-  token_hash  String    @unique          // SHA-256 of raw token — never store raw
-  user_id     String    @db.Uuid
-  user        User      @relation(fields: [user_id], references: [id])
-  device_name String?
-  expires_at  DateTime
-  revoked_at  DateTime?
-  created_at  DateTime  @default(now())
-
-  @@map("refresh_tokens")
-}
-```
-
-## IAM models
-
-```prisma
-enum PermissionLevel {
-  manage  // CASL 'manage' — covers all actions including delete
-  write   // expands to: create, read, update
-  read    // read only
-}
-
-enum PermissionSubject {
-  User
-  Org
-  Role
-  all   // wildcard — used by super_admin
-}
-
-model Permission {
-  id      String            @id @default(uuid()) @db.Uuid
-  level   PermissionLevel
-  subject PermissionSubject
-
-  role_permissions RolePermission[]
-  user_permissions UserPermission[]
-
-  @@unique([level, subject])
-  @@map("permissions")
-}
-
-model Role {
-  id    String   @id @default(uuid()) @db.Uuid
-  name  String
-  slug  String   @unique
-  org_id String? @db.Uuid  // null = platform role; set = org-specific role
-
-  user_roles       UserRole[]
-  role_permissions RolePermission[]
-
-  @@map("roles")
-}
-
-model UserRole {
-  user_id String @db.Uuid
-  role_id String @db.Uuid
-  user    User   @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  role    Role   @relation(fields: [role_id], references: [id], onDelete: Cascade)
-
-  @@id([user_id, role_id])
-  @@map("user_roles")
-}
-
-model RolePermission {
-  role_id       String @db.Uuid
-  permission_id String @db.Uuid
-  role          Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
-  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
-
-  @@id([role_id, permission_id])
-  @@map("role_permissions")
-}
-
-model UserPermission {
-  user_id       String @db.Uuid
-  permission_id String @db.Uuid
-  user          User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
-  permission    Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
-
-  @@id([user_id, permission_id])
-  @@map("user_permissions")
-}
-```
-
-## UserWithRoles — include shape for token building
-
-Used in `token.service.ts`, `auth.service.ts`, `user.service.ts`, and `passport.ts`:
-
-```ts
-const withRoles = {
-  include: {
-    user_roles: {
-      include: {
-        role: {
-          include: {
-            role_permissions: { include: { permission: true } },
-          },
-        },
-      },
-    },
-    user_permissions: { include: { permission: true } },
+// Prisma 7: connection config lives here, not in schema.prisma.
+// DIRECT_DATABASE_URL (db:5432) bypasses PgBouncer — required for migrations
+// which use advisory locks and DDL that break under transaction-mode pooling.
+// The app runtime uses DATABASE_URL (PgBouncer) via src/models/index.ts.
+export default defineConfig({
+  schema: './prisma/schema.prisma',
+  datasource: {
+    url: process.env['DIRECT_DATABASE_URL']!,
+    shadowDatabaseUrl: process.env['SHADOW_DATABASE_URL'],
   },
-} as const;
+});
 ```
 
-## Migrations
+### Why two connection strings?
+
+| Variable | Points to | Used by |
+|---|---|---|
+| `DATABASE_URL` | `pgbouncer:6432` (transaction mode) | App runtime (`src/models/index.ts`) |
+| `DIRECT_DATABASE_URL` | `db:5432` (direct PostgreSQL) | Prisma CLI (`migrate dev`, `migrate deploy`) |
+| `SHADOW_DATABASE_URL` | `db:5432/{{db_name}}_shadow` | `migrate dev` shadow DB (local only) |
+
+PgBouncer transaction mode breaks migrations — it releases advisory locks between
+statements. Migrations must go direct to the DB.
+
+### Shadow database setup
+
+`migrate dev` needs a shadow database to diff against. Pre-create it instead of
+granting `CREATEDB` to the app user:
+
+1. Add to `db/init/NN-{{service}}.sql` (alongside the main DB creation):
+
+```sql
+SELECT 'CREATE DATABASE {{db_name}}_shadow OWNER {{db_user}}'
+WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{{db_name}}_shadow')\gexec
+
+GRANT ALL PRIVILEGES ON DATABASE {{db_name}}_shadow TO {{db_user}};
+```
+
+2. Add to `.env`:
+```
+SHADOW_DATABASE_URL=postgresql://{{db_user}}:{{password}}@localhost:5432/{{db_name}}_shadow
+```
+
+This is idempotent — any new dev machine gets the shadow DB automatically on
+first `docker compose up` in the `db/` directory.
+
+---
+
+## Runtime client (src/models/index.ts)
+
+```typescript
+import { PrismaClient } from '@prisma/client';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { config } from '../config/index.js';
+
+const adapter = new PrismaPg({ connectionString: config.db.url }); // DATABASE_URL
+export const prisma = new PrismaClient({ adapter });
+```
+
+The adapter goes here, not in `prisma.config.ts`. The config file is CLI-only.
+
+---
+
+## Migration workflow
+
+### Local development
 
 ```bash
-# Always provide a descriptive name
-npx prisma migrate dev --name add_refresh_tokens
-npx prisma migrate dev --name add_iam_permissions
+# After changing schema.prisma — creates a new migration file and applies it
+npx prisma migrate dev --name describe_the_change
 
-# Regenerate client after every schema change
+# Just regenerate the TypeScript client (no DB changes)
 npx prisma generate
-
-# Seed pre-set roles and permissions
-npm run db:seed
 ```
 
-- One migration per logical change. Don't bundle unrelated schema changes.
-- Never edit a migration file after it has been applied to any environment.
-- Seed data goes in `prisma/seed.ts`, run via `npx prisma db seed`.
+### Production (CI)
 
-## Pre-set roles (seeded)
+```bash
+# Apply all pending migration files — no drift detection, no shadow DB
+npx prisma migrate deploy
+```
 
-| Role | Permissions | DB conditions |
+`migrate deploy` is what CI runs. It reads pre-committed `.sql` files from
+`prisma/migrations/` and applies the ones not yet recorded in `_prisma_migrations`.
+
+### First production deploy (one-time baseline)
+
+If the production DB already has the schema (set up before migrations were
+introduced), baseline it so `migrate deploy` doesn't try to recreate tables:
+
+```bash
+# Mark the init migration as already applied — does not run any SQL
+npx prisma migrate resolve --applied {{migration_name}}
+```
+
+In CI, run this with `|| true` before `migrate deploy` — it succeeds on first
+deploy, fails harmlessly (already recorded) on subsequent ones:
+
+```yaml
+docker run --rm --network katisha-net \
+  -e DIRECT_DATABASE_URL="postgresql://..." \
+  image:tag \
+  npx prisma migrate resolve --applied {{init_migration_name}} || true
+
+docker run --rm --network katisha-net \
+  -e DIRECT_DATABASE_URL="postgresql://..." \
+  image:tag \
+  npm run db:deploy
+```
+
+### package.json scripts
+
+```json
+"db:migrate":  "prisma migrate dev",
+"db:deploy":   "prisma migrate deploy",
+"db:generate": "prisma generate"
+```
+
+`db:migrate` is local-only. `db:deploy` is what CI calls.
+
+---
+
+## Bootstrap vs seed
+
+| Mechanism | When it runs | What it's for |
 |---|---|---|
-| `katisha_super_admin` | manage: all | none |
-| `katisha_admin` | manage: all | none |
-| `katisha_support` | read: User, Org | none |
-| `org_admin` | manage: User, write: Org | User→`{org_id}`, Org→`{id:orgId}` |
-| `dispatcher` | write: User, read: Org | User→`{org_id}`, Org→`{id:orgId}` |
-| `driver` | read+update: User (no create) | `{id:userId}` |
-| `passenger` | read+update: User (no create) | `{id:userId}` |
+| `src/loaders/bootstrap.ts` | Every service startup (idempotent upserts) | Canonical platform data — permissions, managed roles, default admin user |
+| `prisma/seed.ts` | Manually via `npx prisma db seed` | Local dev fixtures only (fake orgs, sample users, etc.) |
 
-Conditions are applied at runtime in `buildRulesForUser` (not stored in DB).
+Most services only need `bootstrap.ts`. Only create a `seed.ts` if you need
+rich fixture data for local development.
+
+---
 
 ## DO NOT
 
+- Do not add `url` to the datasource block in `schema.prisma` — Prisma 7 reads it from `prisma.config.ts`.
 - No raw SQL (`prisma.$queryRaw`) unless genuinely unavoidable — document why with a comment.
 - No `@default(autoincrement())` on PKs — UUIDs only.
 - No nullable required fields — use `?` only for truly optional data.
 - No direct Prisma import in controllers or routes — import from `../models` in services only.
 - Do not store full URLs in DB (avatar_path, logo_path) — store S3 object keys only.
+- Do not run `prisma db push` in production — it has no history, no rollback, and `--accept-data-loss` silently drops columns.
+- Do not run `prisma migrate dev` in CI or production — it requires a shadow DB and interactive prompts.
+- Do not put `prisma` in `devDependencies` — it must survive `npm prune --omit=dev` for `migrate deploy` to work in the container.
+- Never edit a migration file after it has been applied to any environment.
+- One migration per logical change — don't bundle unrelated schema changes.

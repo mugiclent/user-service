@@ -45,16 +45,22 @@ WORKDIR /app
 
 COPY package*.json ./
 {{IF_PRISMA}}COPY prisma ./prisma/
+COPY prisma.config.ts ./
 {{/IF_PRISMA}}
-RUN npm ci
+# Prisma 7: generate must run BEFORE tsc — it no longer auto-generates via postinstall
+RUN npm ci{{IF_PRISMA}} && npx prisma generate{{/IF_PRISMA}}
 
 COPY tsconfig.json ./
 COPY src ./src/
+COPY docs ./docs/
 
-RUN npm run build{{IF_PRISMA}} && npx prisma generate{{/IF_PRISMA}} && npm prune --omit=dev
+RUN npm run build && npm prune --omit=dev
 
 
-FROM gcr.io/distroless/nodejs22-debian12
+FROM node:22-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
@@ -62,22 +68,30 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/package.json ./
 {{IF_PRISMA}}COPY --from=builder /app/prisma ./prisma
-{{/IF_PRISMA}}
+COPY --from=builder /app/prisma.config.ts ./
+{{/IF_PRISMA}}COPY --from=builder /app/docs ./docs
+
 ENV NODE_ENV=production
 ENV PORT={{PORT}}
 
 EXPOSE {{PORT}}
 
-CMD ["dist/index.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:{{PORT}}/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"
+
+CMD ["node", "dist/index.js"]
 ```
 
 **Rules:**
 - Never run `npm ci` or `npm install` in the production stage
 - Never copy build tools into the production stage
-- `CMD` takes only the script path — distroless nodejs uses `node` as its
-  entrypoint automatically
-- If the service has no native addons, you may omit the `apt-get` block — but
-  keep it in if unsure; it adds ~30 seconds to build time, not to image size
+- `prisma generate` must run **before** `tsc` — Prisma 7 does not auto-generate on `npm ci`
+- `prisma.config.ts` must be copied into **both** build and production stages — the production
+  container needs it for `migrate deploy` / `migrate resolve`
+- Use `node:22-bookworm-slim` for both stages (not distroless) — `npm` and `node` must be
+  available in the production image so the container can be used as a migration runner in CI
+- If the service has no native addons, you may omit the `apt-get` block in the builder — but
+  keep `openssl` in the production stage (required by Prisma's query engine)
 
 ---
 
@@ -212,14 +226,28 @@ Ensure these scripts exist in `package.json` for every service that uses Prisma:
   "dev":          "tsx watch src/index.ts",
   "test":         "vitest run",
   "lint":         "eslint src/",
-  "db:push":      "prisma db push --skip-generate",
+  "db:migrate":   "prisma migrate dev",
+  "db:deploy":    "prisma migrate deploy",
   "db:generate":  "prisma generate"
 }
 ```
 
-`db:push` is the key script — it applies the Prisma schema to the database
-idempotently. It is called during every production deploy (see Step 6).
-`--skip-generate` avoids re-running client generation (already done at build time).
+`db:migrate` is for local development only — creates new migration files.
+`db:deploy` is what CI calls — applies pre-generated `.sql` files without drift detection.
+
+Also ensure `prisma` is in **`dependencies`** (not `devDependencies`):
+
+```json
+"dependencies": {
+  "prisma": "^7.8.0",
+  "@prisma/client": "^7.8.0",
+  "@prisma/adapter-pg": "^7.8.0",
+  ...
+}
+```
+
+`npm prune --omit=dev` runs in the Docker build. If `prisma` is a devDependency it gets
+removed, and `npx prisma migrate deploy` inside the container has nothing to call.
 
 ---
 
@@ -326,9 +354,9 @@ jobs:
               --domain=http://localhost:8080 \
               --plain --silent)
 
-            {{IF_PRISMA}}# Apply schema changes before starting the container.
-            # Runs npm run db:push inside a temporary container using the just-built
-            # image — Node is not installed on the host.
+            {{IF_PRISMA}}# Apply schema migrations before starting the container.
+            # Uses DIRECT_DATABASE_URL (db:5432) — migrations need a real session
+            # connection for advisory locks; PgBouncer transaction mode breaks them.
             DB_PASSWORD=$(infisical secrets get DB_PASSWORD \
               --token="$INFISICAL_TOKEN" \
               --projectId=${{ secrets.INFISICAL_PROJECT_ID }} \
@@ -337,12 +365,20 @@ jobs:
               --domain=http://localhost:8080 \
               --plain 2>/dev/null)
 
+            # First deploy only: baseline the existing schema so migrate deploy
+            # doesn't try to CREATE tables that already exist. Fails harmlessly
+            # on subsequent deploys (migration already recorded) — || true absorbs it.
             docker run --rm \
               --network katisha-net \
-              -e DB_PASSWORD="${DB_PASSWORD}" \
-              -e DATABASE_URL="postgresql://{{DB_USER}}:${DB_PASSWORD}@pgbouncer:6432/{{DB_NAME}}?pgbouncer=true&connect_timeout=5&pool_timeout=5" \
+              -e DIRECT_DATABASE_URL="postgresql://{{DB_USER}}:${DB_PASSWORD}@db:5432/{{DB_NAME}}" \
               ${{ secrets.DOCKER_USERNAME }}/{{SERVICE_NAME}}:${{ needs.build-and-push.outputs.image_tag }} \
-              npm run db:push
+              npx prisma migrate resolve --applied {{init_migration_name}} || true
+
+            docker run --rm \
+              --network katisha-net \
+              -e DIRECT_DATABASE_URL="postgresql://{{DB_USER}}:${DB_PASSWORD}@db:5432/{{DB_NAME}}" \
+              ${{ secrets.DOCKER_USERNAME }}/{{SERVICE_NAME}}:${{ needs.build-and-push.outputs.image_tag }} \
+              npm run db:deploy
 
             {{/IF_PRISMA}}infisical run \
               --token="$INFISICAL_TOKEN" \
@@ -543,14 +579,17 @@ After completing all steps, verify:
 
 ## What NOT to do
 
-- Do not use `build:` in `docker-compose.yml` — the server pulls images, it
-  never builds
+- Do not use `build:` in `docker-compose.yml` — the server pulls images, it never builds
 - Do not use `node:22-alpine` — musl libc causes argon2 segfaults
-- Do not use `CMD ["node", "dist/index.js"]` in distroless — the entrypoint
-  is already `node`
+- Do not use distroless for Prisma services — the production container must run `migrate deploy`
+  as a job runner in CI, which requires `npm` and `node` to be available
 - Do not run `npm ci` in the production Docker stage — prune in builder, copy
-- Do not put real secrets in any committed file — `.env`, `.prod.sh` are
-  gitignored for this reason
+- Do not put `prisma generate` after `tsc` in the Dockerfile — Prisma 7 does not auto-generate
+  on `npm ci`, so `tsc` sees missing types and fails. Always generate first.
+- Do not copy only `prisma/` — also copy `prisma.config.ts` to both builder and production stages
+- Do not put `prisma` in `devDependencies` — it gets pruned and `migrate deploy` breaks in the container
+- Do not use `prisma db push` in production — no history, no rollback, `--accept-data-loss` silently drops columns
+- Do not use `DATABASE_URL` (PgBouncer) for migrations — use `DIRECT_DATABASE_URL` (db:5432 direct)
+- Do not put real secrets in any committed file — `.env`, `.prod.sh` are gitignored for this reason
 - Do not deploy on PR — only `push` to `main` triggers build and deploy
-- Do not use `latest` as the running IMAGE_TAG on the server — always use
-  the SHA tag for traceability and rollback
+- Do not use `latest` as the running IMAGE_TAG on the server — always use the SHA tag for traceability and rollback
