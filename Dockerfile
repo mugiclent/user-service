@@ -8,14 +8,15 @@ WORKDIR /app
 
 COPY package*.json ./
 COPY prisma ./prisma/
+COPY prisma.config.ts ./
 
-RUN npm ci
+RUN npm ci && npx prisma generate
 
 COPY tsconfig.json ./
 COPY src ./src/
 COPY docs ./docs/
 
-RUN npm run build && npx prisma generate && npm prune --omit=dev
+RUN npm run build && npm prune --omit=dev
 
 
 FROM node:22-bookworm-slim
