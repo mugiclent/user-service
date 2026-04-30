@@ -1,6 +1,7 @@
 import { prisma } from '../models/index.js';
 import type { UserWithRoles } from '../models/index.js';
 import { hashToken, generateRawToken } from '../utils/crypto.js';
+import { randomUUID } from 'node:crypto';
 import { signAccessToken } from '../utils/tokens.js';
 import { buildRulesFromGrants } from '../utils/ability.js';
 import { AppError } from '../utils/AppError.js';
@@ -29,11 +30,11 @@ const collectPatterns = (user: UserWithRoles): string[] => {
 };
 
 /** Build access token payload and sign it. */
-const buildAccessToken = async (user: UserWithRoles): Promise<string> => {
+const buildAccessToken = async (user: UserWithRoles, session_id?: string): Promise<string> => {
   const patterns = collectPatterns(user);
   const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
   const role_slugs = user.user_roles.map((ur) => ur.role.slug);
-  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules, locale: user.locale });
+  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules, locale: user.locale, session_id });
 };
 
 // ---------------------------------------------------------------------------
@@ -51,13 +52,15 @@ export const TokenService = {
     ip_address?: string,
     user_agent?: string,
   ): Promise<AuthTokens> {
-    const access = await buildAccessToken(user);
+    const sessionId = randomUUID();
+    const access = await buildAccessToken(user, sessionId);
     const rawRefresh = generateRawToken();
     const hash = hashToken(rawRefresh);
     const expiresAt = new Date(Date.now() + config.jwt.refreshTtlMs);
 
     await prisma.refreshToken.create({
       data: {
+        id: sessionId,
         token_hash: hash,
         user_id: user.id,
         device_name: device_name ?? null,

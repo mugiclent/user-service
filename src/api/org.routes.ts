@@ -8,6 +8,9 @@ import { createOrgSchema, updateOrgSchema } from '../middleware/schemas/org.sche
 
 const router = Router();
 
+// GET /api/v1/organizations/public  — no auth; must come before /:id to avoid conflict
+router.get('/public', OrgController.listPublicOrgs);
+
 // POST /api/v1/organizations  (admin only)
 router.post('/', authenticate, authorize('create', 'Org'), validate(createOrgSchema), OrgController.createOrg);
 

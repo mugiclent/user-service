@@ -12,7 +12,8 @@ const publishMail = vi.fn();
 const publishAudit = vi.fn();
 
 const notifyUser = vi.fn();
-vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publishAudit, notifyUser }));
+const publishUserEvent = vi.fn();
+vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publishAudit, notifyUser, publishUserEvent }));
 
 // Fixed token so we can assert on invite_link contents
 vi.mock('../../src/utils/crypto.js', async (importOriginal) => {

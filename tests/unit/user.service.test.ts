@@ -102,12 +102,14 @@ const mockPublishAudit = vi.fn();
 const mockPublishSms = vi.fn();
 const mockPublishMail = vi.fn();
 const mockNotifyUser = vi.fn();
+const mockPublishUserEvent = vi.fn();
 
 vi.mock('../../src/utils/publishers.js', () => ({
   publishAudit: mockPublishAudit,
   publishSms: mockPublishSms,
   publishMail: mockPublishMail,
   notifyUser: mockNotifyUser,
+  publishUserEvent: mockPublishUserEvent,
 }));
 
 vi.mock('../../src/config/index.js', () => ({

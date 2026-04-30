@@ -471,4 +471,82 @@ export const AuthService = {
       }
     }
   },
+
+  // ---------------------------------------------------------------------------
+  // GET /auth/sessions
+  // ---------------------------------------------------------------------------
+
+  async listSessions(
+    userId: string,
+    currentSessionId: string | undefined,
+  ): Promise<{ data: { id: string; device_name: string | null; created_at: Date; last_used_at: Date | null; is_current: boolean }[] }> {
+    const sessions = await prisma.refreshToken.findMany({
+      where: {
+        user_id: userId,
+        revoked_at: null,
+        expires_at: { gt: new Date() },
+      },
+      select: {
+        id: true,
+        device_name: true,
+        created_at: true,
+        last_used_at: true,
+      },
+      orderBy: [{ last_used_at: { sort: 'desc', nulls: 'last' } }, { created_at: 'desc' }],
+    });
+
+    return {
+      data: sessions.map((s) => ({
+        id: s.id,
+        device_name: s.device_name,
+        created_at: s.created_at,
+        last_used_at: s.last_used_at,
+        is_current: !!currentSessionId && s.id === currentSessionId,
+      })),
+    };
+  },
+
+  // ---------------------------------------------------------------------------
+  // DELETE /auth/sessions/:id
+  // ---------------------------------------------------------------------------
+
+  async revokeSession(userId: string, sessionId: string): Promise<void> {
+    const session = await prisma.refreshToken.findUnique({
+      where: { id: sessionId },
+      select: { id: true, user_id: true, revoked_at: true },
+    });
+
+    if (!session || session.user_id !== userId) throw new AppError('SESSION_NOT_FOUND', 404);
+    if (session.revoked_at) throw new AppError('SESSION_ALREADY_REVOKED', 409);
+
+    await prisma.refreshToken.update({
+      where: { id: sessionId },
+      data: { revoked_at: new Date() },
+    });
+  },
+
+  // ---------------------------------------------------------------------------
+  // DELETE /auth/register-device
+  // ---------------------------------------------------------------------------
+
+  async unregisterDevice(userId: string, userType: 'passenger' | 'staff'): Promise<void> {
+    const device = await prisma.userDevice.findFirst({
+      where: { user_id: userId },
+      select: { id: true },
+    });
+    if (!device) throw new AppError('DEVICE_NOT_REGISTERED', 404);
+
+    await prisma.userDevice.delete({ where: { id: device.id } });
+
+    const remaining = await prisma.userDevice.count({ where: { user_id: userId } });
+    const defaultChannel = userType === 'staff' ? ['sms', 'email'] : ['sms'];
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        fcm_token: null,
+        ...(remaining === 0 ? { notif_channel: defaultChannel } : {}),
+      },
+    });
+  },
 };

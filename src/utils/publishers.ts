@@ -152,6 +152,81 @@ export const publishPush = (event: PushEvent): void =>
   publish('notifications', 'push.notifications', event);
 
 // ---------------------------------------------------------------------------
+// Org domain events — logs exchange, routing key: org.events
+// Consumed by downstream services that track org state.
+// ---------------------------------------------------------------------------
+
+export type OrgDomainEvent =
+  | {
+      type: 'org.activated';
+      id: string;
+      name: string;
+      slug: string;
+      org_type: 'company' | 'cooperative' | 'coop_member';
+      status: 'active';
+      logo_path: string | null;
+      parent_org_id: string | null;
+    }
+  | {
+      type: 'org.updated';
+      id: string;
+      name: string;
+      slug: string;
+      logo_path: string | null;
+      updated_at: string;
+    }
+  | {
+      type: 'org.suspended';
+      id: string;
+      status: 'suspended';
+    };
+
+export const publishOrgEvent = (event: OrgDomainEvent): void =>
+  publish('logs', 'org.events', event);
+
+// ---------------------------------------------------------------------------
+// Staff user domain events — logs exchange, routing key: user.events
+// Consumed by downstream services that track staff identity.
+// ---------------------------------------------------------------------------
+
+export type StaffUserDomainEvent =
+  | {
+      type: 'staff.created';
+      id: string;
+      first_name: string;
+      last_name: string;
+      org_id: string | null;
+      roles: string[];
+      user_type: 'staff';
+      avatar_path: string | null;
+      status: 'pending_verification';
+    }
+  | {
+      type: 'staff.updated';
+      id: string;
+      first_name: string;
+      last_name: string;
+      avatar_path: string | null;
+      org_id: string | null;
+      updated_at: string;
+    }
+  | {
+      type: 'staff.suspended';
+      id: string;
+      org_id: string | null;
+      status: 'suspended';
+    }
+  | {
+      type: 'staff.deleted';
+      id: string;
+      org_id: string | null;
+      deleted_at: string;
+    };
+
+export const publishUserEvent = (event: StaffUserDomainEvent): void =>
+  publish('logs', 'user.events', event);
+
+// ---------------------------------------------------------------------------
 // notifyUser — preference-aware dispatcher
 //
 // Routes to the correct channel(s) based on user.notif_channel array.

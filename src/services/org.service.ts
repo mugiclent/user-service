@@ -4,7 +4,7 @@ import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { slugify } from '../utils/slugify.js';
 import { generateRawToken, hashToken } from '../utils/crypto.js';
-import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser, publishOrgEvent } from '../utils/publishers.js';
 import type { Locale, NotifiableUser } from '../utils/publishers.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
@@ -102,6 +102,39 @@ export const OrgService = {
   // ---------------------------------------------------------------------------
   // POST /organizations — create a new org (admin only)
   // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+  // GET /organizations/public — no auth, passengers use for trip search filter
+  // ---------------------------------------------------------------------------
+
+  async listPublicOrgs(query: {
+    q?: string;
+    page?: number;
+    limit?: number;
+  }): Promise<{ data: { id: string; name: string; slug: string; org_type: string; logo_path: string | null }[]; total: number; page: number; limit: number }> {
+    const page = Math.max(1, query.page ?? 1);
+    const limit = Math.min(100, Math.max(1, query.limit ?? 50));
+    const skip = (page - 1) * limit;
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const where: Record<string, any> = { status: 'active', deleted_at: null };
+    if (query.q) {
+      where['name'] = { contains: query.q, mode: 'insensitive' };
+    }
+
+    const [orgs, total] = await Promise.all([
+      prisma.org.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, slug: true, org_type: true, logo_path: true },
+      }),
+      prisma.org.count({ where }),
+    ]);
+
+    return { data: orgs, total, page, limit };
+  },
 
   async createOrg(
     requestingUser: AuthenticatedUser,
@@ -421,7 +454,7 @@ export const OrgService = {
       }
     }
 
-    // Fire audit after response is queued — delta captures what actually changed
+    // Publish org domain events — fire-and-forget alongside the audit
     setImmediate(() => {
       const delta: Record<string, { from: unknown; to: unknown }> = {};
       for (const f of ['name', 'contact_email', 'contact_phone', 'address', 'status', 'rejection_reason'] as const) {
@@ -434,6 +467,36 @@ export const OrgService = {
         resource_id: orgId,
         ...(Object.keys(delta).length > 0 ? { delta } : {}),
       });
+
+      if (data.status === 'active') {
+        publishOrgEvent({
+          type: 'org.activated',
+          id: org.id,
+          name: org.name,
+          slug: org.slug,
+          org_type: org.org_type,
+          status: 'active',
+          logo_path: org.logo_path,
+          parent_org_id: org.parent_org_id,
+        });
+      }
+
+      if (data.status === 'suspended') {
+        publishOrgEvent({ type: 'org.suspended', id: org.id, status: 'suspended' });
+      }
+
+      const nameChanged = data.name !== undefined && existing.name !== org.name;
+      const logoChanged = data.logo_path !== undefined && existing.logo_path !== org.logo_path;
+      if (nameChanged || logoChanged) {
+        publishOrgEvent({
+          type: 'org.updated',
+          id: org.id,
+          name: org.name,
+          slug: org.slug,
+          logo_path: org.logo_path,
+          updated_at: org.updated_at.toISOString(),
+        });
+      }
     });
     return serializeOrgFull(org, admin);
   },

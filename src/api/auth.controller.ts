@@ -5,6 +5,7 @@ import { serializeUserForAuth } from '../models/serializers.js';
 import { sendAuthResponse, sendRefreshResponse, clearAuthCookies } from '../utils/sendAuthResponse.js';
 import type { AuthenticatedUser } from '../models/index.js';
 import { prisma } from '../models/index.js';
+import { AppError } from '../utils/AppError.js';
 
 export const AuthController = {
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -221,13 +222,65 @@ export const AuthController = {
   async registerDevice(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const { fcm_token } = req.body as { fcm_token: string };
+      const { fcm_token, device_name } = req.body as { fcm_token: string; device_name?: string };
 
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { fcm_token, notif_channel: ['app'] },
-      });
+      await prisma.$transaction([
+        prisma.userDevice.upsert({
+          where: { fcm_token },
+          update: { user_id: user.id, device_name: device_name ?? null, last_active_at: new Date() },
+          create: { user_id: user.id, fcm_token, device_name: device_name ?? null },
+        }),
+        prisma.user.update({
+          where: { id: user.id },
+          data: { fcm_token, notif_channel: ['app'] },
+        }),
+      ]);
 
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * GET /auth/sessions
+   * List all active refresh-token sessions for the authenticated user.
+   */
+  async listSessions(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await AuthService.listSessions(user.id, user.session_id);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * DELETE /auth/sessions/:id
+   * Revoke a specific session. Caller may only revoke their own sessions.
+   */
+  async revokeSession(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const sessionId = req.params['id'];
+      if (!sessionId) return next(new AppError('VALIDATION_ERROR', 422));
+      await AuthService.revokeSession(user.id, sessionId);
+      clearAuthCookies(res);
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  /**
+   * DELETE /auth/register-device
+   * Unregister the FCM token for the authenticated user's current device.
+   */
+  async unregisterDevice(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      await AuthService.unregisterDevice(user.id, user.user_type);
       res.status(204).end();
     } catch (err) {
       next(err);

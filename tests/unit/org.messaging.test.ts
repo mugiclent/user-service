@@ -11,7 +11,8 @@ const publishAudit = vi.fn();
 const publishSms   = vi.fn();
 const publishMail  = vi.fn();
 const notifyUser = vi.fn();
-vi.mock('../../src/utils/publishers.js', () => ({ publishAudit, publishSms, publishMail, notifyUser }));
+const publishOrgEvent = vi.fn();
+vi.mock('../../src/utils/publishers.js', () => ({ publishAudit, publishSms, publishMail, notifyUser, publishOrgEvent }));
 
 vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
   const actual = await importOriginal<typeof CryptoModule>();

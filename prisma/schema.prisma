@@ -159,6 +159,7 @@ model User {
 
   org            Org?           @relation(fields: [org_id], references: [id])
   refresh_tokens RefreshToken[]
+  user_devices   UserDevice[]
   otps           Otp[]
   user_roles     UserRole[]
   user_grants    UserGrant[]
@@ -224,20 +225,35 @@ model UserRole {
 }
 
 model RefreshToken {
-  id          String    @id @default(uuid())
-  token_hash  String    @unique
-  user_id     String
-  device_name String?   @db.VarChar(200)
-  ip_address  String?   @db.VarChar(45)
-  user_agent  String?   @db.VarChar(500)
-  expires_at  DateTime
-  revoked_at  DateTime?
-  created_at  DateTime  @default(now())
+  id           String    @id @default(uuid())
+  token_hash   String    @unique
+  user_id      String
+  device_name  String?   @db.VarChar(200)
+  ip_address   String?   @db.VarChar(45)
+  user_agent   String?   @db.VarChar(500)
+  expires_at   DateTime
+  revoked_at   DateTime?
+  last_used_at DateTime?
+  created_at   DateTime  @default(now())
 
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 
   @@index([user_id])
   @@map("refresh_tokens")
+}
+
+model UserDevice {
+  id             String    @id @default(uuid())
+  user_id        String
+  device_name    String?   @db.VarChar(200)
+  fcm_token      String    @unique @db.VarChar(500)
+  registered_at  DateTime  @default(now())
+  last_active_at DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@map("user_devices")
 }
 
 model Otp {

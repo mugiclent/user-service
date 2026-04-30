@@ -26,6 +26,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
       (req.headers['x-user-rules'] as string | undefined) ?? '[]',
     ) as PackRule<AppRule>[];
 
+    const sessionId = req.headers['x-session-id'] as string | undefined;
     req.user = {
       id: userId,
       org_id: (req.headers['x-org-id'] as string | undefined) ?? null,
@@ -35,6 +36,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
       ) as string[],
       rules: unpackRules(packedRules),
       locale: (req.headers['x-user-locale'] as string | undefined) ?? 'rw',
+      ...(sessionId ? { session_id: sessionId } : {}),
     };
     next();
   } catch {

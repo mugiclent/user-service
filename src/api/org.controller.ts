@@ -5,6 +5,26 @@ import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 
 export const OrgController = {
+  /**
+   * GET /organizations/public
+   * Public paginated list of active orgs for passenger trip-search filter.
+   * No auth required.
+   */
+  async listPublicOrgs(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const query = req.query as { q?: string; page?: string; limit?: string };
+      const result = await OrgService.listPublicOrgs({
+        q: query.q,
+        page: query.page ? parseInt(query.page, 10) : undefined,
+        limit: query.limit ? parseInt(query.limit, 10) : undefined,
+      });
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async createOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;

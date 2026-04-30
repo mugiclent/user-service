@@ -11,6 +11,8 @@ export interface JwtPayload {
   role_slugs: string[];
   rules: PackRule<AppRule>[];
   locale: string;
+  /** RefreshToken.id minted alongside this access token — used to identify the current session. */
+  session_id?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -45,8 +47,8 @@ const getPublicKey = async (): Promise<any> => {
 export const signAccessToken = async (
   payload: Omit<JwtPayload, 'rules'> & { rules: AppRule[] },
 ): Promise<string> => {
-  const { rules, ...rest } = payload;
-  const tokenPayload: JwtPayload = { ...rest, rules: packRules(rules) };
+  const { rules, session_id, ...rest } = payload;
+  const tokenPayload: JwtPayload = { ...rest, rules: packRules(rules), ...(session_id ? { session_id } : {}) };
   const key = await getPrivateKey();
   return new SignJWT(tokenPayload as unknown as Record<string, unknown>)
     .setProtectedHeader({ alg: 'EdDSA' })

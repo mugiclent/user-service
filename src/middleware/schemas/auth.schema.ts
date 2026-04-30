@@ -57,6 +57,7 @@ export const resetPasswordSchema = Joi.object({
 
 export const registerDeviceSchema = Joi.object({
   fcm_token: Joi.string().trim().max(500).required(),
+  device_name: Joi.string().trim().max(200).optional(),
 });
 
 export const resendOtpSchema = Joi.object({

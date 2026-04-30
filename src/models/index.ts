@@ -8,7 +8,7 @@ const adapter = new PrismaPg({ connectionString: config.db.url });
 export const prisma = new PrismaClient({ adapter });
 
 // Re-export Prisma types used across the service
-export type { User, Org, Role, UserRole, RoleGrant, UserGrant, Permission, RefreshToken, Otp, Invitation, InvitationRole } from '@prisma/client';
+export type { User, Org, Role, UserRole, RoleGrant, UserGrant, Permission, RefreshToken, UserDevice, Otp, Invitation, InvitationRole } from '@prisma/client';
 export { Prisma } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
@@ -43,4 +43,6 @@ export interface AuthenticatedUser {
   rules: AppRule[];
   /** User's preferred locale from the JWT — forwarded by the gateway as X-User-Locale. */
   locale: string;
+  /** The RefreshToken.id for the session that minted this access token. */
+  session_id?: string;
 }

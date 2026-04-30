@@ -61,4 +61,13 @@ router.post('/resend-otp', resendOtpRateLimiter, validate(resendOtpSchema), Auth
 // POST /api/v1/auth/register-device  (mobile app: store FCM token, switch notif_channel to 'app')
 router.post('/register-device', authenticate, validate(registerDeviceSchema), AuthController.registerDevice);
 
+// DELETE /api/v1/auth/register-device  (mobile app: remove FCM token for this device)
+router.delete('/register-device', authenticate, AuthController.unregisterDevice);
+
+// GET /api/v1/auth/sessions  (list active sessions for the authenticated user)
+router.get('/sessions', authenticate, AuthController.listSessions);
+
+// DELETE /api/v1/auth/sessions/:id  (revoke a specific session)
+router.delete('/sessions/:id', authenticate, AuthController.revokeSession);
+
 export default router;

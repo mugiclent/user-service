@@ -36,6 +36,9 @@ router.post('/invitations/:id/resend', authenticate, authorize('invite', 'User')
 // DELETE /api/v1/users/invitations/:id
 router.delete('/invitations/:id', authenticate, authorize('invite', 'User'), UserController.deleteInvitation);
 
+// GET /api/v1/users/me/devices  (must be before /me to register as specific path)
+router.get('/me/devices', authenticate, UserController.listMyDevices);
+
 // GET /api/v1/users/me  (must be before /:id — no authorize, every authenticated user accesses own profile)
 router.get('/me', authenticate, UserController.getMe);
 

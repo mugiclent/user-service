@@ -14,7 +14,7 @@ import {
 } from '../utils/ability.js';
 import { PERMISSIONS } from '../loaders/bootstrap.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
-import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser, publishUserEvent } from '../utils/publishers.js';
 import { OtpService } from './otp.service.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
@@ -63,11 +63,13 @@ export const UserService = {
       data.phone_number !== undefined ||
       data.email !== undefined ||
       data.two_factor_enabled !== undefined ||
-      'avatar_path' in data;
+      'avatar_path' in data ||
+      data.first_name !== undefined ||
+      data.last_name !== undefined;
     const current = needsCurrent
       ? await prisma.user.findUniqueOrThrow({
           where: { id: requestingUser.id },
-          select: { login_channel: true, two_factor_enabled: true, avatar_path: true },
+          select: { login_channel: true, two_factor_enabled: true, avatar_path: true, first_name: true, last_name: true },
         })
       : null;
 
@@ -114,6 +116,23 @@ export const UserService = {
     }
 
     if ('avatar_path' in data && current?.avatar_path) deleteFromS3(current.avatar_path);
+
+    if (user.user_type === 'staff' && current) {
+      const nameChanged = (data.first_name !== undefined && current.first_name !== user.first_name) ||
+                          (data.last_name !== undefined && current.last_name !== user.last_name);
+      const avatarChanged = data.avatar_path !== undefined && current.avatar_path !== user.avatar_path;
+      if (nameChanged || avatarChanged) {
+        publishUserEvent({
+          type: 'staff.updated',
+          id: user.id,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          avatar_path: user.avatar_path,
+          org_id: user.org_id,
+          updated_at: user.updated_at.toISOString(),
+        });
+      }
+    }
 
     const patterns = [...user.user_roles.flatMap(ur => ur.role.role_grants.map(g => g.pattern)), ...user.user_grants.map(g => g.pattern)];
     const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
@@ -273,7 +292,7 @@ export const UserService = {
       });
     }
 
-    // Fire audit after response is queued — delta captures what actually changed
+    // Fire audit and domain events after response is queued
     setImmediate(() => {
       const delta: Record<string, { from: unknown; to: unknown }> = {};
       for (const f of ['first_name', 'last_name', 'status', 'org_id'] as const) {
@@ -291,6 +310,26 @@ export const UserService = {
         resource_id: targetId,
         ...(Object.keys(delta).length > 0 ? { delta } : {}),
       });
+
+      if (updated.user_type === 'staff') {
+        if (data.status === 'suspended') {
+          publishUserEvent({ type: 'staff.suspended', id: updated.id, org_id: updated.org_id, status: 'suspended' });
+        }
+
+        const nameChanged = (data.first_name !== undefined && target.first_name !== updated.first_name) ||
+                            (data.last_name !== undefined && target.last_name !== updated.last_name);
+        if (nameChanged) {
+          publishUserEvent({
+            type: 'staff.updated',
+            id: updated.id,
+            first_name: updated.first_name,
+            last_name: updated.last_name,
+            avatar_path: updated.avatar_path,
+            org_id: updated.org_id,
+            updated_at: updated.updated_at.toISOString(),
+          });
+        }
+      }
     });
 
     return serializeUserFullProfile(updated, isAdmin);
@@ -332,7 +371,17 @@ export const UserService = {
       console.error('[user] Failed to set blacklist entry', err);
     }
 
+    const deletedAt = new Date();
     publishAudit({ actor_id: requestingUser.id, action: 'delete', resource: 'User', resource_id: targetId });
+
+    if (target.user_type === 'staff') {
+      publishUserEvent({
+        type: 'staff.deleted',
+        id: targetId,
+        org_id: target.org_id,
+        deleted_at: deletedAt.toISOString(),
+      });
+    }
   },
 
   // ---------------------------------------------------------------------------
@@ -573,6 +622,18 @@ export const UserService = {
     }
 
     publishAudit({ actor_id: user.id, action: 'accept_invite', resource: 'User', resource_id: user.id });
+
+    publishUserEvent({
+      type: 'staff.created',
+      id: user.id,
+      first_name: user.first_name,
+      last_name: user.last_name,
+      org_id: user.org_id,
+      roles: invitation.invitation_roles.map((ir) => ir.role.slug),
+      user_type: 'staff',
+      avatar_path: user.avatar_path,
+      status: 'pending_verification',
+    });
 
     return { user_id: user.id, channels: unverifiedChannels };
   },
@@ -1104,5 +1165,31 @@ export const UserService = {
       resource_id: targetUserId,
       delta: { grant_removed: { from: grant.pattern, to: null } },
     }));
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /users/me/devices
+  // ---------------------------------------------------------------------------
+
+  async listMyDevices(userId: string): Promise<{
+    data: { id: string; device_name: string | null; fcm_token_preview: string; registered_at: Date; last_active_at: Date | null }[]
+  }> {
+    const devices = await prisma.userDevice.findMany({
+      where: { user_id: userId },
+      select: { id: true, device_name: true, fcm_token: true, registered_at: true, last_active_at: true },
+      orderBy: { registered_at: 'desc' },
+    });
+
+    return {
+      data: devices.map((d) => ({
+        id: d.id,
+        device_name: d.device_name,
+        fcm_token_preview: d.fcm_token.length > 6
+          ? `${'*'.repeat(d.fcm_token.length - 6)}${d.fcm_token.slice(-6)}`
+          : d.fcm_token,
+        registered_at: d.registered_at,
+        last_active_at: d.last_active_at,
+      })),
+    };
   },
 };

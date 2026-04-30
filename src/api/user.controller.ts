@@ -250,4 +250,18 @@ export const UserController = {
       next(err);
     }
   },
+
+  /**
+   * GET /users/me/devices
+   * List FCM-registered devices for the authenticated user.
+   */
+  async listMyDevices(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.listMyDevices(user.id);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
 };
