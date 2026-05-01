@@ -56,6 +56,7 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishSms: mockPublishSms,
   publishMail: mockPublishMail,
   notifyUser: mockNotifyUser,
+  publishOrgEvent: vi.fn(),
 }));
 
 vi.mock('../../src/config/index.js', () => ({
@@ -106,6 +107,8 @@ const makeOrg = (overrides: Record<string, unknown> = {}) => ({
   logo_path: null as string | null,
   address: null,
   rejection_reason: null,
+  created_at: new Date(),
+  updated_at: new Date(),
   parent_org: null,
   child_orgs: [],
   ...overrides,

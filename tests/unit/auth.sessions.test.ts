@@ -21,7 +21,21 @@ vi.mock('../../src/services/auth.service.js', () => ({
 
 vi.mock('../../src/utils/sendAuthResponse.js', () => ({
   clearAuthCookies: vi.fn(),
+  sendAuthResponse: vi.fn(),
+  sendRefreshResponse: vi.fn(),
 }));
+
+vi.mock('../../src/models/index.js', () => ({
+  prisma: {
+    userDevice: { upsert: vi.fn().mockResolvedValue({}) },
+    user: { update: vi.fn().mockResolvedValue({}) },
+    $transaction: vi.fn().mockResolvedValue([]),
+  },
+  Prisma: {},
+}));
+
+vi.mock('../../src/services/user.service.js', () => ({ UserService: {} }));
+vi.mock('../../src/models/serializers.js', () => ({ serializeUserForAuth: vi.fn() }));
 
 const { AuthController } = await import('../../src/api/auth.controller.js');
 

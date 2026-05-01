@@ -129,6 +129,8 @@ export const UserService = {
           last_name: user.last_name,
           avatar_path: user.avatar_path,
           org_id: user.org_id,
+          roles: user.user_roles.map((ur) => ur.role.slug),
+          status: user.status,
           updated_at: user.updated_at.toISOString(),
         });
       }
@@ -151,7 +153,7 @@ export const UserService = {
     const scope = getScopeFor(ability, 'read', 'User');
 
     const page = Math.max(1, query.page ?? 1);
-    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+    const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -231,7 +233,7 @@ export const UserService = {
   async updateUser(
     requestingUser: AuthenticatedUser,
     targetId: string,
-    data: { first_name?: string; last_name?: string; status?: string; org_id?: string; role_slugs?: string[] },
+    data: { first_name?: string; last_name?: string; avatar_path?: string | null; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
     const isAdmin = getScopeFor(ability, 'update', 'User') === 'platform';
@@ -259,8 +261,13 @@ export const UserService = {
     const updateData: Prisma.UserUncheckedUpdateInput = {};
     if (first_name !== undefined) updateData.first_name = first_name;
     if (last_name !== undefined) updateData.last_name = last_name;
+    if (data.avatar_path !== undefined) updateData.avatar_path = data.avatar_path as string | null;
     if (status !== undefined) updateData.status = status as Prisma.EnumUserStatusFieldUpdateOperationsInput['set'];
     if (org_id !== undefined) updateData.org_id = org_id;
+
+    if (data.avatar_path !== undefined && data.avatar_path !== target.avatar_path && target.avatar_path) {
+      deleteFromS3(target.avatar_path);
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       const u = await tx.user.update({
@@ -318,7 +325,10 @@ export const UserService = {
 
         const nameChanged = (data.first_name !== undefined && target.first_name !== updated.first_name) ||
                             (data.last_name !== undefined && target.last_name !== updated.last_name);
-        if (nameChanged) {
+        const avatarChanged = data.avatar_path !== undefined && target.avatar_path !== updated.avatar_path;
+        const rolesChanged = JSON.stringify(beforeRoles) !== JSON.stringify(afterRoles);
+        const statusChanged = data.status !== undefined && target.status !== updated.status;
+        if (nameChanged || avatarChanged || rolesChanged || statusChanged) {
           publishUserEvent({
             type: 'staff.updated',
             id: updated.id,
@@ -326,6 +336,8 @@ export const UserService = {
             last_name: updated.last_name,
             avatar_path: updated.avatar_path,
             org_id: updated.org_id,
+            roles: updated.user_roles.map((ur) => ur.role.slug),
+            status: updated.status,
             updated_at: updated.updated_at.toISOString(),
           });
         }
@@ -685,7 +697,7 @@ export const UserService = {
     const hasPlatformScope = getScopeFor(ability, 'invite', 'User') === 'platform';
 
     const page = Math.max(1, query.page ?? 1);
-    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+    const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1117,16 +1129,31 @@ export const UserService = {
 
     const updated = await prisma.user.findUniqueOrThrow({ where: { id: targetUserId }, ...withRoles });
 
-    setImmediate(() => publishAudit({
-      actor_id: requestingUser.id,
-      action: 'update',
-      resource: 'User',
-      resource_id: targetUserId,
-      delta: {
-        grants_added: toAdd,
-        ...(toDelete.length > 0 ? { grants_consolidated: toDelete } : {}),
-      },
-    }));
+    setImmediate(() => {
+      publishAudit({
+        actor_id: requestingUser.id,
+        action: 'update',
+        resource: 'User',
+        resource_id: targetUserId,
+        delta: {
+          grants_added: toAdd,
+          ...(toDelete.length > 0 ? { grants_consolidated: toDelete } : {}),
+        },
+      });
+      if (updated.user_type === 'staff') {
+        publishUserEvent({
+          type: 'staff.updated',
+          id: updated.id,
+          first_name: updated.first_name,
+          last_name: updated.last_name,
+          avatar_path: updated.avatar_path,
+          org_id: updated.org_id,
+          roles: updated.user_roles.map((ur) => ur.role.slug),
+          status: updated.status,
+          updated_at: updated.updated_at.toISOString(),
+        });
+      }
+    });
 
     return serializeUserFullProfile(updated, isAdmin);
   },
@@ -1158,13 +1185,30 @@ export const UserService = {
 
     await prisma.userGrant.delete({ where: { id: grantId } });
 
-    setImmediate(() => publishAudit({
-      actor_id: requestingUser.id,
-      action: 'update',
-      resource: 'User',
-      resource_id: targetUserId,
-      delta: { grant_removed: { from: grant.pattern, to: null } },
-    }));
+    const updated = await prisma.user.findUniqueOrThrow({ where: { id: targetUserId }, ...withRoles });
+
+    setImmediate(() => {
+      publishAudit({
+        actor_id: requestingUser.id,
+        action: 'update',
+        resource: 'User',
+        resource_id: targetUserId,
+        delta: { grant_removed: { from: grant.pattern, to: null } },
+      });
+      if (updated.user_type === 'staff') {
+        publishUserEvent({
+          type: 'staff.updated',
+          id: updated.id,
+          first_name: updated.first_name,
+          last_name: updated.last_name,
+          avatar_path: updated.avatar_path,
+          org_id: updated.org_id,
+          roles: updated.user_roles.map((ur) => ur.role.slug),
+          status: updated.status,
+          updated_at: updated.updated_at.toISOString(),
+        });
+      }
+    });
   },
 
   // ---------------------------------------------------------------------------

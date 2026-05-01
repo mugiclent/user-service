@@ -212,7 +212,7 @@ describe('UserService.updateMe', () => {
   it('skips current user fetch when no sensitive fields in update data', async () => {
     mockUserUpdate.mockResolvedValueOnce(makeUser());
     const authUser = makeAuthUser({ user_type: 'staff' });
-    await UserService.updateMe(authUser as never, { first_name: 'Bob' });
+    await UserService.updateMe(authUser as never, { locale: 'en' });
     expect(mockUserFindUniqueOrThrow).not.toHaveBeenCalled();
   });
 });

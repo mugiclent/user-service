@@ -556,6 +556,38 @@ components:
         created_at:     { type: string, format: date-time }
         updated_at:     { type: string, format: date-time }
 
+    # ── Devices & Sessions ────────────────────────────────────────────────────
+
+    UserDevice:
+      type: object
+      description: An FCM-registered device belonging to the authenticated user.
+      properties:
+        id:                { type: string, format: uuid }
+        device_name:       { type: string, nullable: true, example: 'iPhone 15 Pro', description: 'Friendly name sent by the app at registration. Null if omitted.' }
+        fcm_token_preview: { type: string, example: '****************************abc123', description: 'FCM token with all but the last 6 characters masked. The real token is never returned.' }
+        registered_at:     { type: string, format: date-time }
+        last_active_at:    { type: string, format: date-time, nullable: true, description: 'Last time a push notification was sent to this device. Null if never notified.' }
+
+    Session:
+      type: object
+      description: An active refresh-token session.
+      properties:
+        id:            { type: string, format: uuid, description: 'Session ID — use with `DELETE /auth/sessions/{id}` to revoke.' }
+        device_name:   { type: string, nullable: true, example: 'Chrome on macOS', description: 'Device/browser name captured at login. Null if not provided.' }
+        created_at:    { type: string, format: date-time, description: 'When this session was first created (login time).' }
+        last_used_at:  { type: string, format: date-time, nullable: true, description: 'When this session last refreshed its tokens. Null if never refreshed.' }
+        is_current:    { type: boolean, description: 'True when this session matches the access token used to make this request.' }
+
+    OrgPublicListItem:
+      type: object
+      description: Slim, public-safe org row returned by `GET /organizations/public`.
+      properties:
+        id:       { type: string, format: uuid }
+        name:     { type: string }
+        slug:     { type: string }
+        org_type: { type: string, enum: [company, cooperative, coop_member] }
+        logo_path: { type: string, nullable: true }
+
     # ── IAM ───────────────────────────────────────────────────────────────────
 
     Grant:
@@ -1158,6 +1190,66 @@ paths:
         '204': { description: All sessions revoked }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/sessions:
+    get:
+      tags: [Auth]
+      summary: List active sessions
+      description: |
+        Returns all active refresh-token sessions for the authenticated user —
+        i.e. all devices/browsers that currently have a valid refresh token.
+
+        The `is_current` flag is `true` for the session that corresponds to the
+        access token used to make this request (matched by `session_id` in the JWT).
+        Use this to highlight the caller's own session in the UI.
+
+        Use `DELETE /auth/sessions/{id}` to terminate any individual session.
+      responses:
+        '200':
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Session' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/sessions/{id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke a session
+      description: |
+        Revokes the refresh token for the given session, effectively logging out
+        that device or browser. The next time the client calls `/auth/refresh`,
+        it receives `401` and the user is forced to log in again.
+
+        Rules:
+        - You can only revoke your own sessions — any other `id` returns `404 SESSION_NOT_FOUND`.
+        - You may revoke your current session (`is_current: true`) — the access token
+          remains valid until it naturally expires (15 min TTL).
+        - Revoking an already-revoked session returns `409 SESSION_ALREADY_REVOKED`.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+          description: Session ID from `GET /auth/sessions`.
+      responses:
+        '204': { description: Session revoked }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: '`SESSION_NOT_FOUND` — no session with this ID belonging to the caller.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: '`SESSION_ALREADY_REVOKED` — the session was already revoked.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /auth/resend-otp:
     post:
       tags: [Auth]
@@ -1240,14 +1332,14 @@ paths:
       summary: Register FCM push token
       description: |
         Stores the Firebase Cloud Messaging (FCM) token for the authenticated user's device
-        and switches `notif_channel` to `app`.
+        and switches `notif_channel` to `["app"]`. Uses upsert semantics — re-calling with
+        the same token is safe (e.g. after a Firebase token refresh or app reinstall).
 
         After this call, security events (new device login, password change, account suspension)
         and org lifecycle events are delivered as push notifications to this device.
-        If `notif_channel` was previously `all`, push is added on top of SMS and email.
 
-        Call once after the mobile app obtains a token from the Firebase SDK.
-        Re-call whenever Firebase refreshes the token (e.g. after app reinstall).
+        The registered device appears in `GET /users/me/devices` with the token masked.
+        To remove the device and revert `notif_channel`, call `DELETE /auth/register-device`.
       requestBody:
         required: true
         content:
@@ -1260,17 +1352,85 @@ paths:
                   type: string
                   maxLength: 500
                   description: FCM registration token from the Firebase SDK.
+                device_name:
+                  type: string
+                  maxLength: 200
+                  description: 'Optional friendly name (e.g. "iPhone 15 Pro"). Shown in `GET /users/me/devices`.'
       responses:
         '204': { description: FCM token saved — notif_channel switched to app }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
+    delete:
+      tags: [Auth]
+      summary: Unregister FCM push token
+      description: |
+        Removes the FCM token associated with the authenticated user's device and
+        reverts `notif_channel` to the default for their account type:
+        - Staff: `["sms", "email"]`
+        - Passenger: `["sms"]`
+
+        Returns `404 DEVICE_NOT_REGISTERED` if no FCM token is currently registered.
+      responses:
+        '204': { description: Device unregistered — notif_channel reverted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: '`DEVICE_NOT_REGISTERED` — no FCM token registered for this user.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  ORGANIZATIONS                                                           ║
   # ║  Create and understand organizations before inviting users into them.    ║
-  # ║  Order: create → list/read → update → cooperative-approve/reject →      ║
-  # ║         logo uploads                                                    ║
+  # ║  Order: public list → create → list/read → update →                     ║
+  # ║         cooperative-approve/reject → logo uploads                       ║
   # ╚══════════════════════════════════════════════════════════════════════════╝
+
+  /organizations/public:
+    get:
+      tags: [Organizations]
+      summary: List active organizations (public, no auth)
+      description: |
+        Returns a paginated list of `active` organizations for unauthenticated callers
+        (e.g. passenger app trip-search filter, public directory).
+
+        **No authentication required.**
+
+        Only `active` orgs are returned. Sensitive fields (`tin`, `contact_phone`,
+        `contact_email`, `contact_first_name`, `contact_last_name`, `address`,
+        `license_number`, `approved_at`, `child_orgs`) are never included.
+
+        Responses are publicly cacheable for 60 seconds (`Cache-Control: public, max-age=60`).
+      security: []
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1, minimum: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 12, minimum: 1, maximum: 100 }
+        - in: query
+          name: q
+          schema: { type: string, maxLength: 200 }
+          description: Case-insensitive substring match on org name.
+      responses:
+        '200':
+          description: Paginated public org list
+          headers:
+            Cache-Control:
+              schema: { type: string, example: 'public, max-age=60' }
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrgPublicListItem' }
+                  total: { type: integer }
+                  page:  { type: integer }
+                  limit: { type: integer }
 
   /organizations:
     post:
@@ -1340,7 +1500,7 @@ paths:
           schema: { type: integer, default: 1, minimum: 1 }
         - in: query
           name: limit
-          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          schema: { type: integer, default: 12, minimum: 1, maximum: 100 }
         - in: query
           name: status
           schema: { type: string, enum: [unverified, pending, active, suspended, rejected] }
@@ -1422,8 +1582,10 @@ paths:
         **Required permission:** `update:Org`
 
         Field-level rules:
-        - `status` and `rejection_reason` — platform admins only. `org-admin` callers receive `403` if these fields are included.
+        - `status`, `rejection_reason`, and `parent_org_id` — platform admins only. `org-admin` callers receive `403` if these fields are included.
         - `logo_path` — use `path` from the logo presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
+        - `story` — free-form text description of the org. Pass `null` to clear.
+        - `parent_org_id` — reassigns the org to a different parent cooperative (admin only). `null` removes the parent. Fires an `org.updated` domain event when changed.
         - `status: suspended` — blacklists all active access tokens for this org's users in Redis (15 min TTL). Sends `org.suspended` notifications directly to the org contact and fans out to all active org users via their `notif_channel` preference.
         - `status: rejected` — sends `org.rejected` notifications to the org contact.
         - `status: active` — final approval by platform admins. For `coop_member` orgs, the parent
@@ -1433,6 +1595,11 @@ paths:
           7-day expiry). Notification type varies by org_type: `company`/`cooperative` receive
           `org_approved.sms`/`org_approved.mail`; `coop_member` receives `org.member_approved`
           (with invite link) and the parent cooperative's admins are notified via `org.member_approved_notify_coop`.
+
+        **Domain events** published to `logs` exchange → `org.events` routing key:
+        - `org.activated` — when `status` set to `active` (includes `name`, `slug`, `org_type`, `logo_path`, `parent_org_id`, `story`)
+        - `org.updated` — when `name`, `logo_path`, `parent_org_id`, or `story` changes
+        - `org.suspended` — when `status` set to `suspended`
       requestBody:
         required: true
         content:
@@ -1448,7 +1615,8 @@ paths:
                 contact_phone:        { type: string, pattern: '^\+\d{7,15}$', description: 'E.164 format (e.g. +250788000001).' }
                 address:              { type: string, maxLength: 500 }
                 logo_path:            { type: string, maxLength: 500, nullable: true, description: 'S3 path from logo presigned-url. null removes the logo.' }
-                story:                { type: string, maxLength: 5000, nullable: true, description: 'Free-form description. null clears it.' }
+                story:                { type: string, maxLength: 5000, nullable: true, description: 'Free-form description of the org. null clears it. Fires org.updated domain event when changed.' }
+                parent_org_id:        { type: string, format: uuid, nullable: true, description: 'Admin only. Reassigns the org to a different parent cooperative. null removes the parent. Fires org.updated domain event when changed.' }
                 status:
                   type: string
                   enum: [active, suspended, rejected]
@@ -2045,6 +2213,34 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
+  /users/me/devices:
+    get:
+      tags: [Users]
+      summary: List registered FCM devices
+      description: |
+        Returns all FCM-registered devices for the authenticated user, ordered by
+        `registered_at` descending (newest first).
+
+        Only FCM push-notification devices are tracked here. Browser sessions appear
+        in `GET /auth/sessions` instead (refresh-token based, not FCM).
+
+        The raw FCM token is never returned — only the last 6 characters are visible
+        in `fcm_token_preview` (the rest is masked with `*`).
+
+        Use `DELETE /auth/register-device` to remove the current device's FCM registration.
+      responses:
+        '200':
+          description: Registered devices
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/UserDevice' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /users/me/avatar/presigned-url:
     get:
       tags: [Users]
@@ -2390,7 +2586,7 @@ paths:
           schema: { type: integer, default: 1, minimum: 1 }
         - in: query
           name: limit
-          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          schema: { type: integer, default: 12, minimum: 1, maximum: 100 }
         - in: query
           name: org_id
           schema: { type: string, format: uuid }
@@ -2584,7 +2780,7 @@ paths:
           schema: { type: integer, default: 1, minimum: 1 }
         - in: query
           name: limit
-          schema: { type: integer, default: 20, minimum: 1, maximum: 100 }
+          schema: { type: integer, default: 12, minimum: 1, maximum: 100 }
         - in: query
           name: status
           schema: { type: string, enum: [active, pending_verification, suspended] }
@@ -2655,10 +2851,15 @@ paths:
         Field notes:
         - `role_slugs` — full role replacement (all existing roles are deleted and replaced).
           Requires `assign_role:User` (`platform-admin` only).
+        - `avatar_path` — use `path` from the avatar presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
         - `status: suspended` — immediately blacklists all active access tokens in Redis
           (15 min TTL matching the JWT TTL) and sends a `security.account_suspended`
           notification to the target user via their `notif_channel` preference.
         - `org_id` — reassigns the user to a different org (`platform-admin` only).
+
+        **Domain events** published to `logs` exchange → `user.events` routing key (staff users only):
+        - `staff.updated` — when `first_name`, `last_name`, `avatar_path`, `role_slugs`, or `status` changes (includes `roles[]` and `status` in payload)
+        - `staff.suspended` — additionally fired when `status` set to `suspended`
       requestBody:
         required: true
         content:
@@ -2669,6 +2870,7 @@ paths:
               properties:
                 first_name:  { type: string, maxLength: 100 }
                 last_name:   { type: string, maxLength: 100 }
+                avatar_path: { type: string, maxLength: 500, nullable: true, description: 'S3 path from avatar presigned-url. null removes the avatar.' }
                 status:      { type: string, enum: [active, suspended], description: Suspended triggers Redis token blacklist and a push/SMS notification to the user. }
                 org_id:      { type: string, format: uuid }
                 role_slugs:
@@ -2729,6 +2931,9 @@ paths:
         - `org` scope — own-org users only; `platform`-scoped patterns are rejected with `403 GRANT_SCOPE_ESCALATION`.
 
         Changes take effect on the user's **next token refresh**.
+
+        Fires a `staff.updated` domain event (`logs` exchange → `user.events`) for staff users,
+        including the full updated `roles[]` and `status` in the payload.
       requestBody:
         required: true
         content:
@@ -2788,6 +2993,9 @@ paths:
         Returns `403 MANAGED_GRANT_IMMUTABLE` if the grant has `is_managed: true`.
 
         Changes take effect on the user's **next token refresh**.
+
+        Fires a `staff.updated` domain event (`logs` exchange → `user.events`) for staff users,
+        including the full updated `roles[]` and `status` in the payload.
       responses:
         '204': { description: Grant removed }
         '401': { $ref: '#/components/responses/Unauthorized' }

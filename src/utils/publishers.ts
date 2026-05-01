@@ -166,6 +166,7 @@ export type OrgDomainEvent =
       status: 'active';
       logo_path: string | null;
       parent_org_id: string | null;
+      story: string | null;
     }
   | {
       type: 'org.updated';
@@ -173,6 +174,8 @@ export type OrgDomainEvent =
       name: string;
       slug: string;
       logo_path: string | null;
+      parent_org_id: string | null;
+      story: string | null;
       updated_at: string;
     }
   | {
@@ -208,6 +211,8 @@ export type StaffUserDomainEvent =
       last_name: string;
       avatar_path: string | null;
       org_id: string | null;
+      roles: string[];
+      status: string;
       updated_at: string;
     }
   | {

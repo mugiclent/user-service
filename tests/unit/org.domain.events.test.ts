@@ -157,6 +157,38 @@ describe('OrgService domain events — org.updated', () => {
     );
   });
 
+  it('publishes org.updated when parent_org_id changes', async () => {
+    mockFindUnique.mockResolvedValueOnce({ ...baseOrg, parent_org_id: null });
+    mockUpdate.mockResolvedValue({
+      ...baseOrg,
+      parent_org_id: 'coop-1',
+      updated_at: new Date(),
+    });
+
+    await OrgService.updateOrg(adminUser as never, 'org-1', { parent_org_id: 'coop-1' });
+    await flushImmediate();
+
+    expect(publishOrgEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.updated', id: 'org-1', parent_org_id: 'coop-1' }),
+    );
+  });
+
+  it('publishes org.updated when story changes', async () => {
+    mockFindUnique.mockResolvedValueOnce({ ...baseOrg, story: null });
+    mockUpdate.mockResolvedValue({
+      ...baseOrg,
+      story: 'We connect Rwanda.',
+      updated_at: new Date(),
+    });
+
+    await OrgService.updateOrg(adminUser as never, 'org-1', { story: 'We connect Rwanda.' });
+    await flushImmediate();
+
+    expect(publishOrgEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'org.updated', id: 'org-1', story: 'We connect Rwanda.' }),
+    );
+  });
+
   it('does NOT publish org.updated when other fields change', async () => {
     mockFindUnique.mockResolvedValueOnce({ ...baseOrg });
     mockUpdate.mockResolvedValue({ ...baseOrg, contact_phone: '+250788000002' });

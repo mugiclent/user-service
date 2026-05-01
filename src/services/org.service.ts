@@ -113,7 +113,7 @@ export const OrgService = {
     limit?: number;
   }): Promise<{ data: { id: string; name: string; slug: string; org_type: string; logo_path: string | null }[]; total: number; page: number; limit: number }> {
     const page = Math.max(1, query.page ?? 1);
-    const limit = Math.min(100, Math.max(1, query.limit ?? 50));
+    const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -208,7 +208,7 @@ export const OrgService = {
     const admin = getScopeFor(ability, 'read', 'Org') === 'platform';
 
     const page = Math.max(1, query.page ?? 1);
-    const limit = Math.min(100, Math.max(1, query.limit ?? 20));
+    const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -312,6 +312,7 @@ export const OrgService = {
       story?: string | null;
       status?: string;
       rejection_reason?: string;
+      parent_org_id?: string | null;
     },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
@@ -326,7 +327,7 @@ export const OrgService = {
 
     const existing = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
-      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true, org_type: true, cooperative_approved_at: true },
+      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true, org_type: true, cooperative_approved_at: true, parent_org_id: true, story: true },
     });
     if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
     const oldLogoPath = existing.logo_path;
@@ -343,6 +344,7 @@ export const OrgService = {
     if (data.address !== undefined) updateData['address'] = data.address;
     if (data.logo_path !== undefined) updateData['logo_path'] = data.logo_path;
     if (data.story !== undefined) updateData['story'] = data.story;
+    if (data.parent_org_id !== undefined && admin) updateData['parent_org_id'] = data.parent_org_id;
 
     if (data.status !== undefined && admin) {
       // coop_member requires cooperative sign-off before admin can activate
@@ -478,6 +480,7 @@ export const OrgService = {
           status: 'active',
           logo_path: org.logo_path,
           parent_org_id: org.parent_org_id,
+          story: org.story,
         });
       }
 
@@ -487,13 +490,17 @@ export const OrgService = {
 
       const nameChanged = data.name !== undefined && existing.name !== org.name;
       const logoChanged = data.logo_path !== undefined && existing.logo_path !== org.logo_path;
-      if (nameChanged || logoChanged) {
+      const parentChanged = data.parent_org_id !== undefined && existing.parent_org_id !== org.parent_org_id;
+      const storyChanged = data.story !== undefined && existing.story !== org.story;
+      if (nameChanged || logoChanged || parentChanged || storyChanged) {
         publishOrgEvent({
           type: 'org.updated',
           id: org.id,
           name: org.name,
           slug: org.slug,
           logo_path: org.logo_path,
+          parent_org_id: org.parent_org_id,
+          story: org.story,
           updated_at: org.updated_at.toISOString(),
         });
       }

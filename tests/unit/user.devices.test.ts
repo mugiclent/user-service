@@ -1,8 +1,10 @@
 /**
- * Tests for GET /users/me/devices via UserController + UserService.
+ * Tests for GET /users/me/devices via UserController.
+ * Service-layer tests are in user.devices.service.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
+import type * as AbilityModule from '../../src/utils/ability.js';
 
 // ── mocks ──────────────────────────────────────────────────────────────────────
 
@@ -36,11 +38,9 @@ vi.mock('../../src/services/media.service.js', () => ({
   MediaService: { generateUserAvatarPresignedUrl: vi.fn() },
 }));
 
-const mockUserDeviceFindMany = vi.fn().mockResolvedValue([]);
-
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
-    userDevice: { findMany: mockUserDeviceFindMany },
+    userDevice: { findMany: vi.fn() },
     user: { findUniqueOrThrow: vi.fn(), findUnique: vi.fn(), update: vi.fn(), findMany: vi.fn(), count: vi.fn() },
     role: { findFirst: vi.fn(), findMany: vi.fn() },
     invitation: { findUnique: vi.fn(), create: vi.fn() },
@@ -64,7 +64,7 @@ vi.mock('../../src/loaders/redis.js', () => ({ getRedisClient: () => ({ set: vi.
 vi.mock('../../src/utils/crypto.js', () => ({ generateRawToken: vi.fn(), hashToken: vi.fn(), hashPassword: vi.fn(), verifyPassword: vi.fn() }));
 vi.mock('../../src/utils/s3.js', () => ({ deleteFromS3: vi.fn() }));
 vi.mock('../../src/utils/ability.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/utils/ability.js')>();
+  const actual = await importOriginal<typeof AbilityModule>();
   return { ...actual, buildRulesFromGrants: vi.fn().mockReturnValue([]) };
 });
 vi.mock('../../src/models/serializers.js', () => ({
@@ -77,7 +77,6 @@ vi.mock('../../src/services/otp.service.js', () => ({ OtpService: { create: vi.f
 vi.mock('../../src/loaders/bootstrap.js', () => ({ PERMISSIONS: [] }));
 
 const { UserController } = await import('../../src/api/user.controller.js');
-const { UserService } = await import('../../src/services/user.service.js');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -121,36 +120,5 @@ describe('UserController.listMyDevices', () => {
     const req = { user: authUser } as unknown as Request;
     await UserController.listMyDevices(req, makeRes(), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
-  });
-});
-
-// ── UserService.listMyDevices ─────────────────────────────────────────────────
-
-describe('UserService.listMyDevices', () => {
-  it('masks fcm_token, keeping last 6 chars', async () => {
-    mockUserDeviceFindMany.mockResolvedValueOnce([
-      { id: 'd1', device_name: null, fcm_token: 'ABCDEF123456', registered_at: new Date(), last_active_at: null },
-    ]);
-    const result = await UserService.listMyDevices('user-1');
-    expect(result.data[0].fcm_token_preview).toBe('******123456');
-    expect(result.data[0].fcm_token_preview).not.toContain('ABCDEF');
-  });
-
-  it('returns data: [] when no devices are registered', async () => {
-    mockUserDeviceFindMany.mockResolvedValueOnce([]);
-    const result = await UserService.listMyDevices('user-1');
-    expect(result.data).toEqual([]);
-  });
-
-  it('returns 401 when unauthenticated (controller guard)', async () => {
-    // The authenticate middleware returns 401 — controller is not called without user.
-    // We verify the controller passes the user.id correctly.
-    mockListMyDevices.mockResolvedValueOnce({ data: [] });
-    const req = { user: undefined } as unknown as Request;
-    // Without user, req.user cast would throw — simulate next being called with error
-    await UserController.listMyDevices(req, makeRes(), next);
-    // Either service called with undefined.id (throws) or next is called
-    // In this test we just verify no crash and next is called on error path
-    // (The actual 401 comes from authenticate middleware, not the controller)
   });
 });

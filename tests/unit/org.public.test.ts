@@ -1,5 +1,6 @@
 /**
- * Tests for GET /organizations/public via OrgController + OrgService.
+ * Tests for GET /organizations/public via OrgController.
+ * Service-layer tests are in org.public.service.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
@@ -24,12 +25,9 @@ vi.mock('../../src/services/media.service.js', () => ({
   MediaService: { generateOrgLogoPresignedUrl: vi.fn() },
 }));
 
-const mockOrgFindMany = vi.fn().mockResolvedValue([]);
-const mockOrgCount = vi.fn().mockResolvedValue(0);
-
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
-    org: { findMany: mockOrgFindMany, count: mockOrgCount, findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
+    org: { findMany: vi.fn(), count: vi.fn(), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn() },
     user: { findMany: vi.fn(), findUnique: vi.fn() },
     role: { findFirst: vi.fn() },
     invitation: { create: vi.fn() },
@@ -55,16 +53,6 @@ vi.mock('../../src/config/index.js', () => ({ config: { staffAppUrl: 'https://ap
 
 const { OrgController } = await import('../../src/api/org.controller.js');
 
-// ── OrgService.listPublicOrgs unit tests ──────────────────────────────────────
-
-vi.mock('../../src/utils/slugify.js', () => ({ slugify: vi.fn((n: string) => n.toLowerCase().replace(/\s/g, '-')) }));
-vi.mock('../../src/utils/ability.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/utils/ability.js')>();
-  return { ...actual };
-});
-
-const { OrgService } = await import('../../src/services/org.service.js');
-
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 const makeRes = () => {
@@ -82,16 +70,16 @@ beforeEach(() => vi.clearAllMocks());
 describe('OrgController.listPublicOrgs', () => {
   it('returns 200 with no auth token', async () => {
     const data = [{ id: 'o1', name: 'Acme', slug: 'acme', org_type: 'company', logo_path: null }];
-    mockListPublicOrgs.mockResolvedValueOnce({ data, total: 1, page: 1, limit: 50 });
+    mockListPublicOrgs.mockResolvedValueOnce({ data, total: 1, page: 1, limit: 12 });
     const req = { query: {} } as unknown as Request;
     const res = makeRes();
     await OrgController.listPublicOrgs(req, res, next);
     expect(res.status).toHaveBeenCalledWith(200);
-    expect(res.json).toHaveBeenCalledWith({ data, total: 1, page: 1, limit: 50 });
+    expect(res.json).toHaveBeenCalledWith({ data, total: 1, page: 1, limit: 12 });
   });
 
   it('sets Cache-Control: public, max-age=60 header', async () => {
-    mockListPublicOrgs.mockResolvedValueOnce({ data: [], total: 0, page: 1, limit: 50 });
+    mockListPublicOrgs.mockResolvedValueOnce({ data: [], total: 0, page: 1, limit: 12 });
     const req = { query: {} } as unknown as Request;
     const res = makeRes();
     await OrgController.listPublicOrgs(req, res, next);
@@ -99,7 +87,7 @@ describe('OrgController.listPublicOrgs', () => {
   });
 
   it('passes q parameter to service', async () => {
-    mockListPublicOrgs.mockResolvedValueOnce({ data: [], total: 0, page: 1, limit: 50 });
+    mockListPublicOrgs.mockResolvedValueOnce({ data: [], total: 0, page: 1, limit: 12 });
     const req = { query: { q: 'acme' } } as unknown as Request;
     await OrgController.listPublicOrgs(req, makeRes(), next);
     expect(mockListPublicOrgs).toHaveBeenCalledWith(expect.objectContaining({ q: 'acme' }));
@@ -117,68 +105,5 @@ describe('OrgController.listPublicOrgs', () => {
     const req = { query: {} } as unknown as Request;
     await OrgController.listPublicOrgs(req, makeRes(), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
-  });
-});
-
-// ── OrgService.listPublicOrgs unit tests ─────────────────────────────────────
-
-describe('OrgService.listPublicOrgs', () => {
-  it('returns only active orgs', async () => {
-    await OrgService.listPublicOrgs({});
-    expect(mockOrgFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ status: 'active', deleted_at: null }),
-      }),
-    );
-  });
-
-  it('sensitive fields are never present in the response', async () => {
-    mockOrgFindMany.mockResolvedValueOnce([
-      { id: 'o1', name: 'Acme', slug: 'acme', org_type: 'company', logo_path: null },
-    ]);
-    mockOrgCount.mockResolvedValueOnce(1);
-    const result = await OrgService.listPublicOrgs({});
-    const org = result.data[0];
-    expect(org).not.toHaveProperty('tin');
-    expect(org).not.toHaveProperty('contact_phone');
-    expect(org).not.toHaveProperty('contact_email');
-    expect(org).not.toHaveProperty('contact_first_name');
-    expect(org).not.toHaveProperty('contact_last_name');
-    expect(org).not.toHaveProperty('address');
-    expect(org).not.toHaveProperty('license_number');
-    expect(org).not.toHaveProperty('approved_at');
-    expect(org).not.toHaveProperty('child_orgs');
-  });
-
-  it('filters by q parameter case-insensitively', async () => {
-    await OrgService.listPublicOrgs({ q: 'Acme' });
-    expect(mockOrgFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          name: { contains: 'Acme', mode: 'insensitive' },
-        }),
-      }),
-    );
-  });
-
-  it('paginates correctly', async () => {
-    await OrgService.listPublicOrgs({ page: 3, limit: 10 });
-    expect(mockOrgFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 20, take: 10 }),
-    );
-  });
-
-  it('defaults to page 1 limit 50', async () => {
-    await OrgService.listPublicOrgs({});
-    expect(mockOrgFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ skip: 0, take: 50 }),
-    );
-  });
-
-  it('caps limit at 100', async () => {
-    await OrgService.listPublicOrgs({ limit: 999 });
-    expect(mockOrgFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 100 }),
-    );
   });
 });

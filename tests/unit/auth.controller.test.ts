@@ -53,8 +53,14 @@ vi.mock('../../src/utils/sendAuthResponse.js', () => ({
 }));
 
 const mockPrismaUserUpdate = vi.fn().mockResolvedValue({});
+const mockPrismaUserDeviceUpsert = vi.fn().mockResolvedValue({});
+const mockPrismaTransaction = vi.fn().mockResolvedValue([]);
 vi.mock('../../src/models/index.js', () => ({
-  prisma: { user: { update: mockPrismaUserUpdate } },
+  prisma: {
+    user: { update: mockPrismaUserUpdate },
+    userDevice: { upsert: mockPrismaUserDeviceUpsert },
+    $transaction: mockPrismaTransaction,
+  },
 }));
 
 const { AuthController } = await import('../../src/api/auth.controller.js');
@@ -332,10 +338,13 @@ describe('AuthController.logoutAll', () => {
 // ── registerDevice ────────────────────────────────────────────────────────────
 
 describe('AuthController.registerDevice', () => {
-  it('updates user fcm_token and returns 204', async () => {
+  it('upserts UserDevice and updates user fcm_token, returns 204', async () => {
     const req = { user: makeUser(), body: { fcm_token: 'fcm-abc-123' } } as unknown as Request;
     const res = makeRes();
     await AuthController.registerDevice(req, res, next);
+    expect(mockPrismaUserDeviceUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { fcm_token: 'fcm-abc-123' } }),
+    );
     expect(mockPrismaUserUpdate).toHaveBeenCalledWith({
       where: { id: 'user-1' },
       data: { fcm_token: 'fcm-abc-123', notif_channel: ['app'] },
@@ -344,7 +353,7 @@ describe('AuthController.registerDevice', () => {
   });
 
   it('calls next(err) on error', async () => {
-    mockPrismaUserUpdate.mockRejectedValueOnce(new Error('db fail'));
+    mockPrismaTransaction.mockRejectedValueOnce(new Error('db fail'));
     const req = { user: makeUser(), body: { fcm_token: 'tok' } } as unknown as Request;
     await AuthController.registerDevice(req, makeRes(), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
