@@ -135,6 +135,16 @@ info:
     `POST /auth/register-device`. Subsequent security events (new device login, password change,
     account suspension) and org lifecycle events are delivered based on `notif_channel`.
 
+    ## Wallet Top-Up (SSE)
+
+    Wallet top-ups use a two-step async pattern:
+
+    1. `POST /users/me/wallet/topup` → returns `{ topup_id }` (202 Accepted).
+    2. `GET /users/me/wallet/topup/{topup_id}/stream` → open SSE stream.
+
+    The stream emits one named event (`completed`, `failed`, or `timeout`) and closes.
+    See the **Wallet** tag for full sequence diagram, client code example, and event shapes.
+
 servers:
   - url: /api/v1
     description: Default base path
@@ -165,6 +175,75 @@ tags:
     description: |
       Read-only catalog of all valid permission subjects and actions.
       Use `GET /permissions` to build the pattern picker when creating or editing roles.
+  - name: Wallet
+    description: |
+      Wallet top-up flow via mobile money (MTN MoMo / Airtel Money).
+
+      ## How it works
+
+      Top-ups are **asynchronous**: the payment is processed by the payment service in the
+      background. The user-service acts as a bridge between the client and the payment pipeline.
+
+      ### Sequence
+
+      ```
+      Client                    user-service              payment-service
+        │                            │                          │
+        ├─ POST /wallet/topup ──────►│                          │
+        │                            ├─ wallet.topup.requested ─► (RabbitMQ)
+        │◄── 202 { topup_id } ───────┤                          │
+        │                            │                          │ (processes MoMo push)
+        ├─ GET /wallet/topup/:id/stream ──►│                    │
+        │   (SSE connection opened)  │                          │
+        │                            │◄── payment.events ───────┤ (RabbitMQ)
+        │◄── event: completed ───────┤  (Redis pub/sub bridge)  │
+        │    (SSE connection closed) │                          │
+      ```
+
+      ### SSE Event Types
+
+      The stream (`GET /users/me/wallet/topup/:id/stream`) emits **named SSE events**:
+
+      | Event name | When |
+      |---|---|
+      | `completed` | Payment succeeded — `data` contains `new_balance` |
+      | `failed` | Payment failed — `data` contains `reason` |
+      | `timeout` | No confirmation within 3 minutes — client should poll or retry |
+
+      ### Client implementation
+
+      ```js
+      // 1. Initiate the top-up
+      const { topup_id } = await fetch('/api/v1/users/me/wallet/topup', {
+        method: 'POST',
+        body: JSON.stringify({ amount: 5000, phone_number: '+250788000001', provider: 'mtn_momo' }),
+      }).then(r => r.json());
+
+      // 2. Open the SSE stream
+      const es = new EventSource(`/api/v1/users/me/wallet/topup/${topup_id}/stream`);
+
+      es.addEventListener('completed', (e) => {
+        const { new_balance } = JSON.parse(e.data);
+        console.log('Top-up complete, new balance:', new_balance);
+        es.close();
+      });
+
+      es.addEventListener('failed', (e) => {
+        const { reason } = JSON.parse(e.data);
+        console.error('Top-up failed:', reason);
+        es.close();
+      });
+
+      es.addEventListener('timeout', () => {
+        console.warn('No confirmation — check status manually');
+        es.close();
+      });
+      ```
+
+      ### Ownership & security
+
+      The SSE endpoint verifies that `topup_id` was issued by the authenticated user.
+      A 404 is returned for unknown or expired IDs (ownership key expires after 10 minutes).
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -491,6 +570,7 @@ components:
         contact_phone_verified_at:   { type: string, format: date-time, nullable: true }
         contact_email_verified_at:   { type: string, format: date-time, nullable: true }
         parent_org_id:               { type: string, format: uuid, nullable: true }
+        cancellations_allowed:       { type: boolean }
         cooperative_approved_at:     { type: string, format: date-time, nullable: true, description: 'Set when the parent cooperative pre-approves a coop_member.' }
         approved_at:                 { type: string, format: date-time, nullable: true }
         created_at:                  { type: string, format: date-time }
@@ -518,6 +598,7 @@ components:
         tin:                         { type: string, nullable: true }
         license_number:              { type: string, nullable: true }
         story:                       { type: string, nullable: true, description: Free-form text the org provided about themselves. }
+        cancellations_allowed:       { type: boolean, description: 'Whether this org permits passengers to cancel tickets. Defaults to true. Settable by org-admin or platform admin.' }
         parent_org_id:               { type: string, format: uuid, nullable: true }
         parent_org:
           nullable: true
@@ -650,6 +731,61 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             error: { code: FORBIDDEN }
+    # ── Wallet ────────────────────────────────────────────────────────────────
+
+    TopupInitiated:
+      type: object
+      description: Returned immediately after a wallet top-up is accepted for processing.
+      required: [topup_id]
+      properties:
+        topup_id:
+          type: string
+          format: uuid
+          example: d3f8a1b2-0000-0000-0000-000000000042
+          description: >
+            Opaque identifier for this top-up request. Use it to open the SSE
+            stream (`GET /users/me/wallet/topup/{topup_id}/stream`). Valid for 10 minutes.
+
+    TopupEvent:
+      type: object
+      description: |
+        Payload delivered as an SSE `data` field on the `completed` or `failed` event.
+        Parse with `JSON.parse(event.data)`.
+      properties:
+        type:
+          type: string
+          enum: [topup.completed, topup.failed]
+          example: topup.completed
+        topup_id:
+          type: string
+          format: uuid
+          example: d3f8a1b2-0000-0000-0000-000000000042
+        user_id:
+          type: string
+          format: uuid
+        amount:
+          type: integer
+          example: 5000
+          description: Amount that was requested (in smallest currency unit).
+        new_balance:
+          type: integer
+          example: 15000
+          description: Updated wallet balance — only present on `topup.completed`.
+        reason:
+          type: string
+          example: Transaction declined by operator
+          description: Human-readable failure reason — only present on `topup.failed`.
+
+    OrgBillingOverdue:
+      description: >
+        The organisation's account is billing-overdue. All mutating operations
+        are suspended until the outstanding balance is settled. Read operations
+        (GET) and authentication endpoints (logout, refresh) remain available.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: ORG_BILLING_OVERDUE, message: Your organisation account is suspended due to an outstanding balance. Please settle the payment to restore access. }
     NotFound:
       description: Resource not found
       content:
@@ -1597,8 +1733,8 @@ paths:
           (with invite link) and the parent cooperative's admins are notified via `org.member_approved_notify_coop`.
 
         **Domain events** published to `logs` exchange → `org.events` routing key:
-        - `org.activated` — when `status` set to `active` (includes `name`, `slug`, `org_type`, `logo_path`, `parent_org_id`, `story`)
-        - `org.updated` — when `name`, `logo_path`, `parent_org_id`, or `story` changes
+        - `org.activated` — when `status` set to `active` (includes `name`, `slug`, `org_type`, `logo_path`, `parent_org_id`, `story`, `cancellations_allowed`)
+        - `org.updated` — when `name`, `logo_path`, `parent_org_id`, `story`, or `cancellations_allowed` changes
         - `org.suspended` — when `status` set to `suspended`
       requestBody:
         required: true
@@ -1616,6 +1752,7 @@ paths:
                 address:              { type: string, maxLength: 500 }
                 logo_path:            { type: string, maxLength: 500, nullable: true, description: 'S3 path from logo presigned-url. null removes the logo.' }
                 story:                { type: string, maxLength: 5000, nullable: true, description: 'Free-form description of the org. null clears it. Fires org.updated domain event when changed.' }
+                cancellations_allowed: { type: boolean, description: 'Whether this org permits passengers to cancel tickets. Settable by org-admin or platform admin. Fires org.updated domain event when changed.' }
                 parent_org_id:        { type: string, format: uuid, nullable: true, description: 'Admin only. Reassigns the org to a different parent cooperative. null removes the parent. Fires org.updated domain event when changed.' }
                 status:
                   type: string
@@ -2442,6 +2579,161 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '410': { description: OTP expired, content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  # ── Wallet ──────────────────────────────────────────────────────────────────
+
+  /users/me/wallet/topup:
+    post:
+      tags: [Wallet]
+      summary: Initiate a wallet top-up
+      description: |
+        Submits a wallet top-up request via mobile money. The request is accepted immediately
+        and processed asynchronously by the payment service.
+
+        Returns a `topup_id` that the client must use to open the SSE stream
+        (`GET /users/me/wallet/topup/{topup_id}/stream`) to receive the payment result.
+
+        **Note:** This endpoint is allowed even when an organisation's billing is overdue
+        (`ORG_BILLING_OVERDUE`), because topping up is the action required to clear the balance.
+      security:
+        - BearerAuth: []
+        - CookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, phone_number, provider]
+              properties:
+                amount:
+                  type: integer
+                  minimum: 1
+                  maximum: 5000000
+                  example: 5000
+                  description: Amount to top up in the smallest currency unit (e.g. RWF).
+                phone_number:
+                  type: string
+                  example: '+250788000001'
+                  description: Mobile money phone number in E.164 format.
+                provider:
+                  type: string
+                  enum: [mtn_momo, airtel_money]
+                  example: mtn_momo
+                  description: Mobile money provider.
+      responses:
+        '202':
+          description: Top-up request accepted — await confirmation via SSE stream.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TopupInitiated' }
+              example:
+                topup_id: d3f8a1b2-0000-0000-0000-000000000042
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /users/me/wallet/topup/{topup_id}/stream:
+    get:
+      tags: [Wallet]
+      summary: Stream top-up status (SSE)
+      description: |
+        Opens a **Server-Sent Events** (SSE) stream that delivers the payment result for
+        a previously initiated top-up in real time.
+
+        ## Connection
+
+        Set the `Accept: text/event-stream` header (or use the browser `EventSource` API).
+        The response uses `Content-Type: text/event-stream` with chunked transfer encoding.
+        **Do not** go through a buffering proxy for this endpoint.
+
+        ## Events
+
+        Each event has a named `event` field and a JSON `data` field:
+
+        ```
+        event: completed
+        data: {"type":"topup.completed","topup_id":"...","amount":5000,"new_balance":15000}
+
+        event: failed
+        data: {"type":"topup.failed","topup_id":"...","reason":"Transaction declined by operator"}
+
+        event: timeout
+        data: {"message":"Payment confirmation timed out"}
+        ```
+
+        | Event | When | Action |
+        |---|---|---|
+        | `completed` | Payment confirmed by mobile money | Update balance UI, close stream |
+        | `failed` | Payment rejected or errored | Show error, close stream |
+        | `timeout` | No result within 3 minutes | Notify user, close stream, allow retry |
+
+        The stream closes itself after emitting any event. Clients should call `EventSource.close()`
+        on receipt of any event to clean up the browser connection.
+
+        ## Ownership
+
+        `topup_id` must have been issued to the authenticated user by
+        `POST /users/me/wallet/topup`. The ownership token expires after 10 minutes.
+        A 404 is returned for unknown, expired, or foreign IDs.
+
+        ## Reconnects
+
+        The SSE protocol supports automatic reconnection via the `Last-Event-ID` header,
+        but this stream delivers exactly one event and closes — reconnecting after the event
+        was received will produce a 404 (ownership key is not refreshed). Do not reconnect
+        after the stream closes naturally.
+      security:
+        - BearerAuth: []
+        - CookieAuth: []
+      parameters:
+        - in: path
+          name: topup_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+          example: d3f8a1b2-0000-0000-0000-000000000042
+          description: The `topup_id` returned by `POST /users/me/wallet/topup`.
+      responses:
+        '200':
+          description: |
+            SSE stream opened successfully. The response body is a continuous stream of
+            named events; it does **not** conform to standard JSON response shape.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: text/event-stream
+            Cache-Control:
+              schema:
+                type: string
+                example: no-cache
+            Connection:
+              schema:
+                type: string
+                example: keep-alive
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Raw SSE stream. Each message is separated by a blank line.
+                  Parse individual event payloads with `JSON.parse(event.data)`.
+                  See the `TopupEvent` schema for the `data` field shape.
+              example: |
+                event: completed
+                data: {"type":"topup.completed","topup_id":"d3f8a1b2-0000-0000-0000-000000000042","amount":5000,"new_balance":15000}
+
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404':
+          description: >
+            `topup_id` not found, expired (> 10 minutes since initiation), or does not
+            belong to the authenticated user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: NOT_FOUND }
 
   /users/invite:
     post:

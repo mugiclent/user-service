@@ -60,6 +60,13 @@ enum PermissionAction {
   upload
   export
   receive
+  manage
+  cancel
+  refund
+  topup
+  pay
+  override
+  read_manifest
 }
 
 enum PermissionSubject {
@@ -70,6 +77,23 @@ enum PermissionSubject {
   OrgDocument
   AuditLog
   Notification
+  Permission
+  Trip
+  Route
+  Location
+  Bus
+  Ticket
+  Price
+  Wallet
+  Payment
+  Refund
+  Payout
+  Finance
+  Billing
+  Commission
+  TaxReceipt
+  Vsdc
+  Report
 }
 
 
@@ -98,6 +122,8 @@ model Org {
   cooperative_approved_at    DateTime?
   cooperative_approved_by    String?
   story                      String?   @db.Text
+  cancellations_allowed      Boolean   @default(true)
+  billing_day                Int?
   contact_email_verified_at  DateTime?
   contact_phone_verified_at  DateTime?
   created_at                 DateTime  @default(now())
@@ -136,9 +162,9 @@ model User {
   id                         String       @id @default(uuid())
   first_name                 String       @db.VarChar(100)
   last_name                  String       @db.VarChar(100)
-  phone_number               String?      @unique @db.VarChar(20)
+  phone_number               String?      @db.VarChar(20)
   phone_verified_at          DateTime?
-  email                      String?      @unique @db.VarChar(255)
+  email                      String?      @db.VarChar(255)
   email_verified_at          DateTime?
   password_hash              String?
   user_type                  UserType
@@ -164,6 +190,8 @@ model User {
   user_roles     UserRole[]
   user_grants    UserGrant[]
 
+  @@unique([phone_number, user_type])
+  @@unique([email, user_type])
   @@map("users")
 }
 

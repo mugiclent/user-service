@@ -25,6 +25,7 @@ export const updateOrgSchema = Joi.object({
   address: Joi.string().trim().max(500).optional(),
   logo_path: Joi.string().max(500).optional().allow(null),
   story: Joi.string().trim().max(5000).optional().allow('', null),
+  cancellations_allowed: Joi.boolean().optional(),
   status: Joi.string().valid('active', 'suspended', 'rejected').optional(),
   rejection_reason: Joi.string().trim().max(1000).optional(),
 }).min(1);

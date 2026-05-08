@@ -3,27 +3,37 @@ import type { Channel, ChannelModel } from 'amqplib';
 import { config } from '../config/index.js';
 
 let connection: ChannelModel;
-let channel: Channel;
+let publishChannel: Channel;
+let consumerChannel: Channel;
 
-/**
- * This service is a publisher only — it does not consume from any queue.
- * Only the exchanges are asserted here; queues and bindings are the
- * responsibility of the consuming services (audit-service, notification-service).
- */
 export const initRabbitMQ = async (): Promise<void> => {
   connection = await amqplib.connect(config.rabbitmq.url);
-  channel = await connection.createChannel();
+  publishChannel = await connection.createChannel();
 
-  await channel.assertExchange('logs', 'topic', { durable: true });
-  await channel.assertExchange('notifications', 'topic', { durable: true });
+  await publishChannel.assertExchange('logs', 'topic', { durable: true });
+  await publishChannel.assertExchange('notifications', 'topic', { durable: true });
 };
 
 export const getRabbitMQChannel = (): Channel => {
-  if (!channel) throw new Error('RabbitMQ channel not initialized');
-  return channel;
+  if (!publishChannel) throw new Error('RabbitMQ channel not initialized');
+  return publishChannel;
+};
+
+/**
+ * Returns a dedicated channel for consumers.
+ * Sets prefetch=1 so each message is processed before the next is delivered.
+ * Called by subscriber init functions after initRabbitMQ().
+ */
+export const getConsumerChannel = async (): Promise<Channel> => {
+  if (!consumerChannel) {
+    consumerChannel = await connection.createChannel();
+    await consumerChannel.prefetch(1);
+  }
+  return consumerChannel;
 };
 
 export const closeRabbitMQ = async (): Promise<void> => {
-  await channel?.close();
+  await consumerChannel?.close();
+  await publishChannel?.close();
   await connection?.close();
 };

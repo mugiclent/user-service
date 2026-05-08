@@ -5,7 +5,7 @@ import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
 import { OtpService, type OtpPurpose } from './otp.service.js';
 import { PasswordService } from './password.service.js';
-import { publishAudit, publishSms, publishMail, notifyUser } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser, publishUserDomainEvent } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 import { normalizePhone, displayPhone } from '../utils/phone.js';
@@ -50,16 +50,16 @@ export const AuthService = {
     device_name?: string,
     ip?: string,
     user_agent?: string,
+    user_type?: 'passenger' | 'staff',
   ): Promise<LoginResult> {
     let phoneQuery = identifier;
     if (!isEmail(identifier)) {
       try { phoneQuery = normalizePhone(identifier); } catch { /* invalid format — will not match */ }
     }
 
+    const baseWhere = isEmail(identifier) ? { email: identifier } : { phone_number: phoneQuery };
     const user = await prisma.user.findFirst({
-      where: isEmail(identifier)
-        ? { email: identifier }
-        : { phone_number: phoneQuery },
+      where: user_type ? { ...baseWhere, user_type } : baseWhere,
       ...withRoles,
     });
 
@@ -196,8 +196,8 @@ export const AuthService = {
     password: string;
   }): Promise<{ user_id: string; expires_in: number }> {
     const [existingPhone, existingEmail] = await Promise.all([
-      prisma.user.findUnique({ where: { phone_number: data.phone_number } }),
-      data.email ? prisma.user.findUnique({ where: { email: data.email } }) : null,
+      prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: data.phone_number, user_type: 'passenger' } } }),
+      data.email ? prisma.user.findUnique({ where: { email_user_type: { email: data.email, user_type: 'passenger' } } }) : null,
     ]);
     if (existingPhone) throw new AppError('PHONE_ALREADY_EXISTS', 409);
     if (existingEmail) throw new AppError('EMAIL_ALREADY_EXISTS', 409);
@@ -270,6 +270,7 @@ export const AuthService = {
         sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
         mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
       });
+      publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: 'phone' });
     }
 
     publishAudit({ actor_id: user_id, action: 'verify_phone', resource: 'User', resource_id: user_id });
@@ -307,6 +308,7 @@ export const AuthService = {
         sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
         mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
       });
+      publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: 'email' });
     }
 
     publishAudit({ actor_id: user_id, action: 'verify_email', resource: 'User', resource_id: user_id });
@@ -353,6 +355,8 @@ export const AuthService = {
       sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
       mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
     });
+
+    publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: channel });
 
     publishAudit({ actor_id: user_id, action: 'verify_login', resource: 'User', resource_id: user_id, ip });
 

@@ -13,7 +13,8 @@ const publishAudit = vi.fn();
 
 const notifyUser = vi.fn();
 const publishUserEvent = vi.fn();
-vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publishAudit, notifyUser, publishUserEvent }));
+const publishInvitationEvent = vi.fn();
+vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publishAudit, notifyUser, publishUserEvent, publishInvitationEvent, publishUserDomainEvent: vi.fn() }));
 
 // Fixed token so we can assert on invite_link contents
 vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
@@ -35,8 +36,9 @@ vi.mock('../../src/utils/s3.js', () => ({
 }));
 
 const mockRoleFindFirst = vi.fn();
-const mockInvitationCreate = vi.fn().mockResolvedValue({});
+const mockInvitationCreate = vi.fn().mockResolvedValue({ id: 'inv-1' });
 const mockInvitationFindUnique = vi.fn();
+const mockInvitationFindFirst = vi.fn().mockResolvedValue(null);
 const mockUserCreate = vi.fn();
 const mockUserRoleCreateMany = vi.fn().mockResolvedValue({ count: 1 });
 const mockInvitationUpdate = vi.fn();
@@ -51,6 +53,7 @@ vi.mock('../../src/models/index.js', () => ({
     invitation: {
       create:     mockInvitationCreate,
       findUnique: mockInvitationFindUnique,
+      findFirst:  mockInvitationFindFirst,
       update:     mockInvitationUpdate,
     },
     user: {

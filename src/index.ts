@@ -8,6 +8,8 @@ import { initRabbitMQ, closeRabbitMQ } from './loaders/rabbitmq.js';
 import { initCleanup } from './loaders/cleanup.js';
 import { bootstrap } from './loaders/bootstrap.js';
 import { prisma } from './models/index.js';
+import { initBillingSubscriber } from './subscribers/billing.subscriber.js';
+import { initTopupSubscriber } from './subscribers/topup.subscriber.js';
 
 const start = async (): Promise<void> => {
   // Initialize infrastructure
@@ -15,6 +17,8 @@ const start = async (): Promise<void> => {
   await bootstrap();
   initRedis();
   await initRabbitMQ();
+  await initBillingSubscriber();
+  await initTopupSubscriber();
   initCleanup();
 
   const app = createApp();

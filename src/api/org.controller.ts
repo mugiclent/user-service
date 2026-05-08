@@ -101,6 +101,7 @@ export const OrgController = {
         address?: string;
         logo_path?: string;
         story?: string | null;
+        cancellations_allowed?: boolean;
         status?: string;
         rejection_reason?: string;
       });

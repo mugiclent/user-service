@@ -10,12 +10,13 @@ import { AppError } from '../utils/AppError.js';
 export const AuthController = {
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { identifier, password, device_name } = req.body as {
+      const { identifier, password, device_name, user_type } = req.body as {
         identifier: string;
         password: string;
         device_name?: string;
+        user_type?: 'passenger' | 'staff';
       };
-      const result = await AuthService.login(identifier, password, device_name, req.ip, req.headers['user-agent']);
+      const result = await AuthService.login(identifier, password, device_name, req.ip, req.headers['user-agent'], user_type);
 
       if (result.requires_verification) {
         // Account not yet verified — OTP sent to entered channel

@@ -287,6 +287,7 @@ export const serializeOrgFull = (
   tin: org.tin,
   license_number: org.license_number,
   story: org.story,
+  cancellations_allowed: org.cancellations_allowed,
   parent_org_id: org.parent_org_id,
   parent_org: org.parent_org,
   cooperative_approved_at: org.cooperative_approved_at,

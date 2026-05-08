@@ -15,6 +15,8 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishMail: vi.fn(),
   notifyUser: vi.fn(),
   publishUserEvent,
+  publishUserDomainEvent: vi.fn(),
+  publishInvitationEvent: vi.fn(),
 }));
 
 vi.mock('../../src/utils/ability.js', async (importOriginal) => {
@@ -83,7 +85,7 @@ vi.mock('../../src/models/index.js', () => ({
       findFirst: mockUserFindFirst,
       update: mockUserUpdate,
     },
-    invitation: { findUnique: mockInvitationFindUnique },
+    invitation: { findUnique: mockInvitationFindUnique, findFirst: vi.fn().mockResolvedValue(null) },
     org: { findUnique: mockOrgFindUnique },
     refreshToken: { updateMany: mockRefreshTokenUpdateMany },
     $transaction: mockTransaction,

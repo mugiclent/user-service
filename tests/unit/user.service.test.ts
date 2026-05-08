@@ -15,7 +15,10 @@ const mockUserUpdate = vi.fn();
 const mockRoleFindFirst = vi.fn();
 const mockRoleFindUnique = vi.fn().mockResolvedValue({ slug: 'dispatcher' }); // non-org-admin by default
 const mockInvitationFindUnique = vi.fn();
-const mockInvitationCreate = vi.fn().mockResolvedValue({});
+const mockInvitationFindFirst = vi.fn().mockResolvedValue(null);
+const mockInvitationCreate = vi.fn().mockResolvedValue({ id: 'inv-1' });
+const mockUserGrantFindUnique = vi.fn();
+const mockUserGrantDelete = vi.fn().mockResolvedValue({});
 
 // Transaction tx mocks
 const mockTxUserUpdate = vi.fn();
@@ -26,6 +29,8 @@ const mockTxUserRoleDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxUserRoleCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxUserRoleCreate = vi.fn().mockResolvedValue({});
 const mockTxInvitationUpdate = vi.fn().mockResolvedValue({});
+const mockTxUserGrantDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
+const mockTxUserGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockRefreshTokenUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
 
 const mockTransaction = vi.fn().mockImplementation(async (arg: unknown) => {
@@ -35,6 +40,7 @@ const mockTransaction = vi.fn().mockImplementation(async (arg: unknown) => {
       role: { findMany: mockTxRoleFindMany },
       userRole: { deleteMany: mockTxUserRoleDeleteMany, createMany: mockTxUserRoleCreateMany, create: mockTxUserRoleCreate },
       invitation: { update: mockTxInvitationUpdate },
+      userGrant: { deleteMany: mockTxUserGrantDeleteMany, createMany: mockTxUserGrantCreateMany },
     };
     return (arg as (tx: unknown) => Promise<unknown>)(tx);
   }
@@ -52,8 +58,9 @@ vi.mock('../../src/models/index.js', () => ({
       update: mockUserUpdate,
     },
     role: { findFirst: mockRoleFindFirst, findUnique: mockRoleFindUnique },
-    invitation: { findUnique: mockInvitationFindUnique, create: mockInvitationCreate },
+    invitation: { findUnique: mockInvitationFindUnique, findFirst: mockInvitationFindFirst, create: mockInvitationCreate },
     org: { findUnique: vi.fn().mockResolvedValue({ status: 'active' }) },
+    userGrant: { findUnique: mockUserGrantFindUnique, delete: mockUserGrantDelete },
     refreshToken: { updateMany: mockRefreshTokenUpdateMany },
     $transaction: mockTransaction,
   },
@@ -110,6 +117,8 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishMail: mockPublishMail,
   notifyUser: mockNotifyUser,
   publishUserEvent: mockPublishUserEvent,
+  publishUserDomainEvent: vi.fn(),
+  publishInvitationEvent: vi.fn(),
 }));
 
 vi.mock('../../src/config/index.js', () => ({
@@ -616,6 +625,83 @@ describe('UserService.validatePassword', () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser());
     mockVerifyPassword.mockResolvedValueOnce(true);
     await expect(UserService.validatePassword('user-1', 'correct')).resolves.toBeUndefined();
+  });
+});
+
+// ── addUserGrants ─────────────────────────────────────────────────────────────
+
+// Rules that grant assign_role on User with platform scope
+const grantAdminRules = [{ action: 'assign_role', subject: 'User' }];
+
+describe('UserService.addUserGrants', () => {
+  const adminUser = () => makeAuthUser({ role_slugs: ['platform-admin'], rules: grantAdminRules });
+
+  it('throws FORBIDDEN when user lacks assign_role permission', async () => {
+    const auth = makeAuthUser({ role_slugs: [] });
+    await expect(UserService.addUserGrants(auth as never, 'user-2', ['User:read:org']))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+  });
+
+  it('throws USER_NOT_FOUND when target does not exist', async () => {
+    mockUserFindUnique.mockResolvedValueOnce(null);
+    await expect(UserService.addUserGrants(adminUser() as never, 'user-2', ['User:read:org']))
+      .rejects.toMatchObject({ code: 'USER_NOT_FOUND', status: 404 });
+  });
+
+  it('returns current profile unchanged when no new patterns to add', async () => {
+    const targetWithGrant = makeUser({ id: 'user-2', user_grants: [{ pattern: 'user:read:platform' }] });
+    mockUserFindUnique.mockResolvedValueOnce(targetWithGrant);
+    const result = await UserService.addUserGrants(adminUser() as never, 'user-2', ['user:read:platform']);
+    expect(mockTxUserGrantCreateMany).not.toHaveBeenCalled();
+    expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(targetWithGrant, true);
+    expect(result).toBeDefined();
+  });
+
+  it('runs transaction and returns updated profile when grants change', async () => {
+    mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
+    mockUserFindUniqueOrThrow.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
+    const result = await UserService.addUserGrants(adminUser() as never, 'user-2', ['user:read:org']);
+    expect(mockTransaction).toHaveBeenCalled();
+    expect(result).toBeDefined();
+  });
+});
+
+// ── removeUserGrant ───────────────────────────────────────────────────────────
+
+describe('UserService.removeUserGrant', () => {
+  const adminUser = () => makeAuthUser({ role_slugs: ['platform-admin'], rules: grantAdminRules });
+
+  it('throws FORBIDDEN when user lacks assign_role permission', async () => {
+    const auth = makeAuthUser({ role_slugs: [] });
+    await expect(UserService.removeUserGrant(auth as never, 'user-2', 'grant-1'))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+  });
+
+  it('throws GRANT_NOT_FOUND when grant does not exist', async () => {
+    mockUserGrantFindUnique.mockResolvedValueOnce(null);
+    await expect(UserService.removeUserGrant(adminUser() as never, 'user-2', 'grant-1'))
+      .rejects.toMatchObject({ code: 'GRANT_NOT_FOUND', status: 404 });
+  });
+
+  it('throws MANAGED_GRANT_IMMUTABLE when grant is managed', async () => {
+    mockUserGrantFindUnique.mockResolvedValueOnce({ id: 'grant-1', user_id: 'user-2', is_managed: true, pattern: 'User:read:org' });
+    await expect(UserService.removeUserGrant(adminUser() as never, 'user-2', 'grant-1'))
+      .rejects.toMatchObject({ code: 'MANAGED_GRANT_IMMUTABLE', status: 403 });
+  });
+
+  it('throws USER_NOT_FOUND when target user does not exist', async () => {
+    mockUserGrantFindUnique.mockResolvedValueOnce({ id: 'grant-1', user_id: 'user-2', is_managed: false, pattern: 'User:read:org' });
+    mockUserFindUnique.mockResolvedValueOnce(null);
+    await expect(UserService.removeUserGrant(adminUser() as never, 'user-2', 'grant-1'))
+      .rejects.toMatchObject({ code: 'USER_NOT_FOUND', status: 404 });
+  });
+
+  it('deletes grant and publishes audit on success', async () => {
+    mockUserGrantFindUnique.mockResolvedValueOnce({ id: 'grant-1', user_id: 'user-2', is_managed: false, pattern: 'User:read:org' });
+    mockUserFindUnique.mockResolvedValueOnce({ org_id: null, deleted_at: null });
+    mockUserFindUniqueOrThrow.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
+    await UserService.removeUserGrant(adminUser() as never, 'user-2', 'grant-1');
+    expect(mockUserGrantDelete).toHaveBeenCalledWith({ where: { id: 'grant-1' } });
   });
 });
 

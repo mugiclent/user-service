@@ -76,6 +76,7 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishSms: mockPublishSms,
   publishMail: mockPublishMail,
   notifyUser: mockNotifyUser,
+  publishUserDomainEvent: vi.fn(),
 }));
 
 const { AuthService } = await import('../../src/services/auth.service.js');

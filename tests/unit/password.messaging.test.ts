@@ -11,7 +11,7 @@ const publishMail  = vi.fn();
 const publishAudit = vi.fn();
 
 const notifyUser = vi.fn();
-vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publishAudit, notifyUser }));
+vi.mock('../../src/utils/publishers.js', () => ({ publishSms, publishMail, publishAudit, notifyUser, publishUserDomainEvent: vi.fn() }));
 
 const mockOtpCreate = vi.fn().mockResolvedValue({ code: '654321', expiresIn: 600 });
 const mockOtpVerify = vi.fn().mockResolvedValue(undefined);

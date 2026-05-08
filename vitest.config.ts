@@ -11,6 +11,8 @@ export default defineConfig({
       exclude: [
         // Infrastructure — connect to real services at startup; no unit tests
         'src/loaders/**',
+        // Subscribers — consume from RabbitMQ; require a real broker connection
+        'src/subscribers/**',
         'src/config/**',
         'src/index.ts',
         // Prisma client init — requires a real DB connection; no unit-testable logic
@@ -20,6 +22,7 @@ export default defineConfig({
         // Type declarations — no runtime code
         'src/types/**',
         // Non-source files
+        'dist/**',
         'prisma/**',
         'skills/**',
         'docs/**',

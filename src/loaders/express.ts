@@ -7,11 +7,13 @@ import helmet from 'helmet';
 import { config } from '../config/index.js';
 import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
+import walletRouter from '../api/wallet.routes.js';
 import orgRouter from '../api/org.routes.js';
 import orgApplicationRouter from '../api/org-application.routes.js';
 import roleRouter from '../api/role.routes.js';
 import permissionRouter from '../api/permission.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
+import { orgBillingGuard } from '../middleware/orgBillingGuard.js';
 import { createSwaggerRouter } from './swagger.js';
 
 export const createApp = (): Application => {
@@ -54,8 +56,13 @@ export const createApp = (): Application => {
     res.json({ keys: [{ ...jwk, use: 'sig', alg: 'EdDSA', kid: 'katisha-user-service-1' }] });
   });
 
+  // Billing block guard — runs on all routes; skips passengers and platform admins.
+  // Must be registered before route handlers so every mutating request is checked.
+  app.use(orgBillingGuard);
+
   // Routes
   app.use('/api/v1/auth', authRouter);
+  app.use('/api/v1/users', walletRouter);
   app.use('/api/v1/users', userRouter);
   // org-application routes must be mounted before orgRouter so /apply and /verify-contact
   // are matched before the authenticated /:id catch-all in org.routes.ts

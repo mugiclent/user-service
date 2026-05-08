@@ -156,9 +156,9 @@ export const OrgService = {
     const slug = slugify(data.name);
     const [existing, phoneConflict, emailConflict] = await Promise.all([
       prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] }, select: { id: true } }),
-      prisma.user.findUnique({ where: { phone_number: data.contact_phone }, select: { id: true } }),
+      prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: data.contact_phone, user_type: 'staff' } }, select: { id: true } }),
       data.contact_email
-        ? prisma.user.findUnique({ where: { email: data.contact_email }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { email_user_type: { email: data.contact_email, user_type: 'staff' } }, select: { id: true } })
         : null,
     ]);
     if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
@@ -310,6 +310,7 @@ export const OrgService = {
       address?: string;
       logo_path?: string | null;
       story?: string | null;
+      cancellations_allowed?: boolean;
       status?: string;
       rejection_reason?: string;
       parent_org_id?: string | null;
@@ -327,7 +328,7 @@ export const OrgService = {
 
     const existing = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
-      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true, org_type: true, cooperative_approved_at: true, parent_org_id: true, story: true },
+      select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true, org_type: true, cooperative_approved_at: true, parent_org_id: true, story: true, cancellations_allowed: true, tin: true },
     });
     if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
     const oldLogoPath = existing.logo_path;
@@ -344,7 +345,11 @@ export const OrgService = {
     if (data.address !== undefined) updateData['address'] = data.address;
     if (data.logo_path !== undefined) updateData['logo_path'] = data.logo_path;
     if (data.story !== undefined) updateData['story'] = data.story;
-    if (data.parent_org_id !== undefined && admin) updateData['parent_org_id'] = data.parent_org_id;
+    if (data.cancellations_allowed !== undefined) updateData['cancellations_allowed'] = data.cancellations_allowed;
+    if (data.parent_org_id !== undefined && admin) {
+      if (data.parent_org_id === null && existing.org_type === 'coop_member') throw new AppError('COOP_MEMBER_REQUIRES_PARENT', 400);
+      updateData['parent_org_id'] = data.parent_org_id;
+    }
 
     if (data.status !== undefined && admin) {
       // coop_member requires cooperative sign-off before admin can activate
@@ -355,8 +360,10 @@ export const OrgService = {
       updateData['status'] = data.status;
 
       if (data.status === 'active') {
+        const approvedAt = new Date();
         updateData['approved_by'] = requestingUser.id;
-        updateData['approved_at'] = new Date();
+        updateData['approved_at'] = approvedAt;
+        updateData['billing_day'] = Math.min(28, approvedAt.getUTCDate());
       }
       if (data.status === 'rejected' && data.rejection_reason) {
         updateData['rejection_reason'] = data.rejection_reason;
@@ -459,7 +466,7 @@ export const OrgService = {
     // Publish org domain events — fire-and-forget alongside the audit
     setImmediate(() => {
       const delta: Record<string, { from: unknown; to: unknown }> = {};
-      for (const f of ['name', 'contact_email', 'contact_phone', 'address', 'status', 'rejection_reason'] as const) {
+      for (const f of ['name', 'contact_email', 'contact_phone', 'address', 'status', 'rejection_reason', 'cancellations_allowed'] as const) {
         if (existing[f] !== org[f]) delta[f] = { from: existing[f], to: org[f] };
       }
       publishAudit({
@@ -478,21 +485,35 @@ export const OrgService = {
           slug: org.slug,
           org_type: org.org_type,
           status: 'active',
+          tin: org.tin,
+          billing_day: org.billing_day!,
           logo_path: org.logo_path,
           parent_org_id: org.parent_org_id,
           story: org.story,
+          cancellations_allowed: org.cancellations_allowed,
         });
       }
 
       if (data.status === 'suspended') {
-        publishOrgEvent({ type: 'org.suspended', id: org.id, status: 'suspended' });
+        publishOrgEvent({ type: 'org.suspended', id: org.id, status: 'suspended', reason: data.rejection_reason });
+      }
+
+      if (data.status === 'rejected') {
+        publishOrgEvent({
+          type: 'org.rejected',
+          org_id: org.id,
+          rejection_reason: org.rejection_reason,
+          contact_email: org.contact_email,
+          contact_phone: org.contact_phone,
+        });
       }
 
       const nameChanged = data.name !== undefined && existing.name !== org.name;
       const logoChanged = data.logo_path !== undefined && existing.logo_path !== org.logo_path;
       const parentChanged = data.parent_org_id !== undefined && existing.parent_org_id !== org.parent_org_id;
       const storyChanged = data.story !== undefined && existing.story !== org.story;
-      if (nameChanged || logoChanged || parentChanged || storyChanged) {
+      const cancellationsChanged = data.cancellations_allowed !== undefined && existing.cancellations_allowed !== org.cancellations_allowed;
+      if (nameChanged || logoChanged || parentChanged || storyChanged || cancellationsChanged) {
         publishOrgEvent({
           type: 'org.updated',
           id: org.id,
@@ -501,6 +522,7 @@ export const OrgService = {
           logo_path: org.logo_path,
           parent_org_id: org.parent_org_id,
           story: org.story,
+          cancellations_allowed: org.cancellations_allowed,
           updated_at: org.updated_at.toISOString(),
         });
       }
@@ -543,6 +565,13 @@ export const OrgService = {
         mail: r.email ? { type: 'org.member_coop_approved', email: r.email, org_name: org.name, coop_name: coopName, contact_email: org.contact_email, locale: r.locale as Locale } : undefined,
       });
     }
+
+    publishOrgEvent({
+      type: 'org.cooperative_approved',
+      org_id: org.id,
+      parent_org_id: org.parent_org_id,
+      cooperative_approved_by: requestingUser.id,
+    });
 
     publishAudit({ actor_id: requestingUser.id, action: 'cooperative_approve', resource: 'Org', resource_id: orgId });
     return serializeOrgFull(updated, false);

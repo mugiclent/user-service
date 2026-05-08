@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import { hashPassword } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { OtpService } from './otp.service.js';
-import { publishSms, publishMail, publishAudit, notifyUser } from '../utils/publishers.js';
+import { publishSms, publishMail, publishAudit, notifyUser, publishUserDomainEvent } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
 import { normalizePhone } from '../utils/phone.js';
 
@@ -81,6 +81,8 @@ export const PasswordService = {
       mail: user.email ? { type: 'security.password_changed', email: user.email, first_name: user.first_name } : undefined,
       push: { type: 'security.password_changed' },
     });
+
+    publishUserDomainEvent({ type: 'user.password_changed', id: user.id, user_type: user.user_type });
 
     publishAudit({
       actor_id: user.id,

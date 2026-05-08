@@ -14,7 +14,7 @@ import {
 } from '../utils/ability.js';
 import { PERMISSIONS } from '../loaders/bootstrap.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
-import { publishAudit, publishSms, publishMail, notifyUser, publishUserEvent } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser, publishUserEvent, publishUserDomainEvent, publishInvitationEvent } from '../utils/publishers.js';
 import { OtpService } from './otp.service.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
@@ -411,17 +411,30 @@ export const UserService = {
 
     if (!data.email && !data.phone_number) throw new AppError('VALIDATION_ERROR', 422);
 
-    // Reject if a user account already exists for the contact
-    const [phoneExists, emailExists] = await Promise.all([
+    // Reject if a staff user or pending staff invitation already exists for the contact
+    const now = new Date();
+    const [phoneExists, emailExists, phoneInvited, emailInvited] = await Promise.all([
       data.phone_number
-        ? prisma.user.findUnique({ where: { phone_number: data.phone_number }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: data.phone_number, user_type: 'staff' } }, select: { id: true } })
         : null,
       data.email
-        ? prisma.user.findUnique({ where: { email: data.email }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { email_user_type: { email: data.email, user_type: 'staff' } }, select: { id: true } })
+        : null,
+      data.phone_number
+        ? prisma.invitation.findFirst({ where: { phone_number: data.phone_number, accepted_at: null, expires_at: { gt: now } }, select: { id: true } })
+        : null,
+      data.email
+        ? prisma.invitation.findFirst({ where: { email: data.email, accepted_at: null, expires_at: { gt: now } }, select: { id: true } })
         : null,
     ]);
-    if (phoneExists) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
-    if (emailExists) throw new AppError('EMAIL_ALREADY_REGISTERED', 409);
+    if (phoneExists || phoneInvited) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
+    if (emailExists || emailInvited) throw new AppError('EMAIL_ALREADY_REGISTERED', 409);
+
+    if (org_id) {
+      const org = await prisma.org.findUnique({ where: { id: org_id, deleted_at: null }, select: { status: true } });
+      if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+      if (org.status !== 'active') throw new AppError('ORG_NOT_ACTIVE', 400);
+    }
 
     // Resolve each slug — prefer org-specific over global template.
     // Passenger is excluded — cannot be assigned via invitation.
@@ -451,7 +464,7 @@ export const UserService = {
 
     const locale = (data.locale as 'rw' | 'en' | 'fr' | undefined) ?? 'rw';
 
-    await prisma.invitation.create({
+    const invitation = await prisma.invitation.create({
       data: {
         email: data.email ?? null,
         phone_number: data.phone_number ?? null,
@@ -468,7 +481,7 @@ export const UserService = {
       },
     });
 
-    const inviteLink = `${config.appUrl}/accept-invite?token=${rawToken}`;
+    const inviteLink = `${config.appUrl}/i?t=${rawToken}`;
     const expiresInSeconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
 
     const inviter = await prisma.user.findUnique({
@@ -499,6 +512,16 @@ export const UserService = {
         locale,
       });
     }
+    publishInvitationEvent({
+      type: 'invitation.created',
+      invitation_id: invitation.id,
+      org_id: org_id,
+      email: data.email ?? null,
+      phone_number: data.phone_number ?? null,
+      invited_by: requestingUser.id,
+      expires_at: expiresAt.toISOString(),
+    });
+
     publishAudit({ actor_id: requestingUser.id, action: 'invite', resource: 'User', resource_id: requestingUser.id });
 
     return { invite_token: rawToken, expires_at: expiresAt };
@@ -526,13 +549,13 @@ export const UserService = {
       if (!org || org.status !== 'active') throw new AppError('ORG_NOT_ACTIVE', 403);
     }
 
-    // Check for conflicting registrations before attempting the create
+    // Check for conflicting staff registrations before attempting the create
     const [phoneConflict, emailConflict] = await Promise.all([
       invitation.phone_number
-        ? prisma.user.findUnique({ where: { phone_number: invitation.phone_number }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: invitation.phone_number, user_type: 'staff' } }, select: { id: true } })
         : null,
       invitation.email
-        ? prisma.user.findUnique({ where: { email: invitation.email }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { email_user_type: { email: invitation.email, user_type: 'staff' } }, select: { id: true } })
         : null,
     ]);
     if (phoneConflict) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
@@ -540,45 +563,6 @@ export const UserService = {
 
     const password_hash = await hashPassword(password);
     const locale = (invitation.locale as 'rw' | 'en' | 'fr' | null) ?? 'rw';
-
-    // Only the first org-admin invite acceptance carries over the verified contact channel
-    // from the org application. Subsequent staff invites to the same org go through normal OTP flow.
-    let phoneVerifiedAt: Date | null = null;
-    let emailVerifiedAt: Date | null = null;
-    let loginChannel: 'phone' | 'email' | null = null;
-
-    const hasOrgAdminRole = invitation.invitation_roles.some((ir) => ir.role.slug === 'org-admin');
-
-    if (invitation.org_id && hasOrgAdminRole) {
-      const existingOrgAdmin = await prisma.user.findFirst({
-        where: {
-          org_id: invitation.org_id,
-          user_roles: { some: { role: { slug: 'org-admin' } } },
-        },
-        select: { id: true },
-      });
-
-      if (!existingOrgAdmin) {
-        const org = await prisma.org.findUnique({
-          where: { id: invitation.org_id },
-          select: { contact_phone_verified_at: true, contact_email_verified_at: true },
-        });
-        if (org) {
-          phoneVerifiedAt = org.contact_phone_verified_at;
-          emailVerifiedAt = org.contact_email_verified_at;
-
-          if (phoneVerifiedAt && emailVerifiedAt) {
-            loginChannel = phoneVerifiedAt <= emailVerifiedAt ? 'phone' : 'email';
-          } else if (phoneVerifiedAt) {
-            loginChannel = 'phone';
-          } else if (emailVerifiedAt) {
-            loginChannel = 'email';
-          }
-        }
-      }
-    }
-
-    const isActive = loginChannel !== null;
 
     const user = await prisma.$transaction(async (tx) => {
       const created = await tx.user.create({
@@ -589,10 +573,7 @@ export const UserService = {
           phone_number: invitation.phone_number!,
           password_hash,
           user_type: 'staff',
-          status: isActive ? 'active' : 'pending_verification',
-          login_channel: loginChannel,
-          phone_verified_at: phoneVerifiedAt,
-          email_verified_at: emailVerifiedAt,
+          status: 'pending_verification',
           org_id: invitation.org_id ?? null,
           notif_channel: invitation.email ? ['sms', 'email', 'app'] : ['sms', 'app'],
           locale,
@@ -611,27 +592,26 @@ export const UserService = {
       return created;
     });
 
-    // Only send OTPs for channels that weren't already verified via the org application
     const unverifiedChannels: ('phone' | 'email')[] = [];
 
-    if (!phoneVerifiedAt && user.phone_number) {
+    if (user.phone_number) {
       const { code: phoneCode, expiresIn } = await OtpService.create(user.id, 'phone_verification');
       publishSms({ type: 'otp.sms', purpose: 'phone_verification', phone_number: user.phone_number, code: phoneCode, expires_in_seconds: expiresIn, locale });
       unverifiedChannels.push('phone');
     }
 
-    if (!emailVerifiedAt && user.email) {
+    if (user.email) {
       const { code: emailCode, expiresIn } = await OtpService.create(user.id, 'email_verification');
       publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email, first_name: user.first_name, code: emailCode, expires_in_seconds: expiresIn, locale });
       unverifiedChannels.push('email');
     }
 
-    if (isActive) {
-      notifyUser(user, {
-        sms: user.phone_number ? { type: 'welcome.sms', phone_number: user.phone_number, first_name: user.first_name } : undefined,
-        mail: user.email ? { type: 'welcome.mail', email: user.email, first_name: user.first_name } : undefined,
-      });
-    }
+    publishInvitationEvent({
+      type: 'invitation.accepted',
+      invitation_id: invitation.id,
+      org_id: invitation.org_id,
+      user_id: user.id,
+    });
 
     publishAudit({ actor_id: user.id, action: 'accept_invite', resource: 'User', resource_id: user.id });
 
@@ -774,10 +754,10 @@ export const UserService = {
     // Check phone/email conflicts against users only if the value is being changed
     const [phoneConflict, emailConflict] = await Promise.all([
       data.phone_number && data.phone_number !== invitation.phone_number
-        ? prisma.user.findUnique({ where: { phone_number: data.phone_number }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: data.phone_number, user_type: 'staff' } }, select: { id: true } })
         : null,
       data.email && data.email !== invitation.email
-        ? prisma.user.findUnique({ where: { email: data.email }, select: { id: true } })
+        ? prisma.user.findUnique({ where: { email_user_type: { email: data.email, user_type: 'staff' } }, select: { id: true } })
         : null,
     ]);
     if (phoneConflict) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
@@ -872,7 +852,7 @@ export const UserService = {
       data: { token_hash: tokenHash, expires_at: expiresAt },
     });
 
-    const inviteLink = `${config.appUrl}/accept-invite?token=${rawToken}`;
+    const inviteLink = `${config.appUrl}/i?t=${rawToken}`;
     const expiresInSeconds = Math.floor((expiresAt.getTime() - Date.now()) / 1000);
     const locale = (invitation.locale as 'rw' | 'en' | 'fr' | null) ?? 'rw';
 
@@ -904,6 +884,13 @@ export const UserService = {
         locale,
       });
     }
+
+    publishInvitationEvent({
+      type: 'invitation.resent',
+      invitation_id: invitationId,
+      org_id: invitation.org_id,
+      expires_at: expiresAt.toISOString(),
+    });
 
     publishAudit({ actor_id: requestingUser.id, action: 'resend_invite', resource: 'Invitation', resource_id: invitationId });
 
@@ -980,12 +967,12 @@ export const UserService = {
         throw new AppError('IDENTIFIER_UNCHANGED', 409);
       }
 
-      // Uniqueness check — another account must not own this identifier
+      // Uniqueness check — another account of the same user_type must not own this identifier
       if (channel === 'email') {
-        const taken = await prisma.user.findFirst({ where: { email: normIdentifier, id: { not: userId } } });
+        const taken = await prisma.user.findFirst({ where: { email: normIdentifier, user_type: user.user_type, id: { not: userId } } });
         if (taken) throw new AppError('EMAIL_ALREADY_IN_USE', 409);
       } else {
-        const taken = await prisma.user.findFirst({ where: { phone_number: normIdentifier, id: { not: userId } } });
+        const taken = await prisma.user.findFirst({ where: { phone_number: normIdentifier, user_type: user.user_type, id: { not: userId } } });
         if (taken) throw new AppError('PHONE_ALREADY_IN_USE', 409);
       }
 
@@ -1059,6 +1046,8 @@ export const UserService = {
     }
 
     await prisma.user.update({ where: { id: userId }, data: updateData });
+
+    publishUserDomainEvent({ type: 'user.login_channel_changed', id: userId, login_channel: channel });
 
     publishAudit({ actor_id: userId, action: 'change_login_channel', resource: 'User', resource_id: userId });
 

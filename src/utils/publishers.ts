@@ -158,15 +158,26 @@ export const publishPush = (event: PushEvent): void =>
 
 export type OrgDomainEvent =
   | {
+      type: 'org.application_submitted';
+      org_id: string;
+      org_type: 'company' | 'cooperative' | 'coop_member';
+      parent_org_id: string | null;
+      contact_email: string;
+      contact_phone: string;
+    }
+  | {
       type: 'org.activated';
       id: string;
       name: string;
       slug: string;
       org_type: 'company' | 'cooperative' | 'coop_member';
       status: 'active';
+      tin: string;
+      billing_day: number;
       logo_path: string | null;
       parent_org_id: string | null;
       story: string | null;
+      cancellations_allowed: boolean;
     }
   | {
       type: 'org.updated';
@@ -176,12 +187,27 @@ export type OrgDomainEvent =
       logo_path: string | null;
       parent_org_id: string | null;
       story: string | null;
+      cancellations_allowed: boolean;
       updated_at: string;
     }
   | {
       type: 'org.suspended';
       id: string;
       status: 'suspended';
+      reason?: string;
+    }
+  | {
+      type: 'org.rejected';
+      org_id: string;
+      rejection_reason: string | null;
+      contact_email: string;
+      contact_phone: string;
+    }
+  | {
+      type: 'org.cooperative_approved';
+      org_id: string;
+      parent_org_id: string | null;
+      cooperative_approved_by: string;
     };
 
 export const publishOrgEvent = (event: OrgDomainEvent): void =>
@@ -230,6 +256,78 @@ export type StaffUserDomainEvent =
 
 export const publishUserEvent = (event: StaffUserDomainEvent): void =>
   publish('logs', 'user.events', event);
+
+// ---------------------------------------------------------------------------
+// User lifecycle domain events — logs exchange, routing key: user.events
+// Applies to both passengers and staff: account activation, credential changes.
+// ---------------------------------------------------------------------------
+
+export type UserDomainEvent =
+  | {
+      type: 'user.activated';
+      id: string;
+      user_type: 'passenger' | 'staff';
+      login_channel: 'phone' | 'email';
+    }
+  | {
+      type: 'user.password_changed';
+      id: string;
+      user_type: 'passenger' | 'staff';
+    }
+  | {
+      type: 'user.login_channel_changed';
+      id: string;
+      login_channel: 'phone' | 'email';
+    };
+
+export const publishUserDomainEvent = (event: UserDomainEvent): void =>
+  publish('logs', 'user.events', event);
+
+// ---------------------------------------------------------------------------
+// Invitation domain events — logs exchange, routing key: invitation.events
+// ---------------------------------------------------------------------------
+
+export type InvitationDomainEvent =
+  | {
+      type: 'invitation.created';
+      invitation_id: string;
+      org_id: string | null;
+      email: string | null;
+      phone_number: string | null;
+      invited_by: string;
+      expires_at: string;
+    }
+  | {
+      type: 'invitation.accepted';
+      invitation_id: string;
+      org_id: string | null;
+      user_id: string;
+    }
+  | {
+      type: 'invitation.resent';
+      invitation_id: string;
+      org_id: string | null;
+      expires_at: string;
+    };
+
+export const publishInvitationEvent = (event: InvitationDomainEvent): void =>
+  publish('logs', 'invitation.events', event);
+
+// ---------------------------------------------------------------------------
+// Wallet domain events — logs exchange, routing key: wallet.events
+// ---------------------------------------------------------------------------
+
+export type WalletDomainEvent = {
+  type: 'wallet.topup.requested';
+  topup_id: string;
+  user_id: string;
+  amount: number;
+  phone_number: string;
+  provider: 'mtn_momo' | 'airtel_money';
+};
+
+export const publishWalletEvent = (event: WalletDomainEvent): void =>
+  publish('logs', 'wallet.events', event);
 
 // ---------------------------------------------------------------------------
 // notifyUser — preference-aware dispatcher

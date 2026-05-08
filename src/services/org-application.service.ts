@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import { slugify } from '../utils/slugify.js';
 import { AppError } from '../utils/AppError.js';
 import { OrgOtpService } from './org-otp.service.js';
-import { publishMail, publishSms, publishAudit, notifyUser } from '../utils/publishers.js';
+import { publishMail, publishSms, publishAudit, notifyUser, publishOrgEvent } from '../utils/publishers.js';
 import type { Locale, NotifiableUser } from '../utils/publishers.js';
 
 // ---------------------------------------------------------------------------
@@ -108,12 +108,14 @@ export const OrgApplicationService = {
   }): Promise<{ org_id: string; message: string }> {
     const slug = slugify(data.name);
 
-    const [existing, phoneConflict, emailConflict] = await Promise.all([
+    const [existing, tinConflict, phoneConflict, emailConflict] = await Promise.all([
       prisma.org.findFirst({ where: { OR: [{ name: data.name }, { slug }] }, select: { id: true } }),
-      prisma.user.findUnique({ where: { phone_number: data.contact_phone }, select: { id: true } }),
-      prisma.user.findUnique({ where: { email: data.contact_email }, select: { id: true } }),
+      prisma.org.findUnique({ where: { tin: data.tin! }, select: { id: true } }),
+      prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: data.contact_phone, user_type: 'staff' } }, select: { id: true } }),
+      prisma.user.findUnique({ where: { email_user_type: { email: data.contact_email, user_type: 'staff' } }, select: { id: true } }),
     ]);
     if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
+    if (tinConflict) throw new AppError('TIN_ALREADY_EXISTS', 409);
     if (phoneConflict) throw new AppError('CONTACT_PHONE_ALREADY_REGISTERED', 409);
     if (emailConflict) throw new AppError('CONTACT_EMAIL_ALREADY_REGISTERED', 409);
 
@@ -140,7 +142,7 @@ export const OrgApplicationService = {
           address: data.address ?? null,
           tin: data.tin!,
           license_number: data.license_number ?? null,
-          parent_org_id: data.parent_org_id ?? null,
+          parent_org_id: data.org_type === 'coop_member' ? (data.parent_org_id ?? null) : null,
           story: data.story ?? null,
           status: 'unverified',
         },
@@ -256,6 +258,15 @@ export const OrgApplicationService = {
         });
       }
     }
+
+    publishOrgEvent({
+      type: 'org.application_submitted',
+      org_id: org.id,
+      org_type: org.org_type,
+      parent_org_id: org.parent_org_id,
+      contact_email: org.contact_email,
+      contact_phone: org.contact_phone,
+    });
 
     publishAudit({ actor_id: orgId, action: 'verify_contact', resource: 'Org', resource_id: orgId });
   },

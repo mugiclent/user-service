@@ -47,6 +47,7 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishSms: mockPublishSms,
   publishAudit: mockPublishAudit,
   notifyUser: mockNotifyUser,
+  publishOrgEvent: vi.fn(),
 }));
 
 const mockOrgOtpCreate = vi.fn().mockResolvedValue({ code: '123456', expiresIn: 300 });
