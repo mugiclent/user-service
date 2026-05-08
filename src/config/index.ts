@@ -53,6 +53,7 @@ export const config = {
 
   appUrl: env.APP_URL,
   staffAppUrl: env.STAFF_APP_URL,
+  paymentServiceUrl: env.PAYMENT_SERVICE_URL,
 
   s3: {
     endpoint: env.S3_ENDPOINT,

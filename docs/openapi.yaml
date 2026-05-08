@@ -716,21 +716,6 @@ components:
           example: ['own', 'org', 'platform']
           description: 'Valid scope suffixes for this permission. Use these to construct grant patterns: `"{code}:{scope}"`. Not all permissions support all scopes — e.g. `org:create` is `platform`-only.'
 
-  responses:
-    Unauthorized:
-      description: Missing or invalid access token
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-          example:
-            error: { code: UNAUTHORIZED }
-    Forbidden:
-      description: Authenticated but insufficient permissions
-      content:
-        application/json:
-          schema: { $ref: '#/components/schemas/Error' }
-          example:
-            error: { code: FORBIDDEN }
     # ── Wallet ────────────────────────────────────────────────────────────────
 
     TopupInitiated:
@@ -776,6 +761,21 @@ components:
           example: Transaction declined by operator
           description: Human-readable failure reason — only present on `topup.failed`.
 
+  responses:
+    Unauthorized:
+      description: Missing or invalid access token
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: UNAUTHORIZED }
+    Forbidden:
+      description: Authenticated but insufficient permissions
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example:
+            error: { code: FORBIDDEN }
     OrgBillingOverdue:
       description: >
         The organisation's account is billing-overdue. All mutating operations
@@ -2581,6 +2581,49 @@ paths:
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   # ── Wallet ──────────────────────────────────────────────────────────────────
+
+  /users/me/wallet:
+    get:
+      tags: [Wallet]
+      summary: Get wallet balance
+      description: |
+        Returns the authenticated user's wallet balance by proxying the request
+        to the payment service. The response shape is owned by the payment service
+        and forwarded as-is.
+
+        If the payment service is unreachable a `503 PAYMENT_SERVICE_UNAVAILABLE`
+        is returned. Any error the payment service itself returns is forwarded
+        with its original status code.
+      security:
+        - BearerAuth: []
+        - CookieAuth: []
+      responses:
+        '200':
+          description: Wallet balance from the payment service.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Payment-service wallet object — shape defined by the payment service.
+                properties:
+                  balance:
+                    type: integer
+                    example: 15000
+                    description: Current wallet balance in the smallest currency unit (e.g. RWF).
+                  currency:
+                    type: string
+                    example: RWF
+                  user_id:
+                    type: string
+                    format: uuid
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '503':
+          description: Payment service is unreachable.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: PAYMENT_SERVICE_UNAVAILABLE, message: Payment service is temporarily unavailable }
 
   /users/me/wallet/topup:
     post:

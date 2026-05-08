@@ -7,6 +7,16 @@ import { getRedisClient } from '../loaders/redis.js';
 const SSE_TIMEOUT_MS = 3 * 60 * 1000;
 
 export const WalletController = {
+  async getWallet(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await WalletService.getWallet(user.id);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async initiateTopup(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;

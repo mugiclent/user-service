@@ -10,8 +10,11 @@ import { AppError } from '../../src/utils/AppError.js';
 
 const mockInitiateTopup = vi.fn();
 const mockVerifyTopupOwner = vi.fn();
+const mockGetWallet = vi.fn();
+
 vi.mock('../../src/services/wallet.service.js', () => ({
   WalletService: {
+    getWallet: mockGetWallet,
     initiateTopup: mockInitiateTopup,
     verifyTopupOwner: mockVerifyTopupOwner,
   },
@@ -64,6 +67,31 @@ const makeRes = (): Response => {
 };
 
 beforeEach(() => vi.clearAllMocks());
+
+// ── getWallet ─────────────────────────────────────────────────────────────────
+
+describe('WalletController.getWallet', () => {
+  it('returns 200 with wallet balance from service', async () => {
+    mockGetWallet.mockResolvedValue({ balance: 15000, currency: 'RWF', user_id: 'user-1' });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await WalletController.getWallet(makeReq(), res, next);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({ balance: 15000, currency: 'RWF', user_id: 'user-1' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('calls next(err) when service throws', async () => {
+    mockGetWallet.mockRejectedValueOnce(new Error('503'));
+    const next = vi.fn() as NextFunction;
+
+    await WalletController.getWallet(makeReq(), makeRes(), next);
+
+    expect((next as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBeInstanceOf(Error);
+  });
+});
 
 // ── initiateTopup ─────────────────────────────────────────────────────────────
 

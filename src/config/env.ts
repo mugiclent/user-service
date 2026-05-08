@@ -54,6 +54,8 @@ const schema = Joi.object({
   APP_URL: Joi.string().uri().required(),
   STAFF_APP_URL: Joi.string().uri().required(),
 
+  PAYMENT_SERVICE_URL: Joi.string().uri().default('http://payment-svc:8092'),
+
   S3_ENDPOINT: Joi.string().uri().required(),
   S3_INTERNAL_ENDPOINT: Joi.string().uri().optional(),
   S3_ACCESS_KEY: Joi.string().required(),
@@ -104,6 +106,7 @@ export const env = value as {
   ADMIN_PASSWORD: string;
   APP_URL: string;
   STAFF_APP_URL: string;
+  PAYMENT_SERVICE_URL: string;
   S3_ENDPOINT: string;
   S3_INTERNAL_ENDPOINT: string | undefined;
   S3_ACCESS_KEY: string;
