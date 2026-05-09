@@ -2672,7 +2672,7 @@ paths:
           application/json:
             schema:
               type: object
-              required: [amount, phone_number, provider]
+              required: [amount, payment_method]
               properties:
                 amount:
                   type: integer
@@ -2683,11 +2683,13 @@ paths:
                 phone_number:
                   type: string
                   example: '+250788000001'
-                  description: Mobile money phone number in E.164 format.
-                provider:
+                  description: |
+                    Mobile money phone number in E.164 format. Optional — if omitted,
+                    the phone number registered on the user's account is used.
+                payment_method:
                   type: string
-                  enum: [mtn_momo, airtel_money]
-                  example: mtn_momo
+                  enum: [mtn, airtel]
+                  example: mtn
                   description: Mobile money provider.
       responses:
         '202':
@@ -2698,7 +2700,13 @@ paths:
               example:
                 topup_id: d3f8a1b2-0000-0000-0000-000000000042
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '422':
+          description: |
+            Validation error, or `PHONE_NOT_FOUND` when `phone_number` is omitted
+            and no phone number is registered on the user's account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /users/me/wallet/topup/{topup_id}/stream:
     get:
@@ -2719,11 +2727,14 @@ paths:
         Each event has a named `event` field and a JSON `data` field:
 
         ```
+        event: pending
+        data: {"status":"pending","topup_id":"..."}
+
         event: completed
-        data: {"type":"topup.completed","topup_id":"...","amount":5000,"new_balance":15000}
+        data: {"type":"topup.payment.confirmed","topup_id":"...","amount":5000,"new_balance":15000}
 
         event: failed
-        data: {"type":"topup.failed","topup_id":"...","reason":"Transaction declined by operator"}
+        data: {"type":"topup.payment.failed","topup_id":"...","reason":"Transaction declined by operator"}
 
         event: timeout
         data: {"message":"Payment confirmation timed out"}
@@ -2731,25 +2742,25 @@ paths:
 
         | Event | When | Action |
         |---|---|---|
+        | `pending` | Immediately on connect | Confirm stream is open, await result |
         | `completed` | Payment confirmed by mobile money | Update balance UI, close stream |
         | `failed` | Payment rejected or errored | Show error, close stream |
         | `timeout` | No result within 3 minutes | Notify user, close stream, allow retry |
 
-        The stream closes itself after emitting any event. Clients should call `EventSource.close()`
-        on receipt of any event to clean up the browser connection.
+        The stream closes itself after emitting `completed`, `failed`, or `timeout`.
+        Clients should call `EventSource.close()` on receipt of any of these events.
 
         ## Ownership
 
         `topup_id` must have been issued to the authenticated user by
-        `POST /users/me/wallet/topup`. The ownership token expires after 10 minutes.
+        `POST /users/me/wallet/topup`. The ownership token expires after 6 minutes.
         A 404 is returned for unknown, expired, or foreign IDs.
 
         ## Reconnects
 
-        The SSE protocol supports automatic reconnection via the `Last-Event-ID` header,
-        but this stream delivers exactly one event and closes — reconnecting after the event
-        was received will produce a 404 (ownership key is not refreshed). Do not reconnect
-        after the stream closes naturally.
+        Reconnecting within the 6-minute ownership window is safe — the stream will
+        re-subscribe to the Redis channel and deliver the result when it arrives.
+        Do not reconnect after the ownership token has expired (you will receive a 404).
       security:
         - BearerAuth: []
         - CookieAuth: []
@@ -2789,8 +2800,11 @@ paths:
                   Parse individual event payloads with `JSON.parse(event.data)`.
                   See the `TopupEvent` schema for the `data` field shape.
               example: |
+                event: pending
+                data: {"status":"pending","topup_id":"d3f8a1b2-0000-0000-0000-000000000042"}
+
                 event: completed
-                data: {"type":"topup.completed","topup_id":"d3f8a1b2-0000-0000-0000-000000000042","amount":5000,"new_balance":15000}
+                data: {"type":"topup.payment.confirmed","topup_id":"d3f8a1b2-0000-0000-0000-000000000042","amount":5000,"new_balance":15000}
 
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
