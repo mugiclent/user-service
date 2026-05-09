@@ -1,7 +1,7 @@
 /**
  * Tests for src/api/wallet.controller.ts — SSE stream + initiate topup
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { Request, Response, NextFunction } from 'express';
 import { AppError } from '../../src/utils/AppError.js';
@@ -262,4 +262,107 @@ describe('WalletController.streamTopup — SSE flow', () => {
     expect(res.end).toHaveBeenCalledTimes(1);
   });
 
+});
+
+// ── getTransactions ───────────────────────────────────────────────────────────
+
+const mockFetch = vi.fn();
+
+beforeEach(() => { vi.stubGlobal('fetch', mockFetch); });
+afterEach(() => { vi.unstubAllGlobals(); });
+
+const makeTxReq = (overrides: { userId?: string; url?: string; params?: Record<string, string> } = {}): Request => ({
+  user: { id: overrides.userId ?? 'user-1' },
+  params: overrides.params ?? {},
+  url: overrides.url ?? '/me/wallet/transactions',
+  on: vi.fn(),
+} as unknown as Request);
+
+const fakeList = {
+  data: [],
+  balance: { available: 5000, currency: 'RWF' },
+  pagination: { page: 1, limit: 20, total: 0, has_more: false },
+};
+
+describe('WalletController.getTransactions', () => {
+  it('proxies to payment-svc and returns 200 with the list', async () => {
+    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+    const res = makeRes();
+    const next = vi.fn() as NextFunction;
+
+    await WalletController.getTransactions(makeTxReq(), res, next);
+
+    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-1');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(fakeList);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('forwards query string to payment-svc', async () => {
+    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+    await WalletController.getTransactions(
+      makeTxReq({ url: '/me/wallet/transactions?page=2&type=topup' }),
+      makeRes(),
+      vi.fn() as NextFunction,
+    );
+    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-1?page=2&type=topup');
+  });
+
+  it('passes upstream non-200 status through', async () => {
+    mockFetch.mockResolvedValue({ status: 503, json: async () => ({ error: 'unavailable' }) });
+    const res = makeRes();
+
+    await WalletController.getTransactions(makeTxReq(), res, vi.fn() as NextFunction);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+  });
+
+  it('calls next(err) when fetch throws', async () => {
+    mockFetch.mockRejectedValue(new Error('connection refused'));
+    const next = vi.fn() as NextFunction;
+
+    await WalletController.getTransactions(makeTxReq(), makeRes(), next);
+
+    expect((next as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBeInstanceOf(Error);
+  });
+});
+
+describe('WalletController.getUserTransactions', () => {
+  it('proxies to payment-svc using path param user id', async () => {
+    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+    const res = makeRes();
+
+    await WalletController.getUserTransactions(
+      makeTxReq({ params: { id: 'user-99' }, url: '/user-99/wallet/transactions' }),
+      res,
+      vi.fn() as NextFunction,
+    );
+
+    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-99');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(fakeList);
+  });
+
+  it('forwards query string', async () => {
+    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+    await WalletController.getUserTransactions(
+      makeTxReq({ params: { id: 'user-99' }, url: '/user-99/wallet/transactions?limit=5&from=2026-01-01' }),
+      makeRes(),
+      vi.fn() as NextFunction,
+    );
+    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-99?limit=5&from=2026-01-01');
+  });
+
+  it('calls next(err) when fetch throws', async () => {
+    mockFetch.mockRejectedValue(new Error('timeout'));
+    const next = vi.fn() as NextFunction;
+
+    await WalletController.getUserTransactions(
+      makeTxReq({ params: { id: 'user-99' }, url: '/user-99/wallet/transactions' }),
+      makeRes(),
+      next,
+    );
+
+    expect((next as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBeInstanceOf(Error);
+  });
 });

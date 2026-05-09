@@ -4,6 +4,8 @@ import { AppError } from '../utils/AppError.js';
 import { WalletService } from '../services/wallet.service.js';
 import { getRedisClient } from '../loaders/redis.js';
 
+const PAYMENT_SVC = 'http://payment-svc:8098';
+
 const SSE_TIMEOUT_MS = 3 * 60 * 1000;
 
 export const WalletController = {
@@ -26,6 +28,30 @@ export const WalletController = {
         payment_method: 'mtn' | 'airtel';
       });
       res.status(202).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getTransactions(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      const upstream = await fetch(`${PAYMENT_SVC}/transactions/${user.id}${qs}`);
+      const body = await upstream.json() as unknown;
+      res.status(upstream.status).json(body);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async getUserTransactions(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const userId = req.params['id']!;
+      const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+      const upstream = await fetch(`${PAYMENT_SVC}/transactions/${userId}${qs}`);
+      const body = await upstream.json() as unknown;
+      res.status(upstream.status).json(body);
     } catch (err) {
       next(err);
     }

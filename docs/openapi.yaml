@@ -785,6 +785,110 @@ components:
           type: string
           example: Transaction declined by operator
           description: Human-readable failure reason — only present on `topup.failed`.
+        retryable:
+          type: boolean
+          description: Whether the payment can be retried — only present on `topup.payment.failed`.
+
+    Transaction:
+      type: object
+      description: A single wallet ledger entry returned by the transaction history endpoints.
+      required: [id, type, direction, amount, currency, status, reference, description, created_at, metadata]
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum: [topup, booking, refund]
+          description: |
+            What kind of transaction it was.
+            - `topup` — passenger topped up via MoMo
+            - `booking` — wallet debited for a ticket purchase
+            - `refund` — money returned after an expired/cancelled ticket
+        direction:
+          type: string
+          enum: [in, out]
+          description: '`in` — money entered the wallet (topup, refund). `out` — money left (booking).'
+        amount:
+          type: integer
+          description: Amount in the smallest currency unit (e.g. RWF).
+          example: 3821
+        currency:
+          type: string
+          example: RWF
+        status:
+          type: string
+          enum: [completed, pending]
+          description: |
+            - `completed` — money successfully moved.
+            - `pending` — topup initiated but not yet confirmed by MoMo (only possible on `topup` type).
+        reference:
+          type: string
+          format: uuid
+          description: Payment reference UUID (MTN X-Reference-Id for topups; ticket reference for bookings/refunds).
+        description:
+          type: string
+          description: Human-readable one-liner for direct UI display — no client transformation needed.
+          example: 'Ticket · Nyabugogo → Musanze'
+        created_at:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          description: Transaction-type-specific context. Shape varies by `type`.
+          oneOf:
+            - title: Topup metadata
+              properties:
+                phone:
+                  type: string
+                  description: Masked phone number (last 3 digits visible, e.g. `+250788***456`).
+                  example: '+250788***456'
+                provider:
+                  type: string
+                  enum: [mtn, airtel]
+                fee_absorbed:
+                  type: integer
+                  description: Platform-absorbed MoMo fee in RWF. Omitted when zero.
+                  example: 89
+            - title: Booking metadata
+              properties:
+                ticket_id:   { type: string, format: uuid }
+                trip_id:     { type: string, format: uuid }
+                route:       { type: string, example: 'Nyabugogo → Musanze' }
+                departure_at: { type: string, format: date-time }
+                operator:    { type: string, example: 'Volcano Express' }
+            - title: Refund metadata
+              properties:
+                ticket_id:          { type: string, format: uuid }
+                reason:             { type: string, example: TICKET_EXPIRED }
+                original_reference: { type: string, format: uuid, description: Reference of the booking that was refunded. }
+
+    TransactionList:
+      type: object
+      required: [data, balance, pagination]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/Transaction' }
+        balance:
+          type: object
+          required: [available, currency]
+          description: Current wallet balance at time of response — avoids a separate GET /wallet call.
+          properties:
+            available:
+              type: integer
+              example: 6179
+            currency:
+              type: string
+              example: RWF
+        pagination:
+          type: object
+          required: [page, limit, total, has_more]
+          properties:
+            page:     { type: integer, example: 1 }
+            limit:    { type: integer, example: 20 }
+            total:    { type: integer, example: 47 }
+            has_more: { type: boolean, example: true }
 
   responses:
     Unauthorized:
@@ -2817,6 +2921,44 @@ paths:
               example:
                 error: { code: NOT_FOUND }
 
+  /users/me/wallet/transactions:
+    get:
+      tags: [Wallet]
+      summary: Own transaction history
+      description: |
+        Returns the authenticated user's wallet ledger — topups, bookings, and refunds —
+        proxied from the payment service. Includes the current balance so clients can
+        render the full wallet screen in a single request.
+      security:
+        - BearerAuth: []
+        - CookieAuth: []
+      parameters:
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, maximum: 100 }
+        - in: query
+          name: type
+          schema: { type: string, enum: [topup, booking, refund] }
+          description: Filter by transaction type.
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+          description: ISO date — return transactions on or after this date.
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+          description: ISO date — return transactions on or before this date.
+      responses:
+        '200':
+          description: Paginated transaction list with current balance.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TransactionList' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /users/invite:
     post:
       tags: [Users]
@@ -3279,6 +3421,68 @@ paths:
         Logging in during the grace period restores the account.
       responses:
         '204': { description: User soft-deleted — tokens revoked and blacklisted }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/wallet/transactions:
+    get:
+      tags: [Wallet]
+      summary: User transaction history (admin)
+      description: |
+        Returns the wallet ledger for any user by ID, proxied from the payment service.
+        Requires `read:User` permission. Response includes `user_id` and `org_id` on each
+        entry so admins can correlate transactions across users.
+      security:
+        - BearerAuth: []
+        - CookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+          description: ID of the user whose transactions to retrieve.
+        - in: query
+          name: page
+          schema: { type: integer, default: 1 }
+        - in: query
+          name: limit
+          schema: { type: integer, default: 20, maximum: 100 }
+        - in: query
+          name: type
+          schema: { type: string, enum: [topup, booking, refund] }
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Paginated transaction list with current balance.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/TransactionList'
+                  - type: object
+                    description: Admin view — each transaction entry also includes `user_id` and `org_id`.
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          allOf:
+                            - $ref: '#/components/schemas/Transaction'
+                            - type: object
+                              properties:
+                                user_id:
+                                  type: string
+                                  format: uuid
+                                  nullable: true
+                                org_id:
+                                  type: string
+                                  format: uuid
+                                  nullable: true
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
