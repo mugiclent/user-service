@@ -5,7 +5,7 @@ import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
 import { OtpService, type OtpPurpose } from './otp.service.js';
 import { PasswordService } from './password.service.js';
-import { publishAudit, publishSms, publishMail, notifyUser, publishUserDomainEvent } from '../utils/publishers.js';
+import { publishAudit, publishSms, publishMail, notifyUser, publishUserDomainEvent, publishUserEvent } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
 import type { AuthTokens } from '../utils/sendAuthResponse.js';
 import { normalizePhone, displayPhone } from '../utils/phone.js';
@@ -47,10 +47,10 @@ export const AuthService = {
   async login(
     identifier: string,
     password: string,
+    user_type: 'passenger' | 'staff',
     device_name?: string,
     ip?: string,
     user_agent?: string,
-    user_type?: 'passenger' | 'staff',
   ): Promise<LoginResult> {
     let phoneQuery = identifier;
     if (!isEmail(identifier)) {
@@ -59,7 +59,7 @@ export const AuthService = {
 
     const baseWhere = isEmail(identifier) ? { email: identifier } : { phone_number: phoneQuery };
     const user = await prisma.user.findFirst({
-      where: user_type ? { ...baseWhere, user_type } : baseWhere,
+      where: { ...baseWhere, user_type },
       ...withRoles,
     });
 
@@ -271,6 +271,19 @@ export const AuthService = {
         mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
       });
       publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: 'phone' });
+      if (updated.user_type === 'staff') {
+        publishUserEvent({
+          type: 'staff.created',
+          id: updated.id,
+          first_name: updated.first_name,
+          last_name: updated.last_name,
+          org_id: updated.org_id,
+          roles: updated.user_roles.map((ur) => ur.role.slug),
+          user_type: 'staff',
+          avatar_path: updated.avatar_path,
+          status: updated.status,
+        });
+      }
     }
 
     publishAudit({ actor_id: user_id, action: 'verify_phone', resource: 'User', resource_id: user_id });
@@ -309,6 +322,19 @@ export const AuthService = {
         mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
       });
       publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: 'email' });
+      if (updated.user_type === 'staff') {
+        publishUserEvent({
+          type: 'staff.created',
+          id: updated.id,
+          first_name: updated.first_name,
+          last_name: updated.last_name,
+          org_id: updated.org_id,
+          roles: updated.user_roles.map((ur) => ur.role.slug),
+          user_type: 'staff',
+          avatar_path: updated.avatar_path,
+          status: updated.status,
+        });
+      }
     }
 
     publishAudit({ actor_id: user_id, action: 'verify_email', resource: 'User', resource_id: user_id });
@@ -357,6 +383,19 @@ export const AuthService = {
     });
 
     publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: channel });
+    if (updated.user_type === 'staff') {
+      publishUserEvent({
+        type: 'staff.updated',
+        id: updated.id,
+        first_name: updated.first_name,
+        last_name: updated.last_name,
+        avatar_path: updated.avatar_path,
+        org_id: updated.org_id,
+        roles: updated.user_roles.map((ur) => ur.role.slug),
+        status: updated.status,
+        updated_at: updated.updated_at.toISOString(),
+      });
+    }
 
     publishAudit({ actor_id: user_id, action: 'verify_login', resource: 'User', resource_id: user_id, ip });
 

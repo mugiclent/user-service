@@ -151,14 +151,14 @@ describe('AuthService.login — 2FA disabled', () => {
   });
 
   it('publishes audit login event', async () => {
-    await AuthService.login('+250780000001', 'password123', undefined, '1.2.3.4');
+    await AuthService.login('+250780000001', 'password123', 'passenger', undefined, '1.2.3.4');
     expect(publishAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'login', resource: 'User', ip: '1.2.3.4' }),
     );
   });
 
   it('does NOT publish any SMS or mail', async () => {
-    await AuthService.login('+250780000001', 'password123');
+    await AuthService.login('+250780000001', 'password123', 'passenger');
     expect(publishSms).not.toHaveBeenCalled();
     expect(publishMail).not.toHaveBeenCalled();
   });
@@ -175,19 +175,19 @@ describe('AuthService.login — 2FA enabled', () => {
   });
 
   it('publishes otp.sms with purpose 2fa', async () => {
-    await AuthService.login('+250780000001', 'password123');
+    await AuthService.login('+250780000001', 'password123', 'passenger');
     expect(publishSms).toHaveBeenCalledWith(
       expect.objectContaining({ type: 'otp.sms', purpose: '2fa', code: '123456' }),
     );
   });
 
   it('does NOT publish audit on the first step', async () => {
-    await AuthService.login('+250780000001', 'password123');
+    await AuthService.login('+250780000001', 'password123', 'passenger');
     expect(publishAudit).not.toHaveBeenCalled();
   });
 
   it('does NOT publish mail', async () => {
-    await AuthService.login('+250780000001', 'password123');
+    await AuthService.login('+250780000001', 'password123', 'passenger');
     expect(publishMail).not.toHaveBeenCalled();
   });
 });

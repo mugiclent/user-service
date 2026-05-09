@@ -4,8 +4,8 @@ import { notifyUser } from '../utils/publishers.js';
 import type { NotifiableUser } from '../utils/publishers.js';
 
 const QUEUE = 'billing-user-svc';
-const EXCHANGE = 'logs';
-const ROUTING_KEY = 'billing.events';
+const EXCHANGE = 'billing';
+const ROUTING_KEY = '#';
 
 // Consumed event shapes from the billing service
 interface BillingBlockedEvent {

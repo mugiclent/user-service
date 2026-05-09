@@ -163,29 +163,12 @@ describe('UserService domain events — staff.created', () => {
     });
   });
 
-  it('publishes staff.created on successful acceptInvite', async () => {
-    await UserService.acceptInvite('invite-tok', 'Pass!123');
-
-    expect(publishUserEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        type: 'staff.created',
-        id: 'user-new-1',
-        first_name: 'Bob',
-        last_name: 'Invited',
-        org_id: 'org-1',
-        user_type: 'staff',
-        roles: ['org_staff'],
-        status: 'pending_verification',
-      }),
-    );
-  });
-
-  it('publishes exactly one staff.created event', async () => {
+  it('does not publish staff.created on acceptInvite (user is still pending_verification)', async () => {
     await UserService.acceptInvite('invite-tok', 'Pass!123');
     const staffCreatedCalls = publishUserEvent.mock.calls.filter(
       ([e]: [{ type: string }]) => e.type === 'staff.created',
     );
-    expect(staffCreatedCalls).toHaveLength(1);
+    expect(staffCreatedCalls).toHaveLength(0);
   });
 });
 

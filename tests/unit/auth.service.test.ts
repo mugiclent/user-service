@@ -71,12 +71,15 @@ const mockPublishSms = vi.fn();
 const mockPublishMail = vi.fn();
 const mockNotifyUser = vi.fn();
 
+const mockPublishUserEvent = vi.fn();
+
 vi.mock('../../src/utils/publishers.js', () => ({
   publishAudit: mockPublishAudit,
   publishSms: mockPublishSms,
   publishMail: mockPublishMail,
   notifyUser: mockNotifyUser,
   publishUserDomainEvent: vi.fn(),
+  publishUserEvent: mockPublishUserEvent,
 }));
 
 const { AuthService } = await import('../../src/services/auth.service.js');
@@ -112,14 +115,14 @@ beforeEach(() => {
 describe('AuthService.login', () => {
   it('throws INVALID_CREDENTIALS when user not found', async () => {
     mockUserFindFirst.mockResolvedValueOnce(null);
-    await expect(AuthService.login('u@e.com', 'pass')).rejects.toMatchObject({
+    await expect(AuthService.login('u@e.com', 'pass', 'passenger')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS', status: 401,
     });
   });
 
   it('throws INVALID_CREDENTIALS when no password_hash', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser({ password_hash: null }));
-    await expect(AuthService.login('+250788000001', 'pass')).rejects.toMatchObject({
+    await expect(AuthService.login('+250788000001', 'pass', 'passenger')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS', status: 401,
     });
   });
@@ -127,21 +130,21 @@ describe('AuthService.login', () => {
   it('throws INVALID_CREDENTIALS when password is wrong', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
     mockVerifyPassword.mockResolvedValueOnce(false);
-    await expect(AuthService.login('+250788000001', 'bad')).rejects.toMatchObject({
+    await expect(AuthService.login('+250788000001', 'bad', 'passenger')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS', status: 401,
     });
   });
 
   it('throws ACCOUNT_SUSPENDED for suspended users', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser({ status: 'suspended' }));
-    await expect(AuthService.login('+250788000001', 'pass')).rejects.toMatchObject({
+    await expect(AuthService.login('+250788000001', 'pass', 'passenger')).rejects.toMatchObject({
       code: 'ACCOUNT_SUSPENDED', status: 403,
     });
   });
 
   it('returns requires_verification: true for pending_verification users and sends OTP', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser({ status: 'pending_verification' }));
-    const result = await AuthService.login('+250788000001', 'pass');
+    const result = await AuthService.login('+250788000001', 'pass', 'passenger');
     expect(result).toMatchObject({ requires_verification: true, channel: 'phone', user_id: 'user-1' });
     expect(mockOtpCreate).toHaveBeenCalledWith('user-1', 'phone_verification');
     expect(mockPublishSms).toHaveBeenCalledWith(expect.objectContaining({ type: 'otp.sms', purpose: 'phone_verification' }));
@@ -149,7 +152,7 @@ describe('AuthService.login', () => {
 
   it('returns requires_2fa: true when 2FA is enabled', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser({ two_factor_enabled: true }));
-    const result = await AuthService.login('+250788000001', 'pass');
+    const result = await AuthService.login('+250788000001', 'pass', 'passenger');
     expect(result).toMatchObject({ requires_2fa: true, user_id: 'user-1', expires_in: 300 });
     expect(mockOtpCreate).toHaveBeenCalledWith('user-1', '2fa');
     expect(mockPublishSms).toHaveBeenCalledWith(
@@ -159,7 +162,7 @@ describe('AuthService.login', () => {
 
   it('returns requires_2fa: false with user and tokens on normal login', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
-    const result = await AuthService.login('+250788000001', 'pass');
+    const result = await AuthService.login('+250788000001', 'pass', 'passenger');
     expect(result).toMatchObject({
       requires_2fa: false,
       user: expect.objectContaining({ id: 'user-1' }),
@@ -170,24 +173,24 @@ describe('AuthService.login', () => {
 
   it('looks up by email when identifier contains @', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
-    await AuthService.login('user@example.com', 'pass');
+    await AuthService.login('user@example.com', 'pass', 'staff');
     expect(mockUserFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { email: 'user@example.com' } }),
+      expect.objectContaining({ where: { email: 'user@example.com', user_type: 'staff' } }),
     );
   });
 
   it('looks up by phone when identifier has no @', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
-    await AuthService.login('+250788000001', 'pass');
+    await AuthService.login('+250788000001', 'pass', 'passenger');
     // identifier is normalized to digits-only before DB lookup
     expect(mockUserFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { phone_number: '250788000001' } }),
+      expect.objectContaining({ where: { phone_number: '250788000001', user_type: 'passenger' } }),
     );
   });
 
   it('publishes an audit event on successful login', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
-    await AuthService.login('+250788000001', 'pass', undefined, '1.2.3.4');
+    await AuthService.login('+250788000001', 'pass', 'passenger', undefined, '1.2.3.4');
     expect(mockPublishAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'login', resource: 'User', resource_id: 'user-1' }),
     );
@@ -200,7 +203,7 @@ describe('AuthService.login', () => {
     mockRefreshTokenFindFirst
       .mockResolvedValueOnce({ id: 'tok-1' })  // anyToken: some tokens exist
       .mockResolvedValueOnce(null);              // sameDevice: not found → new device
-    await AuthService.login('+250788000001', 'pass', 'iPhone', '1.2.3.4', 'Mozilla/5.0');
+    await AuthService.login('+250788000001', 'pass', 'passenger', 'iPhone', '1.2.3.4', 'Mozilla/5.0');
     // Flush the fire-and-forget promise chain
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockNotifyUser).toHaveBeenCalledWith(
@@ -212,7 +215,7 @@ describe('AuthService.login', () => {
   it('does not notify when no prior tokens exist (first ever login)', async () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
     mockRefreshTokenFindFirst.mockResolvedValueOnce(null); // no prior tokens
-    await AuthService.login('+250788000001', 'pass', 'iPhone', '1.2.3.4', 'Mozilla/5.0');
+    await AuthService.login('+250788000001', 'pass', 'passenger', 'iPhone', '1.2.3.4', 'Mozilla/5.0');
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(mockNotifyUser).not.toHaveBeenCalled();
   });
@@ -383,5 +386,40 @@ describe('AuthService.logoutAll', () => {
   it('delegates to TokenService.revokeAllForUser', async () => {
     await AuthService.logoutAll('user-1');
     expect(mockRevokeAllForUser).toHaveBeenCalledWith('user-1');
+  });
+});
+
+// ── staff.created on activation ───────────────────────────────────────────────
+
+describe('AuthService — staff.created fires on first verification', () => {
+  const staffUser = makeUser({
+    user_type: 'staff',
+    status: 'active',
+    org_id: 'org-1',
+    updated_at: new Date(),
+    user_roles: [{ role: { slug: 'driver' } }],
+  });
+
+  it('publishes staff.created when a staff user activates via verifyPhone', async () => {
+    mockUserFindUnique.mockResolvedValueOnce(makeUser({ user_type: 'staff', status: 'pending_verification' }));
+    mockUserUpdate.mockResolvedValueOnce(staffUser);
+    await AuthService.verifyPhone('user-1', '123456');
+    expect(mockPublishUserEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'staff.created', id: 'user-1', user_type: 'staff', status: 'active' }),
+    );
+  });
+
+  it('does not publish staff.created when a passenger activates via verifyPhone', async () => {
+    mockUserFindUnique.mockResolvedValueOnce(makeUser({ status: 'pending_verification' }));
+    mockUserUpdate.mockResolvedValueOnce(makeUser({ status: 'active' }));
+    await AuthService.verifyPhone('user-1', '123456');
+    expect(mockPublishUserEvent).not.toHaveBeenCalled();
+  });
+
+  it('does not publish staff.created on a repeat verifyPhone (already active)', async () => {
+    mockUserFindUnique.mockResolvedValueOnce(makeUser({ user_type: 'staff', status: 'active' }));
+    mockUserUpdate.mockResolvedValueOnce(staffUser);
+    await AuthService.verifyPhone('user-1', '123456');
+    expect(mockPublishUserEvent).not.toHaveBeenCalled();
   });
 });

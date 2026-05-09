@@ -22,8 +22,8 @@ export const WalletController = {
       const user = req.user as AuthenticatedUser;
       const result = await WalletService.initiateTopup(user.id, req.body as {
         amount: number;
-        phone_number: string;
-        provider: 'mtn_momo' | 'airtel_money';
+        phone_number?: string;
+        payment_method: 'mtn' | 'airtel';
       });
       res.status(202).json(result);
     } catch (err) {
@@ -45,7 +45,10 @@ export const WalletController = {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
     res.flushHeaders();
+
+    res.write(`event: pending\ndata: ${JSON.stringify({ status: 'pending', topup_id: topupId })}\n\n`);
 
     const sub = getRedisClient().duplicate();
     let done = false;
@@ -72,7 +75,7 @@ export const WalletController = {
     sub.on('message', async (_channel: string, message: string) => {
       try {
         const payload = JSON.parse(message) as { type: string; [key: string]: unknown };
-        const eventName = payload.type === 'topup.completed' ? 'completed' : 'failed';
+        const eventName = payload.type === 'topup.payment.confirmed' ? 'completed' : 'failed';
         send(eventName, payload);
       } catch {
         send('failed', { message: 'Malformed payment event' });

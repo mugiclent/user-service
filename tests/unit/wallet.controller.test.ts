@@ -49,7 +49,7 @@ const makeReq = (overrides: {
 } = {}): Request => ({
   user: { id: overrides.userId ?? 'user-1' },
   params: { id: overrides.topupId ?? 'topup-abc' },
-  body: overrides.body ?? { amount: 5000, phone_number: '+250788000001', provider: 'mtn_momo' },
+  body: overrides.body ?? { amount: 5000, phone_number: '+250788000001', payment_method: 'mtn' },
   on: vi.fn(),
 } as unknown as Request);
 
@@ -173,6 +173,7 @@ describe('WalletController.streamTopup — SSE flow', () => {
     expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream');
     expect(res.setHeader).toHaveBeenCalledWith('Cache-Control', 'no-cache');
     expect(res.setHeader).toHaveBeenCalledWith('Connection', 'keep-alive');
+    expect(res.setHeader).toHaveBeenCalledWith('X-Accel-Buffering', 'no');
     expect(res.flushHeaders).toHaveBeenCalled();
     fakeSubscriber.unsubscribe();
     fakeSubscriber.quit();
@@ -183,35 +184,40 @@ describe('WalletController.streamTopup — SSE flow', () => {
     expect(fakeSubscriber.subscribe).toHaveBeenCalledWith('topup:topup-abc');
   });
 
-  it('sends "completed" SSE event on topup.completed message', async () => {
+  it('sends "completed" SSE event on topup.payment.confirmed message', async () => {
     const { res } = await setupStream();
 
     fakeSubscriber.emit('message', 'topup:topup-abc', JSON.stringify({
-      type: 'topup.completed',
+      type: 'topup.payment.confirmed',
       topup_id: 'topup-abc',
       user_id: 'user-1',
       amount: 5000,
+      currency: 'RWF',
       new_balance: 15000,
+      mtn_transaction_id: 'mtn-tx-1',
+      mtn_absorbed: 89,
     }));
 
     await new Promise((r) => setImmediate(r));
 
     const written = (res as unknown as { _chunks: string[] })._chunks.join('');
     expect(written).toContain('event: completed');
-    expect(written).toContain('"type":"topup.completed"');
+    expect(written).toContain('"type":"topup.payment.confirmed"');
     expect(res.end).toHaveBeenCalled();
     expect(fakeSubscriber.unsubscribe).toHaveBeenCalled();
     expect(fakeSubscriber.quit).toHaveBeenCalled();
   });
 
-  it('sends "failed" SSE event on topup.failed message', async () => {
+  it('sends "failed" SSE event on topup.payment.failed message', async () => {
     const { res } = await setupStream();
 
     fakeSubscriber.emit('message', 'topup:topup-abc', JSON.stringify({
-      type: 'topup.failed',
+      type: 'topup.payment.failed',
       topup_id: 'topup-abc',
       user_id: 'user-1',
-      reason: 'Insufficient funds',
+      reason: 'LOW_BALANCE',
+      message: 'Payment was not completed.',
+      retryable: true,
     }));
 
     await new Promise((r) => setImmediate(r));
@@ -245,15 +251,15 @@ describe('WalletController.streamTopup — SSE flow', () => {
   it('does not double-cleanup if message fires then client disconnects', async () => {
     const { req, res } = await setupStream();
 
-    fakeSubscriber.emit('message', 'topup:topup-abc', JSON.stringify({ type: 'topup.completed' }));
+    fakeSubscriber.emit('message', 'topup:topup-abc', JSON.stringify({ type: 'topup.payment.confirmed' }));
     await new Promise((r) => setImmediate(r));
 
     req.emit('close');
     await new Promise((r) => setImmediate(r));
 
-    // unsubscribe and quit should only have been called once each
     expect(fakeSubscriber.unsubscribe).toHaveBeenCalledTimes(1);
     expect(fakeSubscriber.quit).toHaveBeenCalledTimes(1);
     expect(res.end).toHaveBeenCalledTimes(1);
   });
+
 });

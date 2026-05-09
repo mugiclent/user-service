@@ -3,6 +3,6 @@ import { phoneSchema } from '../../utils/phone.js';
 
 export const initiateTopupSchema = Joi.object({
   amount: Joi.number().integer().positive().max(5_000_000).required(),
-  phone_number: phoneSchema.required(),
-  provider: Joi.string().valid('mtn_momo', 'airtel_money').required(),
+  phone_number: phoneSchema.optional(),
+  payment_method: Joi.string().valid('mtn', 'airtel').required(),
 });

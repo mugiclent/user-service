@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import { slugify } from '../utils/slugify.js';
 import { AppError } from '../utils/AppError.js';
 import { OrgOtpService } from './org-otp.service.js';
-import { publishMail, publishSms, publishAudit, notifyUser, publishOrgEvent } from '../utils/publishers.js';
+import { publishMail, publishSms, publishAudit, notifyUser } from '../utils/publishers.js';
 import type { Locale, NotifiableUser } from '../utils/publishers.js';
 
 // ---------------------------------------------------------------------------
@@ -258,15 +258,6 @@ export const OrgApplicationService = {
         });
       }
     }
-
-    publishOrgEvent({
-      type: 'org.application_submitted',
-      org_id: org.id,
-      org_type: org.org_type,
-      parent_org_id: org.parent_org_id,
-      contact_email: org.contact_email,
-      contact_phone: org.contact_phone,
-    });
 
     publishAudit({ actor_id: orgId, action: 'verify_contact', resource: 'Org', resource_id: orgId });
   },

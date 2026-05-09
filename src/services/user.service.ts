@@ -615,18 +615,6 @@ export const UserService = {
 
     publishAudit({ actor_id: user.id, action: 'accept_invite', resource: 'User', resource_id: user.id });
 
-    publishUserEvent({
-      type: 'staff.created',
-      id: user.id,
-      first_name: user.first_name,
-      last_name: user.last_name,
-      org_id: user.org_id,
-      roles: invitation.invitation_roles.map((ir) => ir.role.slug),
-      user_type: 'staff',
-      avatar_path: user.avatar_path,
-      status: 'pending_verification',
-    });
-
     return { user_id: user.id, channels: unverifiedChannels };
   },
 

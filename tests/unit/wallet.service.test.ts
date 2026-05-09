@@ -1,8 +1,7 @@
 /**
  * Tests for src/services/wallet.service.ts
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AppError } from '../../src/utils/AppError.js';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type * as NodeCrypto from 'node:crypto';
 
 // ── Redis mock ────────────────────────────────────────────────────────────────
@@ -13,10 +12,13 @@ vi.mock('../../src/loaders/redis.js', () => ({
   getRedisClient: () => ({ set: mockRedisSet, get: mockRedisGet }),
 }));
 
-// ── Config mock ───────────────────────────────────────────────────────────────
+// ── Prisma mock ───────────────────────────────────────────────────────────────
 
-vi.mock('../../src/config/index.js', () => ({
-  config: { paymentServiceUrl: 'http://payment-svc:8092' },
+const mockUserFindUnique = vi.fn().mockResolvedValue(null);
+vi.mock('../../src/models/index.js', () => ({
+  prisma: {
+    user: { findUnique: mockUserFindUnique },
+  },
 }));
 
 // ── Publisher mock ────────────────────────────────────────────────────────────
@@ -28,45 +30,80 @@ vi.mock('../../src/utils/publishers.js', () => ({
 
 // ── UUID mock — deterministic IDs ─────────────────────────────────────────────
 
+import { randomUUID as _randomUUID } from 'node:crypto';
+
 vi.mock('node:crypto', async (importOriginal) => {
   const actual = await importOriginal<typeof NodeCrypto>();
-  return { ...actual, randomUUID: vi.fn(() => 'topup-uuid-1') };
+  return { ...actual, randomUUID: vi.fn() };
 });
 
 const { WalletService } = await import('../../src/services/wallet.service.js');
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  let call = 0;
+  vi.mocked(_randomUUID).mockImplementation(() => call++ === 0 ? 'topup-uuid-1' : 'payment-ref-1');
+});
 
 // ── initiateTopup ─────────────────────────────────────────────────────────────
 
 describe('WalletService.initiateTopup', () => {
-  const data = { amount: 5000, phone_number: '+250788000001', provider: 'mtn_momo' as const };
+  const body = { amount: 5000, phone_number: '+250788000001', payment_method: 'mtn' as const };
 
   it('returns a topup_id', async () => {
-    const result = await WalletService.initiateTopup('user-1', data);
+    const result = await WalletService.initiateTopup('user-1', body);
     expect(result.topup_id).toBe('topup-uuid-1');
   });
 
-  it('stores topup_owner:{topup_id} → user_id in Redis with 600s TTL', async () => {
-    await WalletService.initiateTopup('user-1', data);
-    expect(mockRedisSet).toHaveBeenCalledWith('topup_owner:topup-uuid-1', 'user-1', 'EX', 600);
+  it('stores topup_owner:{topup_id} → user_id in Redis with 360s TTL', async () => {
+    await WalletService.initiateTopup('user-1', body);
+    expect(mockRedisSet).toHaveBeenCalledWith('topup_owner:topup-uuid-1', 'user-1', 'EX', 360);
   });
 
-  it('publishes wallet.topup.requested event with correct shape', async () => {
-    await WalletService.initiateTopup('user-1', data);
+  it('publishes wallet.topup.requested with correct shape', async () => {
+    await WalletService.initiateTopup('user-1', body);
     expect(mockPublishWalletEvent).toHaveBeenCalledWith({
       type: 'wallet.topup.requested',
       topup_id: 'topup-uuid-1',
+      payment_ref: 'payment-ref-1',
       user_id: 'user-1',
       amount: 5000,
-      phone_number: '+250788000001',
-      provider: 'mtn_momo',
+      currency: 'RWF',
+      phone: '+250788000001',
+      payment_method: 'mtn',
     });
   });
 
-  it('propagates Redis errors', async () => {
+  it('normalises phone_number without + prefix', async () => {
+    await WalletService.initiateTopup('user-1', { ...body, phone_number: '250788000001' });
+    expect(mockPublishWalletEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ phone: '+250788000001' }),
+    );
+  });
+
+  it('passes airtel payment_method through unchanged', async () => {
+    await WalletService.initiateTopup('user-1', { ...body, payment_method: 'airtel' });
+    expect(mockPublishWalletEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ payment_method: 'airtel' }),
+    );
+  });
+
+  it('falls back to user phone_number from DB when not provided', async () => {
+    mockUserFindUnique.mockResolvedValueOnce({ phone_number: '+250788000002' });
+    await WalletService.initiateTopup('user-1', { amount: 3000, payment_method: 'mtn' });
+    expect(mockUserFindUnique).toHaveBeenCalledWith({ where: { id: 'user-1' }, select: { phone_number: true } });
+    expect(mockPublishWalletEvent).toHaveBeenCalledWith(expect.objectContaining({ phone: '+250788000002' }));
+  });
+
+  it('throws PHONE_NOT_FOUND when no phone provided and user has none', async () => {
+    mockUserFindUnique.mockResolvedValueOnce({ phone_number: null });
+    await expect(WalletService.initiateTopup('user-1', { amount: 3000, payment_method: 'mtn' }))
+      .rejects.toMatchObject({ code: 'PHONE_NOT_FOUND' });
+  });
+
+  it('propagates Redis errors without publishing', async () => {
     mockRedisSet.mockRejectedValueOnce(new Error('Redis down'));
-    await expect(WalletService.initiateTopup('user-1', data)).rejects.toThrow('Redis down');
+    await expect(WalletService.initiateTopup('user-1', body)).rejects.toThrow('Redis down');
     expect(mockPublishWalletEvent).not.toHaveBeenCalled();
   });
 });
@@ -93,73 +130,32 @@ describe('WalletService.verifyTopupOwner', () => {
 
 // ── getWallet ─────────────────────────────────────────────────────────────────
 
-const mockFetch = vi.fn();
-
-beforeEach(() => {
-  vi.stubGlobal('fetch', mockFetch);
-});
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
 describe('WalletService.getWallet', () => {
-  it('calls the payment service with the correct URL and X-User-ID header', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ balance: 15000, currency: 'RWF', user_id: 'user-1' }),
-    });
-
-    await WalletService.getWallet('user-1');
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'http://payment-svc:8092/wallet/user-1',
-      expect.objectContaining({ headers: { 'X-User-ID': 'user-1' } }),
-    );
-  });
-
-  it('returns the response body on success', async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ balance: 15000, currency: 'RWF', user_id: 'user-1' }),
-    });
+  it('returns balance, currency, and user_id from local DB', async () => {
+    mockUserFindUnique.mockResolvedValue({ balance: 15000 });
 
     const result = await WalletService.getWallet('user-1');
-    expect(result).toEqual({ balance: 15000, currency: 'RWF', user_id: 'user-1' });
+
+    expect(mockUserFindUnique).toHaveBeenCalledWith({
+      where: { id: 'user-1' },
+      select: { balance: true },
+    });
+    expect(result).toMatchObject({ currency: 'RWF', user_id: 'user-1' });
+    expect(typeof result.balance).toBe('number');
   });
 
-  it('throws PAYMENT_SERVICE_UNAVAILABLE (503) when fetch rejects (network error)', async () => {
-    mockFetch.mockRejectedValue(new Error('ECONNREFUSED'));
+  it('throws USER_NOT_FOUND (404) when user does not exist', async () => {
+    mockUserFindUnique.mockResolvedValue(null);
 
     await expect(WalletService.getWallet('user-1')).rejects.toMatchObject({
-      code: 'PAYMENT_SERVICE_UNAVAILABLE',
-      status: 503,
-    });
-  });
-
-  it('forwards the error code and status from a non-2xx payment service response', async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 404,
-      json: async () => ({ error: { code: 'WALLET_NOT_FOUND' } }),
-    });
-
-    await expect(WalletService.getWallet('user-1')).rejects.toMatchObject({
-      code: 'WALLET_NOT_FOUND',
+      code: 'USER_NOT_FOUND',
       status: 404,
     });
   });
 
-  it('falls back to PAYMENT_SERVICE_ERROR when the error body has no code', async () => {
-    mockFetch.mockResolvedValue({
-      ok: false,
-      status: 500,
-      json: async () => ({}),
-    });
+  it('propagates DB errors', async () => {
+    mockUserFindUnique.mockRejectedValue(new Error('DB connection lost'));
 
-    await expect(WalletService.getWallet('user-1')).rejects.toMatchObject({
-      code: 'PAYMENT_SERVICE_ERROR',
-      status: 500,
-    });
+    await expect(WalletService.getWallet('user-1')).rejects.toThrow('DB connection lost');
   });
 });

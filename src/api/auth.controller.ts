@@ -14,9 +14,9 @@ export const AuthController = {
         identifier: string;
         password: string;
         device_name?: string;
-        user_type?: 'passenger' | 'staff';
+        user_type: 'passenger' | 'staff';
       };
-      const result = await AuthService.login(identifier, password, device_name, req.ip, req.headers['user-agent'], user_type);
+      const result = await AuthService.login(identifier, password, user_type, device_name, req.ip, req.headers['user-agent']);
 
       if (result.requires_verification) {
         // Account not yet verified — OTP sent to entered channel

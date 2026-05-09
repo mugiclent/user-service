@@ -135,15 +135,18 @@ info:
     `POST /auth/register-device`. Subsequent security events (new device login, password change,
     account suspension) and org lifecycle events are delivered based on `notif_channel`.
 
-    ## Wallet Top-Up (SSE)
+    ## Wallet
 
-    Wallet top-ups use a two-step async pattern:
+    Wallet balances are stored locally and kept in sync with payment events consumed from RabbitMQ.
+    Read the balance with `GET /users/me/wallet` — no call to the payment service is needed.
+
+    Top-ups use a two-step async pattern:
 
     1. `POST /users/me/wallet/topup` → returns `{ topup_id }` (202 Accepted).
     2. `GET /users/me/wallet/topup/{topup_id}/stream` → open SSE stream.
 
     The stream emits one named event (`completed`, `failed`, or `timeout`) and closes.
-    See the **Wallet** tag for full sequence diagram, client code example, and event shapes.
+    See the **Wallet** tag for full sequence diagram, event-driven balance sync, and client example.
 
 servers:
   - url: /api/v1
@@ -177,9 +180,26 @@ tags:
       Use `GET /permissions` to build the pattern picker when creating or editing roles.
   - name: Wallet
     description: |
-      Wallet top-up flow via mobile money (MTN MoMo / Airtel Money).
+      Wallet balance and top-up flow via mobile money (MTN MoMo / Airtel Money).
 
-      ## How it works
+      ## Balance storage
+
+      The user-service maintains wallet balances **locally** in its own database. Balances
+      are kept in sync by consuming `payment.events` messages published by the payment service
+      to the `logs` RabbitMQ exchange. No synchronous call to the payment service is ever
+      needed to read a balance.
+
+      Events that affect balance:
+
+      | Event | Effect |
+      |---|---|
+      | `topup.completed` | User balance **increased** by `amount` |
+      | `ticket.payment.completed` (with `user_id`) | Passenger balance **decreased** by `amount` |
+      | `ticket.payment.completed` (with `org_id`) | Organisation balance **decreased** by `amount` |
+      | `ticket.refund.issued` (with `user_id`) | Passenger balance **increased** by `amount` |
+      | `ticket.refund.issued` (with `org_id`) | Organisation balance **increased** by `amount` |
+
+      ## Top-up flow
 
       Top-ups are **asynchronous**: the payment is processed by the payment service in the
       background. The user-service acts as a bridge between the client and the payment pipeline.
@@ -196,8 +216,12 @@ tags:
         ├─ GET /wallet/topup/:id/stream ──►│                    │
         │   (SSE connection opened)  │                          │
         │                            │◄── payment.events ───────┤ (RabbitMQ)
+        │                            ├─ update user.balance     │
         │◄── event: completed ───────┤  (Redis pub/sub bridge)  │
         │    (SSE connection closed) │                          │
+        │                            │                          │
+        ├─ GET /users/me/wallet ─────►│                          │
+        │◄── 200 { balance: ... } ───┤ (reads from local DB)    │
       ```
 
       ### SSE Event Types
@@ -223,8 +247,9 @@ tags:
       const es = new EventSource(`/api/v1/users/me/wallet/topup/${topup_id}/stream`);
 
       es.addEventListener('completed', (e) => {
-        const { new_balance } = JSON.parse(e.data);
-        console.log('Top-up complete, new balance:', new_balance);
+        // Balance is now updated in the DB — fetch the new value
+        const balance = await fetch('/api/v1/users/me/wallet').then(r => r.json()).then(d => d.balance);
+        console.log('Top-up complete, new balance:', balance);
         es.close();
       });
 
@@ -1102,10 +1127,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [identifier, password]
+              required: [identifier, password, user_type]
               properties:
                 identifier:  { type: string, example: '+250780000001', description: 'Phone number (E.164) or email address.' }
                 password:    { type: string, minLength: 8, maxLength: 128 }
+                user_type:   { type: string, enum: [passenger, staff], description: 'Must match the account type — the same phone/email may exist for both passenger and staff.' }
                 device_name: { type: string, maxLength: 200 }
       responses:
         '200':
@@ -2587,29 +2613,28 @@ paths:
       tags: [Wallet]
       summary: Get wallet balance
       description: |
-        Returns the authenticated user's wallet balance by proxying the request
-        to the payment service. The response shape is owned by the payment service
-        and forwarded as-is.
+        Returns the authenticated passenger's wallet balance from the user-service's
+        local database. No call to the payment service is made — the balance is
+        kept in sync via `payment.events` RabbitMQ messages.
 
-        If the payment service is unreachable a `503 PAYMENT_SERVICE_UNAVAILABLE`
-        is returned. Any error the payment service itself returns is forwarded
-        with its original status code.
+        The balance reflects all completed top-ups, ticket purchases, and refunds
+        processed since the account was created.
       security:
         - BearerAuth: []
         - CookieAuth: []
       responses:
         '200':
-          description: Wallet balance from the payment service.
+          description: Current wallet balance.
           content:
             application/json:
               schema:
                 type: object
-                description: Payment-service wallet object — shape defined by the payment service.
+                required: [balance, currency, user_id]
                 properties:
                   balance:
-                    type: integer
+                    type: number
                     example: 15000
-                    description: Current wallet balance in the smallest currency unit (e.g. RWF).
+                    description: Current wallet balance in RWF.
                   currency:
                     type: string
                     example: RWF
@@ -2617,13 +2642,13 @@ paths:
                     type: string
                     format: uuid
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '503':
-          description: Payment service is unreachable.
+        '404':
+          description: User record not found.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example:
-                error: { code: PAYMENT_SERVICE_UNAVAILABLE, message: Payment service is temporarily unavailable }
+                error: { code: USER_NOT_FOUND, message: User not found }
 
   /users/me/wallet/topup:
     post:

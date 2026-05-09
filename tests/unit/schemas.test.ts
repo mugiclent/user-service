@@ -36,10 +36,11 @@ const fail = (schema: { validate: (v: unknown) => { error?: unknown } }, value: 
 // ── Auth schemas ───────────────────────────────────────────────────────────────
 
 describe('loginSchema', () => {
-  it('accepts valid credentials', () => ok(loginSchema, { identifier: 'u@e.com', password: 'password123' }));
-  it('rejects missing identifier', () => fail(loginSchema, { password: 'password123' }));
-  it('rejects password shorter than 8 chars', () => fail(loginSchema, { identifier: 'u', password: 'short' }));
-  it('accepts optional device_name', () => ok(loginSchema, { identifier: 'u', password: 'password123', device_name: 'iPhone' }));
+  it('accepts valid credentials', () => ok(loginSchema, { identifier: 'u@e.com', password: 'password123', user_type: 'passenger' }));
+  it('rejects missing identifier', () => fail(loginSchema, { password: 'password123', user_type: 'passenger' }));
+  it('rejects missing user_type', () => fail(loginSchema, { identifier: 'u@e.com', password: 'password123' }));
+  it('rejects password shorter than 8 chars', () => fail(loginSchema, { identifier: 'u', password: 'short', user_type: 'passenger' }));
+  it('accepts optional device_name', () => ok(loginSchema, { identifier: 'u', password: 'password123', user_type: 'staff', device_name: 'iPhone' }));
 });
 
 describe('registerSchema', () => {

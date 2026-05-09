@@ -9,7 +9,7 @@ import { initCleanup } from './loaders/cleanup.js';
 import { bootstrap } from './loaders/bootstrap.js';
 import { prisma } from './models/index.js';
 import { initBillingSubscriber } from './subscribers/billing.subscriber.js';
-import { initTopupSubscriber } from './subscribers/topup.subscriber.js';
+import { initPaymentSubscriber } from './subscribers/payment.subscriber.js';
 
 const start = async (): Promise<void> => {
   // Initialize infrastructure
@@ -18,7 +18,7 @@ const start = async (): Promise<void> => {
   initRedis();
   await initRabbitMQ();
   await initBillingSubscriber();
-  await initTopupSubscriber();
+  await initPaymentSubscriber();
   initCleanup();
 
   const app = createApp();

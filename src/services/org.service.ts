@@ -498,16 +498,6 @@ export const OrgService = {
         publishOrgEvent({ type: 'org.suspended', id: org.id, status: 'suspended', reason: data.rejection_reason });
       }
 
-      if (data.status === 'rejected') {
-        publishOrgEvent({
-          type: 'org.rejected',
-          org_id: org.id,
-          rejection_reason: org.rejection_reason,
-          contact_email: org.contact_email,
-          contact_phone: org.contact_phone,
-        });
-      }
-
       const nameChanged = data.name !== undefined && existing.name !== org.name;
       const logoChanged = data.logo_path !== undefined && existing.logo_path !== org.logo_path;
       const parentChanged = data.parent_org_id !== undefined && existing.parent_org_id !== org.parent_org_id;
@@ -565,13 +555,6 @@ export const OrgService = {
         mail: r.email ? { type: 'org.member_coop_approved', email: r.email, org_name: org.name, coop_name: coopName, contact_email: org.contact_email, locale: r.locale as Locale } : undefined,
       });
     }
-
-    publishOrgEvent({
-      type: 'org.cooperative_approved',
-      org_id: org.id,
-      parent_org_id: org.parent_org_id,
-      cooperative_approved_by: requestingUser.id,
-    });
 
     publishAudit({ actor_id: requestingUser.id, action: 'cooperative_approve', resource: 'Org', resource_id: orgId });
     return serializeOrgFull(updated, false);

@@ -8,7 +8,7 @@ const password = Joi.string().min(8).max(128);
 export const loginSchema = Joi.object({
   identifier: Joi.string().trim().required(),
   password: password.required(),
-  user_type: Joi.string().valid('passenger', 'staff').optional(),
+  user_type: Joi.string().valid('passenger', 'staff').required(),
   device_name: Joi.string().trim().max(200).optional(),
 });
 

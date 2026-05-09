@@ -1,28 +1,39 @@
 import { randomUUID } from 'node:crypto';
 import { getRedisClient } from '../loaders/redis.js';
 import { publishWalletEvent } from '../utils/publishers.js';
-import { config } from '../config/index.js';
+import { prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 
-// Ownership key TTL: 10 minutes — long enough for payment to complete and SSE to connect
-const TOPUP_OWNER_TTL = 600;
+const TOPUP_TTL = 360;
 
 export const WalletService = {
   async initiateTopup(
     userId: string,
-    data: { amount: number; phone_number: string; provider: 'mtn_momo' | 'airtel_money' },
+    data: { amount: number; phone_number?: string; payment_method: 'mtn' | 'airtel' },
   ): Promise<{ topup_id: string }> {
-    const topup_id = randomUUID();
+    let rawPhone = data.phone_number;
 
-    await getRedisClient().set(`topup_owner:${topup_id}`, userId, 'EX', TOPUP_OWNER_TTL);
+    if (!rawPhone) {
+      const user = await prisma.user.findUnique({ where: { id: userId }, select: { phone_number: true } });
+      if (!user?.phone_number) throw new AppError('PHONE_NOT_FOUND', 422);
+      rawPhone = user.phone_number;
+    }
+
+    const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+    const topup_id = randomUUID();
+    const payment_ref = randomUUID();
+
+    await getRedisClient().set(`topup_owner:${topup_id}`, userId, 'EX', TOPUP_TTL);
 
     publishWalletEvent({
       type: 'wallet.topup.requested',
       topup_id,
+      payment_ref,
       user_id: userId,
       amount: data.amount,
-      phone_number: data.phone_number,
-      provider: data.provider,
+      currency: 'RWF',
+      phone,
+      payment_method: data.payment_method,
     });
 
     return { topup_id };
@@ -33,24 +44,12 @@ export const WalletService = {
     return ownerId === userId;
   },
 
-  async getWallet(userId: string): Promise<Record<string, unknown>> {
-    let res: Response;
-    try {
-      res = await fetch(`${config.paymentServiceUrl}/wallet/${userId}`, {
-        headers: { 'X-User-ID': userId },
-        signal: AbortSignal.timeout(5000),
-      });
-    } catch {
-      throw new AppError('PAYMENT_SERVICE_UNAVAILABLE', 503);
-    }
-
-    const body = await res.json() as Record<string, unknown>;
-
-    if (!res.ok) {
-      const code = (body['error'] as Record<string, unknown> | undefined)?.['code'] as string | undefined;
-      throw new AppError(code ?? 'PAYMENT_SERVICE_ERROR', res.status);
-    }
-
-    return body;
+  async getWallet(userId: string): Promise<{ balance: number; currency: string; user_id: string }> {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { balance: true },
+    });
+    if (!user) throw new AppError('USER_NOT_FOUND', 404);
+    return { balance: Number(user.balance), currency: 'RWF', user_id: userId };
   },
 };
