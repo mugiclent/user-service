@@ -39,7 +39,7 @@ const getOrgAdmins = (orgId: string) =>
 export const initBillingSubscriber = async (): Promise<void> => {
   const ch = await getConsumerChannel();
 
-  await ch.assertQueue(QUEUE, { durable: true });
+  await ch.assertQueue(QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': 'billing.dlx' } });
   await ch.bindQueue(QUEUE, EXCHANGE, ROUTING_KEY);
 
   await ch.consume(QUEUE, async (msg) => {

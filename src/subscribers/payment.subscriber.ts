@@ -48,7 +48,7 @@ export const initPaymentSubscriber = async (): Promise<void> => {
   const ch = await getConsumerChannel();
   const redis = getRedisClient();
 
-  await ch.assertQueue(QUEUE, { durable: true });
+  await ch.assertQueue(QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': 'payment.dlx' } });
   await ch.bindQueue(QUEUE, EXCHANGE, ROUTING_KEY);
 
   await ch.consume(QUEUE, async (msg) => {

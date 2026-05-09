@@ -60,7 +60,7 @@ beforeEach(async () => {
 
 describe('initPaymentSubscriber — queue setup', () => {
   it('asserts and binds the queue', () => {
-    expect(mockChannel.assertQueue).toHaveBeenCalledWith('payment-user-svc', { durable: true });
+    expect(mockChannel.assertQueue).toHaveBeenCalledWith('payment-user-svc', { durable: true, arguments: { 'x-dead-letter-exchange': 'payment.dlx' } });
     expect(mockChannel.bindQueue).toHaveBeenCalledWith('payment-user-svc', 'payment', '#');
   });
 });
