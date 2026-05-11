@@ -1,5 +1,12 @@
 import { prisma } from '../models/index.js';
+import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
+import { buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
+
+const requirePlatform = (user: AuthenticatedUser): void => {
+  const ability = buildAbilityFromRules(user.rules);
+  if (getScopeFor(ability, 'manage', 'Org') !== 'platform') throw new AppError('FORBIDDEN', 403);
+};
 
 type BankRow = { id: string; name: string; is_active: boolean; created_at: Date; updated_at: Date };
 
@@ -17,7 +24,8 @@ export const BankService = {
     return { data: banks.map(serialize) };
   },
 
-  async create(data: { name: string }): Promise<ReturnType<typeof serialize>> {
+  async create(requestingUser: AuthenticatedUser, data: { name: string }): Promise<ReturnType<typeof serialize>> {
+    requirePlatform(requestingUser);
     const existing = await prisma.bank.findUnique({ where: { name: data.name } });
     if (existing) throw new AppError('BANK_ALREADY_EXISTS', 409);
 
@@ -25,7 +33,8 @@ export const BankService = {
     return serialize(bank);
   },
 
-  async update(id: string, data: { name?: string; is_active?: boolean }): Promise<ReturnType<typeof serialize>> {
+  async update(requestingUser: AuthenticatedUser, id: string, data: { name?: string; is_active?: boolean }): Promise<ReturnType<typeof serialize>> {
+    requirePlatform(requestingUser);
     const bank = await prisma.bank.findUnique({ where: { id } });
     if (!bank) throw new AppError('BANK_NOT_FOUND', 404);
 
@@ -38,7 +47,8 @@ export const BankService = {
     return serialize(updated);
   },
 
-  async softDelete(id: string): Promise<void> {
+  async softDelete(requestingUser: AuthenticatedUser, id: string): Promise<void> {
+    requirePlatform(requestingUser);
     const bank = await prisma.bank.findUnique({ where: { id } });
     if (!bank) throw new AppError('BANK_NOT_FOUND', 404);
     await prisma.bank.update({ where: { id }, data: { is_active: false } });

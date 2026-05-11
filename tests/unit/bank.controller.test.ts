@@ -21,6 +21,7 @@ vi.mock('../../src/services/bank.service.js', () => ({
 const { BankController } = await import('../../src/api/bank.controller.js');
 
 const makeReq = (overrides: { params?: Record<string, string>; body?: object } = {}): Request => ({
+  user: { id: 'admin-1', rules: [] },
   params: overrides.params ?? {},
   body: overrides.body ?? {},
 } as unknown as Request);
