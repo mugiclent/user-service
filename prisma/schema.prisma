@@ -127,6 +127,8 @@ model Org {
   balance                    Decimal   @default(0) @db.Decimal(12, 2)
   contact_email_verified_at  DateTime?
   contact_phone_verified_at  DateTime?
+  bank_id                    String?   @db.VarChar(36)
+  account_number             String?   @db.VarChar(20)
   created_at                 DateTime  @default(now())
   updated_at                 DateTime  @updatedAt
   deleted_at                 DateTime?
@@ -136,9 +138,22 @@ model Org {
   users      User[]
   roles      Role[]
   documents  OrgDocument[]
-  org_otps     OrgOtp[]
+  org_otps   OrgOtp[]
+  bank       Bank?         @relation(fields: [bank_id], references: [id])
 
   @@map("orgs")
+}
+
+model Bank {
+  id         String   @id @default(uuid())
+  name       String   @unique @db.VarChar(100)
+  is_active  Boolean  @default(true)
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  orgs Org[]
+
+  @@map("banks")
 }
 
 model Role {

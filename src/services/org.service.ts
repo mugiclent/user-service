@@ -314,6 +314,8 @@ export const OrgService = {
       status?: string;
       rejection_reason?: string;
       parent_org_id?: string | null;
+      bank_id?: string | null;
+      account_number?: string | null;
     },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
@@ -346,6 +348,8 @@ export const OrgService = {
     if (data.logo_path !== undefined) updateData['logo_path'] = data.logo_path;
     if (data.story !== undefined) updateData['story'] = data.story;
     if (data.cancellations_allowed !== undefined) updateData['cancellations_allowed'] = data.cancellations_allowed;
+    if (data.bank_id !== undefined) updateData['bank_id'] = data.bank_id;
+    if (data.account_number !== undefined) updateData['account_number'] = data.account_number;
     if (data.parent_org_id !== undefined && admin) {
       if (data.parent_org_id === null && existing.org_type === 'coop_member') throw new AppError('COOP_MEMBER_REQUIRES_PARENT', 400);
       updateData['parent_org_id'] = data.parent_org_id;

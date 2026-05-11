@@ -1,5 +1,6 @@
 import Joi from 'joi';
 import { phoneSchema, tinSchema } from '../../utils/phone.js';
+import { accountNumberSchema } from './bank.schema.js';
 
 export const createOrgSchema = Joi.object({
   name: Joi.string().trim().max(200).required(),
@@ -28,4 +29,6 @@ export const updateOrgSchema = Joi.object({
   cancellations_allowed: Joi.boolean().optional(),
   status: Joi.string().valid('active', 'suspended', 'rejected').optional(),
   rejection_reason: Joi.string().trim().max(1000).optional(),
+  bank_id: Joi.string().uuid().optional().allow(null),
+  account_number: accountNumberSchema,
 }).min(1);

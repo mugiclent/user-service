@@ -12,6 +12,7 @@ import orgRouter from '../api/org.routes.js';
 import orgApplicationRouter from '../api/org-application.routes.js';
 import roleRouter from '../api/role.routes.js';
 import permissionRouter from '../api/permission.routes.js';
+import bankRouter from '../api/bank.routes.js';
 import { errorHandler } from '../middleware/errorHandler.js';
 import { orgBillingGuard } from '../middleware/orgBillingGuard.js';
 import { createSwaggerRouter } from './swagger.js';
@@ -70,6 +71,7 @@ export const createApp = (): Application => {
   app.use('/api/v1/organizations', orgRouter);
   app.use('/api/v1/roles', roleRouter);
   app.use('/api/v1/permissions', permissionRouter);
+  app.use('/api/v1/banks', bankRouter);
 
   // Global error handler — must be last
   app.use(errorHandler);

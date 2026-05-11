@@ -268,7 +268,13 @@ tags:
       ### Ownership & security
 
       The SSE endpoint verifies that `topup_id` was issued by the authenticated user.
-      A 404 is returned for unknown or expired IDs (ownership key expires after 10 minutes).
+      A 404 is returned for unknown or expired IDs (ownership key expires after 6 minutes).
+  - name: Banks
+    description: |
+      Bank name registry used when organisations register their payout account details.
+
+      Clients should fetch `GET /banks` once (e.g. at settings page load) and cache the
+      list locally. Only offer `is_active: true` banks for new selections.
 
 # ---------------------------------------------------------------------------
 # Reusable components
@@ -598,6 +604,8 @@ components:
         cancellations_allowed:       { type: boolean }
         cooperative_approved_at:     { type: string, format: date-time, nullable: true, description: 'Set when the parent cooperative pre-approves a coop_member.' }
         approved_at:                 { type: string, format: date-time, nullable: true }
+        bank_id:                     { type: string, format: uuid, nullable: true }
+        account_number:              { type: string, nullable: true, example: '00011234567' }
         created_at:                  { type: string, format: date-time }
 
     OrgFull:
@@ -659,8 +667,20 @@ components:
           nullable: true
           description: Admin only — UUID of the cooperative staff member who ran the cooperative pre-approval.
         approved_at:    { type: string, format: date-time, nullable: true }
+        bank_id:        { type: string, format: uuid, nullable: true }
+        account_number: { type: string, nullable: true, example: '00011234567', description: '8–20 digit bank account number.' }
         created_at:     { type: string, format: date-time }
         updated_at:     { type: string, format: date-time }
+
+    Bank:
+      type: object
+      description: A bank available for selection when an organization sets up their payout account.
+      properties:
+        id:         { type: string, format: uuid }
+        name:       { type: string, example: 'Equity Bank' }
+        is_active:  { type: boolean, description: 'Inactive banks remain in the list but should not be offered for new selections.' }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     # ── Devices & Sessions ────────────────────────────────────────────────────
 
@@ -1889,6 +1909,8 @@ paths:
                   enum: [active, suspended, rejected]
                   description: Admin only. suspended triggers token blacklist and notifications.
                 rejection_reason:     { type: string, maxLength: 1000, description: Admin only. Include when setting status to rejected. }
+                bank_id:              { type: string, format: uuid, nullable: true, description: 'UUID of the bank from GET /banks. null clears the bank selection.' }
+                account_number:       { type: string, pattern: '^\d{8,20}$', description: '8–20 digit bank account number. Digits only — no dashes or spaces.' }
       responses:
         '200':
           description: Updated organization
@@ -3957,3 +3979,114 @@ paths:
                     items: { $ref: '#/components/schemas/Permission' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { description: Caller is a passenger (staff required), content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } } }
+
+  /banks:
+    get:
+      tags: [Banks]
+      summary: List banks
+      description: |
+        **Public — no authentication required.**
+
+        Returns all banks (active and inactive). Use `is_active` to filter in the UI —
+        only offer active banks for new selections; inactive ones are shown for existing
+        org records that still reference them.
+      responses:
+        '200':
+          description: Bank list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Bank' }
+    post:
+      tags: [Banks]
+      summary: Create a bank
+      description: |
+        **Platform staff only** — requires `manage:Org:platform`.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, maxLength: 100, example: 'Equity Bank Rwanda' }
+      responses:
+        '201':
+          description: Bank created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bank' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: A bank with this name already exists
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+
+  /banks/{id}:
+    patch:
+      tags: [Banks]
+      summary: Update a bank
+      description: |
+        **Platform staff only** — requires `manage:Org:platform`.
+
+        Use `is_active: false` to soft-delete a bank (it stays in the list so existing
+        org records referencing it are not broken, but it should not be offered for new selections).
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              properties:
+                name:      { type: string, maxLength: 100, example: 'Equity Bank Rwanda' }
+                is_active: { type: boolean, description: 'Set to false to deactivate the bank.' }
+      responses:
+        '200':
+          description: Updated bank
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Bank' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Name conflicts with another bank
+          content: { application/json: { schema: { $ref: '#/components/schemas/Error' } } }
+    delete:
+      tags: [Banks]
+      summary: Soft-delete a bank
+      description: |
+        **Platform staff only** — requires `manage:Org:platform`.
+
+        Sets `is_active = false`. Does **not** remove the bank or break existing org references.
+        Prefer `PATCH /{id}` with `is_active: false` if you also need to rename at the same time.
+      security:
+        - bearerAuth: []
+        - cookieAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Bank deactivated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
