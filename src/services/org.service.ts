@@ -495,6 +495,8 @@ export const OrgService = {
           parent_org_id: org.parent_org_id,
           story: org.story,
           cancellations_allowed: org.cancellations_allowed,
+          bank_id: org.bank_id,
+          account_number: org.account_number,
         });
       }
 

@@ -170,6 +170,8 @@ export type OrgDomainEvent =
       parent_org_id: string | null;
       story: string | null;
       cancellations_allowed: boolean;
+      bank_id: string | null;
+      account_number: string | null;
     }
   | {
       type: 'org.updated';
