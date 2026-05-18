@@ -89,6 +89,44 @@ export const otpRateLimiter = async (
  * Rate limiter for OTP resend — keyed by user_id.
  * Same thresholds as OTP send.
  */
+/**
+ * Rate limiter for sudo (validate-password) — keyed by userId.
+ * 3 failed attempts triggers a 15-minute lockout.
+ * Call clearSudoRateLimit(userId) on successful password verification.
+ */
+export const sudoRateLimiter = async (
+  req: Request,
+  _res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const userId = (req.user as { id?: string } | undefined)?.id;
+  if (!userId) return next();
+
+  const key = `sudo:attempts:${userId}`;
+
+  try {
+    const redis = getRedisClient();
+    const count = await redis.incr(key);
+    if (count === 1) await redis.expire(key, 900);
+    if (count > 3) {
+      const ttl = await redis.ttl(key);
+      return next(new AppError('TOO_MANY_ATTEMPTS', 429, { retryAfter: Math.max(ttl, 1) }));
+    }
+  } catch {
+    // Redis failure — fail open
+  }
+
+  next();
+};
+
+export const clearSudoRateLimit = async (userId: string): Promise<void> => {
+  try {
+    await getRedisClient().del(`sudo:attempts:${userId}`);
+  } catch {
+    // ignore — counter will expire naturally
+  }
+};
+
 export const resendOtpRateLimiter = async (
   req: Request,
   _res: Response,

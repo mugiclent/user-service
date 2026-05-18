@@ -103,8 +103,10 @@ describe('acceptInviteSchema', () => {
 });
 
 describe('validatePasswordSchema', () => {
-  it('accepts password >= 8 chars', () => ok(validatePasswordSchema, { password: 'validpass' }));
-  it('rejects short password', () => fail(validatePasswordSchema, { password: 'short' }));
+  it('accepts password >= 8 chars with action', () => ok(validatePasswordSchema, { password: 'validpass', action: 'change_password' }));
+  it('rejects short password', () => fail(validatePasswordSchema, { password: 'short', action: 'change_password' }));
+  it('rejects missing action', () => fail(validatePasswordSchema, { password: 'validpass' }));
+  it('rejects invalid action', () => fail(validatePasswordSchema, { password: 'validpass', action: 'unknown_action' }));
 });
 
 

@@ -18,7 +18,12 @@ export const updateMeSchema = Joi.object({
   notif_channel: Joi.array().items(Joi.string().valid('sms', 'email', 'app')).min(1).unique().optional(),
   locale: Joi.string().valid('rw', 'en', 'fr').optional(),
   two_factor_enabled: Joi.boolean().optional(),
+  password: password.optional(),
 }).min(1);
+
+export const changePasswordSchema = Joi.object({
+  password: password.required(),
+});
 
 export const updateUserSchema = Joi.object({
   first_name: Joi.string().trim().max(100).optional(),
@@ -46,6 +51,7 @@ export const acceptInviteSchema = Joi.object({
 
 export const validatePasswordSchema = Joi.object({
   password: password.required(),
+  action: Joi.string().valid('change_password', 'delete_account', 'purchase_ticket').required(),
 });
 
 // Request a login-channel change or identifier update.

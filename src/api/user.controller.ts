@@ -3,6 +3,9 @@ import { UserService } from '../services/user.service.js';
 import { MediaService } from '../services/media.service.js';
 import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
+import { consumeSudoToken } from '../middleware/consumeSudoToken.js';
+import { getRedisClient } from '../loaders/redis.js';
+import type { SudoAction } from '../utils/sudoToken.js';
 
 export const UserController = {
   async getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -18,7 +21,7 @@ export const UserController = {
   async updateMe(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const result = await UserService.updateMe(user, req.body as {
+      const body = req.body as {
         first_name?: string;
         last_name?: string;
         phone_number?: string;
@@ -27,7 +30,22 @@ export const UserController = {
         notif_channel?: string[];
         locale?: string;
         two_factor_enabled?: boolean;
-      });
+        password?: string;
+      };
+
+      if (body.password !== undefined) {
+        await consumeSudoToken(
+          req.headers['x-sudo-token'] as string | undefined,
+          user.id,
+          'change_password',
+          getRedisClient(),
+        );
+        await UserService.changePassword(user.id, body.password);
+        res.status(204).end();
+        return;
+      }
+
+      const result = await UserService.updateMe(user, body);
       res.status(200).json(result);
     } catch (err) {
       next(err);
@@ -51,7 +69,24 @@ export const UserController = {
   async validatePassword(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      await UserService.validatePassword(user.id, (req.body as { password: string }).password);
+      const { password, action } = req.body as { password: string; action: string };
+      const result = await UserService.validatePassword(user.id, password, action as SudoAction);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async deleteSelf(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      await consumeSudoToken(
+        req.headers['x-sudo-token'] as string | undefined,
+        user.id,
+        'delete_account',
+        getRedisClient(),
+      );
+      await UserService.deleteSelf(user.id);
       res.status(204).end();
     } catch (err) {
       next(err);

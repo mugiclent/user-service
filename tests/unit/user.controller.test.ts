@@ -14,7 +14,9 @@ const mockUpdateUser = vi.fn().mockResolvedValue({ id: 'user-2' });
 const mockDeleteUser = vi.fn().mockResolvedValue(undefined);
 const mockInviteUser = vi.fn().mockResolvedValue({ invite_token: 'tok', expires_at: new Date() });
 const mockAcceptInvite = vi.fn();
-const mockValidatePassword = vi.fn().mockResolvedValue(undefined);
+const mockValidatePassword = vi.fn().mockResolvedValue({ sudoToken: 'sudo.tok', expiresAt: '2025-05-18T12:03:00.000Z', expiresIn: 180 });
+const mockChangePassword = vi.fn().mockResolvedValue(undefined);
+const mockDeleteSelf = vi.fn().mockResolvedValue(undefined);
 vi.mock('../../src/services/user.service.js', () => ({
   UserService: {
     getMe: mockGetMe,
@@ -26,7 +28,18 @@ vi.mock('../../src/services/user.service.js', () => ({
     inviteUser: mockInviteUser,
     acceptInvite: mockAcceptInvite,
     validatePassword: mockValidatePassword,
+    changePassword: mockChangePassword,
+    deleteSelf: mockDeleteSelf,
   },
+}));
+
+const mockConsumeSudoToken = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/middleware/consumeSudoToken.js', () => ({
+  consumeSudoToken: mockConsumeSudoToken,
+}));
+
+vi.mock('../../src/loaders/redis.js', () => ({
+  getRedisClient: () => ({}),
 }));
 
 const mockIssueTokenPair = vi.fn().mockResolvedValue({ access: 'a', refresh: 'r' });
@@ -132,17 +145,18 @@ describe('UserController.getAvatarPresignedUrl', () => {
 // ── validatePassword ──────────────────────────────────────────────────────────
 
 describe('UserController.validatePassword', () => {
-  it('returns 204 on success', async () => {
-    const req = { user: authUser, body: { password: 'correct' } } as unknown as Request;
+  it('returns 200 with sudo token on success', async () => {
+    const req = { user: authUser, body: { password: 'correct', action: 'change_password' } } as unknown as Request;
     const res = makeRes();
     await UserController.validatePassword(req, res, next);
-    expect(mockValidatePassword).toHaveBeenCalledWith('user-1', 'correct');
-    expect(res.status).toHaveBeenCalledWith(204);
+    expect(mockValidatePassword).toHaveBeenCalledWith('user-1', 'correct', 'change_password');
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ sudoToken: 'sudo.tok', expiresIn: 180 }));
   });
 
   it('calls next(err) on error', async () => {
     mockValidatePassword.mockRejectedValueOnce(new Error('invalid'));
-    const req = { user: authUser, body: { password: 'wrong' } } as unknown as Request;
+    const req = { user: authUser, body: { password: 'wrong', action: 'change_password' } } as unknown as Request;
     await UserController.validatePassword(req, makeRes(), next);
     expect(next).toHaveBeenCalledWith(expect.any(Error));
   });

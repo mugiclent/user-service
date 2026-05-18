@@ -9,6 +9,9 @@ export const errorHandler = (
   _next: NextFunction,
 ): void => {
   if (err instanceof AppError) {
+    if (err.code.startsWith('STEP_UP_')) {
+      res.setHeader('x-sudo-required', 'true');
+    }
     res.status(err.status).json({
       error: {
         code: err.code,

@@ -14,6 +14,9 @@ import {
 } from '../utils/ability.js';
 import { PERMISSIONS } from '../loaders/bootstrap.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
+import { issueSudoToken } from '../utils/sudoToken.js';
+import type { SudoAction } from '../utils/sudoToken.js';
+import { clearSudoRateLimit } from '../middleware/rateLimiter.js';
 import { publishAudit, publishSms, publishMail, notifyUser, publishUserEvent, publishUserDomainEvent, publishInvitationEvent } from '../utils/publishers.js';
 import { OtpService } from './otp.service.js';
 import { config } from '../config/index.js';
@@ -1044,15 +1047,96 @@ export const UserService = {
 
   // ---------------------------------------------------------------------------
   // POST /users/me/validate-password
-  // Verifies the user's current password — used as a gate before changing it.
+  // Verifies the caller's password and issues a short-lived action-scoped sudo token.
+  // Rate limiting (3 attempts / 15 min) is enforced by sudoRateLimiter middleware
+  // before this method runs; on success we clear that counter.
   // ---------------------------------------------------------------------------
 
-  async validatePassword(userId: string, password: string): Promise<void> {
+  async validatePassword(
+    userId: string,
+    password: string,
+    action: SudoAction,
+  ): Promise<{ sudoToken: string; expiresAt: string; expiresIn: 180 }> {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user || !user.password_hash) throw new AppError('INVALID_CREDENTIALS', 401);
 
     const valid = await verifyPassword(password, user.password_hash);
     if (!valid) throw new AppError('INVALID_CREDENTIALS', 401);
+
+    await clearSudoRateLimit(userId);
+    const { token, jti, expiresAt } = await issueSudoToken(userId, action);
+    console.warn('[sudo] sudo_token_issued', { userId, jti, expiresAt, action });
+    return { sudoToken: token, expiresAt, expiresIn: 180 };
+  },
+
+  // ---------------------------------------------------------------------------
+  // PATCH /users/me — password branch
+  // Changes the caller's password. Caller must have already consumed a sudo token
+  // with action 'change_password' before invoking this method.
+  // ---------------------------------------------------------------------------
+
+  async changePassword(userId: string, newPassword: string): Promise<void> {
+    const password_hash = await hashPassword(newPassword);
+
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { password_hash },
+      ...withRoles,
+    });
+
+    // Revoke all refresh tokens so other sessions are forced to re-authenticate
+    await prisma.refreshToken.updateMany({
+      where: { user_id: userId, revoked_at: null },
+      data: { revoked_at: new Date() },
+    });
+
+    notifyUser(user, {
+      sms: user.phone_number ? { type: 'security.password_changed', phone_number: user.phone_number, first_name: user.first_name } : undefined,
+      mail: user.email ? { type: 'security.password_changed', email: user.email, first_name: user.first_name } : undefined,
+      push: { type: 'security.password_changed' },
+    });
+
+    publishUserDomainEvent({ type: 'user.password_changed', id: userId, user_type: user.user_type });
+    publishAudit({ actor_id: userId, action: 'change_password', resource: 'User', resource_id: userId });
+  },
+
+  // ---------------------------------------------------------------------------
+  // DELETE /users/me
+  // Soft-deletes the caller's own account. Caller must have already consumed a
+  // sudo token with action 'delete_account' before invoking this method.
+  // ---------------------------------------------------------------------------
+
+  async deleteSelf(userId: string): Promise<void> {
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || user.status === 'deleted' || user.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
+
+    await prisma.$transaction([
+      prisma.user.update({
+        where: { id: userId },
+        data: { status: 'pending_deletion', deleted_at: new Date() },
+      }),
+      prisma.refreshToken.updateMany({
+        where: { user_id: userId, revoked_at: null },
+        data: { revoked_at: new Date() },
+      }),
+    ]);
+
+    try {
+      await getRedisClient().set(`blacklist:user:${userId}`, '1', 'EX', BLACKLIST_TTL_SECONDS);
+    } catch (err) {
+      console.error('[user] Failed to set blacklist entry on self-delete', err);
+    }
+
+    publishAudit({ actor_id: userId, action: 'delete', resource: 'User', resource_id: userId });
+
+    if (user.user_type === 'staff') {
+      publishUserEvent({
+        type: 'staff.deleted',
+        id: userId,
+        org_id: user.org_id,
+        deleted_at: new Date().toISOString(),
+      });
+    }
   },
 
   // ---------------------------------------------------------------------------

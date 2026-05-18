@@ -125,6 +125,20 @@ vi.mock('../../src/config/index.js', () => ({
   config: { appUrl: 'https://app.katisha.rw' },
 }));
 
+const mockIssueSudoToken = vi.fn().mockResolvedValue({
+  token: 'sudo.token.mock',
+  jti: 'mock-jti',
+  expiresAt: '2025-05-18T12:03:00.000Z',
+});
+vi.mock('../../src/utils/sudoToken.js', () => ({
+  issueSudoToken: mockIssueSudoToken,
+}));
+
+const mockClearSudoRateLimit = vi.fn().mockResolvedValue(undefined);
+vi.mock('../../src/middleware/rateLimiter.js', () => ({
+  clearSudoRateLimit: mockClearSudoRateLimit,
+}));
+
 const mockDeleteFromS3 = vi.fn();
 vi.mock('../../src/utils/s3.js', () => ({
   deleteFromS3: mockDeleteFromS3,
@@ -601,14 +615,14 @@ describe('UserService.acceptInvite', () => {
 describe('UserService.validatePassword', () => {
   it('throws INVALID_CREDENTIALS when user not found', async () => {
     mockUserFindUnique.mockResolvedValueOnce(null);
-    await expect(UserService.validatePassword('user-1', 'pass')).rejects.toMatchObject({
+    await expect(UserService.validatePassword('user-1', 'pass', 'change_password')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS', status: 401,
     });
   });
 
   it('throws INVALID_CREDENTIALS when no password_hash', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ password_hash: null }));
-    await expect(UserService.validatePassword('user-1', 'pass')).rejects.toMatchObject({
+    await expect(UserService.validatePassword('user-1', 'pass', 'change_password')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS', status: 401,
     });
   });
@@ -616,15 +630,18 @@ describe('UserService.validatePassword', () => {
   it('throws INVALID_CREDENTIALS when password does not match', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser());
     mockVerifyPassword.mockResolvedValueOnce(false);
-    await expect(UserService.validatePassword('user-1', 'wrong')).rejects.toMatchObject({
+    await expect(UserService.validatePassword('user-1', 'wrong', 'change_password')).rejects.toMatchObject({
       code: 'INVALID_CREDENTIALS', status: 401,
     });
   });
 
-  it('resolves when password is correct', async () => {
+  it('returns sudo token when password is correct', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser());
     mockVerifyPassword.mockResolvedValueOnce(true);
-    await expect(UserService.validatePassword('user-1', 'correct')).resolves.toBeUndefined();
+    const result = await UserService.validatePassword('user-1', 'correct', 'change_password');
+    expect(result).toMatchObject({ sudoToken: 'sudo.token.mock', expiresIn: 180 });
+    expect(mockIssueSudoToken).toHaveBeenCalledWith('user-1', 'change_password');
+    expect(mockClearSudoRateLimit).toHaveBeenCalledWith('user-1');
   });
 });
 

@@ -306,6 +306,29 @@ components:
         Omit for web clients (tokens returned as `HttpOnly` cookies).
         Send `mobile` to receive tokens in the JSON response body instead.
 
+    SudoToken:
+      in: header
+      name: x-sudo-token
+      required: true
+      schema:
+        type: string
+      description: |
+        Short-lived action-scoped JWT obtained from `POST /users/me/validate-password`.
+        Valid for **3 minutes**, single-use. The token is bound to both the authenticated
+        user and the specific action declared at issuance — a token minted for
+        `delete_account` cannot be replayed on `change_password` or `purchase_ticket`.
+
+        If missing or invalid the server returns `403` with header `x-sudo-required: true`
+        and one of the following error codes:
+
+        | Code | Reason |
+        |---|---|
+        | `STEP_UP_REQUIRED` | Header absent |
+        | `STEP_UP_EXPIRED` | Token expired (> 3 min) |
+        | `STEP_UP_INVALID` | Bad signature, wrong type, or wrong action |
+        | `STEP_UP_MISMATCH` | Token belongs to a different user |
+        | `STEP_UP_ALREADY_USED` | Token already consumed |
+
   schemas:
 
     # ── Error ─────────────────────────────────────────────────────────────────
@@ -963,6 +986,31 @@ components:
           schema: { $ref: '#/components/schemas/Error' }
           example:
             error: { code: TOO_MANY_REQUESTS, message: 'Rate limit exceeded' }
+    StepUpRequired:
+      description: |
+        Sudo token missing, expired, invalid, action-mismatched, or already used.
+        The response always includes the header `x-sudo-required: true` so clients
+        can distinguish this 403 from a permission-based `FORBIDDEN`.
+      headers:
+        x-sudo-required:
+          schema: { type: string, enum: ['true'] }
+          description: Always `true` on this response — signals the client to prompt for password re-entry.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            missing:
+              summary: Header absent
+              value: { error: { code: STEP_UP_REQUIRED } }
+            expired:
+              summary: Token expired
+              value: { error: { code: STEP_UP_EXPIRED } }
+            invalid:
+              summary: Bad signature / wrong action
+              value: { error: { code: STEP_UP_INVALID } }
+            already_used:
+              summary: Token already consumed
+              value: { error: { code: STEP_UP_ALREADY_USED } }
 
 # ---------------------------------------------------------------------------
 # Default security (override per-endpoint where needed)
@@ -2427,11 +2475,20 @@ paths:
 
     patch:
       tags: [Users]
-      summary: Update own profile
+      summary: Update own profile / change password
       description: |
         Updates the authenticated user's own profile. At least one field must be provided.
 
-        Field notes:
+        **Password change mode** — send `{ "password": "newPassword" }` (only):
+        Requires `x-sudo-token` header with action `change_password` (obtain from
+        `POST /users/me/validate-password`). On success returns `204` and revokes
+        all other active sessions so other devices are forced to re-authenticate.
+        A `security.password_changed` notification is sent via all configured channels.
+
+        **Profile update mode** — any other field combination (no `password`):
+        No sudo token needed.
+
+        Field notes (profile update):
         - `phone_number` — if phone is the current `login_channel`, the update is rejected with
           `LOGIN_CHANNEL_CHANGE_REQUIRED` (422) — use `POST /users/me/login-channel` instead.
         - `email` — if email is the current `login_channel`, the update is rejected with
@@ -2443,6 +2500,10 @@ paths:
         - `two_factor_enabled` — toggles 2FA. On change, a `security.2fa_enabled` or
           `security.2fa_disabled` notification is sent via the user's `notif_channel`.
         - `locale` — sets the preferred language for all future notifications.
+      parameters:
+        - $ref: '#/components/parameters/SudoToken'
+          required: false
+          description: Required only when `password` is present in the body (action `change_password`).
       requestBody:
         required: true
         content:
@@ -2485,22 +2546,65 @@ paths:
                 two_factor_enabled:
                   type: boolean
                   description: Enable or disable 2FA. Triggers a security notification on change.
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                  description: |
+                    New password. When present, this is the only field processed — all other
+                    fields in the body are ignored. Requires `x-sudo-token` header with
+                    action `change_password`.
+            examples:
+              update_profile:
+                summary: Update display name and locale
+                value: { first_name: Alice, locale: en }
+              change_password:
+                summary: Change password (requires x-sudo-token)
+                value: { password: 'MyNewSecurePass1!' }
       responses:
         '200':
-          description: Updated profile
+          description: Profile updated (returned only for profile update mode — not password change)
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/UserMePassenger'
                   - $ref: '#/components/schemas/UserMeStaff'
+        '204': { description: Password changed — all other sessions revoked }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/StepUpRequired' }
         '409':
           description: '`LOGIN_CHANNEL_CHANGE_REQUIRED` — cannot update email/phone directly while it is the active login channel.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+    delete:
+      tags: [Users]
+      summary: Delete own account
+      description: |
+        Soft-deletes the authenticated user's own account. Requires a sudo token
+        with action `delete_account` obtained from `POST /users/me/validate-password`.
+
+        **Effects:**
+        - Account status set to `pending_deletion`, `deleted_at` timestamped.
+        - All active refresh tokens revoked immediately — all sessions terminated.
+        - Access tokens blacklisted for their remaining TTL (~15 min) so in-flight
+          requests are rejected.
+        - If the user is `staff`, a `staff.deleted` domain event is published to
+          the `users` exchange for downstream services.
+        - An audit entry is written.
+
+        > **Note:** Deletion is soft — the record is retained for compliance and audit
+        > purposes. Contact platform support if you need hard deletion.
+      parameters:
+        - $ref: '#/components/parameters/SudoToken'
+      responses:
+        '204': { description: Account deleted — all sessions terminated }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/StepUpRequired' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /users/me/devices:
     get:
@@ -2584,28 +2688,105 @@ paths:
   /users/me/validate-password:
     post:
       tags: [Users]
-      summary: Validate current password
+      summary: Issue sudo token (step-up authentication)
       description: |
-        Returns `204` if the supplied password matches the user's current hash.
-        Use as a confirmation gate before sensitive operations (e.g. before displaying secrets
-        or allowing 2FA changes).
+        Verifies the authenticated user's current password and issues a short-lived,
+        **action-scoped sudo token** valid for exactly **3 minutes**.
+
+        The token must be included as `x-sudo-token` in subsequent requests to
+        sudo-protected endpoints. Each token is **single-use** — it is consumed on
+        first use. Obtain a new token for each sensitive action.
+
+        **Sudo-protected endpoints and their required `action` value:**
+
+        | Endpoint | `action` |
+        |---|---|
+        | `PATCH /users/me` with `password` | `change_password` |
+        | `DELETE /users/me` | `delete_account` |
+        | `POST /tickets` (Trip Service) | `purchase_ticket` |
+
+        **Rate limiting:** 3 failed password attempts within a 15-minute window triggers
+        a lockout. The lockout resets on a successful verification.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [password]
+              required: [password, action]
               properties:
-                password: { type: string, minLength: 8, maxLength: 128 }
+                password:
+                  type: string
+                  minLength: 8
+                  maxLength: 128
+                  description: The user's current plaintext password.
+                action:
+                  type: string
+                  enum: [change_password, delete_account, purchase_ticket]
+                  description: The specific action this token will authorise.
+            examples:
+              change_password:
+                summary: Obtain token before changing password
+                value: { password: 'MyCurrentPass1!', action: change_password }
+              delete_account:
+                summary: Obtain token before deleting account
+                value: { password: 'MyCurrentPass1!', action: delete_account }
+              purchase_ticket:
+                summary: Obtain token before purchasing a ticket
+                value: { password: 'MyCurrentPass1!', action: purchase_ticket }
       responses:
-        '204': { description: Password matches }
+        '200':
+          description: Password verified — sudo token issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sudoToken, expiresAt, expiresIn]
+                properties:
+                  sudoToken:
+                    type: string
+                    description: Signed EdDSA JWT. Include as `x-sudo-token` header on the protected request.
+                  expiresAt:
+                    type: string
+                    format: date-time
+                    description: ISO 8601 expiry — exactly 3 minutes from issuance.
+                  expiresIn:
+                    type: integer
+                    enum: [180]
+                    description: Always 180 seconds.
+              example:
+                sudoToken: eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJ1c2VyLTEiLCJ0eXBlIjoic3VkbyIsImFjdGlvbiI6ImNoYW5nZV9wYXNzd29yZCIsImp0aSI6ImFiYzEyMyIsImlhdCI6MTcwMDAwMDAwMCwiZXhwIjoxNzAwMDAwMTgwfQ.sig
+                expiresAt: '2025-05-18T12:03:00.000Z'
+                expiresIn: 180
         '401':
-          description: Wrong password or not authenticated
+          description: Wrong password
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: INVALID_CREDENTIALS } }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '429':
+          description: Too many failed attempts — 15-minute lockout active
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      error:
+                        type: object
+                        properties:
+                          details:
+                            type: object
+                            properties:
+                              retryAfter:
+                                type: integer
+                                description: Seconds until the lockout expires.
+              example:
+                error:
+                  code: TOO_MANY_ATTEMPTS
+                  details: { retryAfter: 743 }
 
   /users/me/login-channel:
     post:

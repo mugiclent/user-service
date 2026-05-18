@@ -10,11 +10,13 @@ import {
   inviteUserSchema,
   acceptInviteSchema,
   validatePasswordSchema,
+  changePasswordSchema,
   loginChannelSchema,
   loginChannelConfirmSchema,
   updateInvitationSchema,
   addUserGrantsSchema,
 } from '../middleware/schemas/user.schema.js';
+import { sudoRateLimiter } from '../middleware/rateLimiter.js';
 
 const router = Router();
 
@@ -43,10 +45,18 @@ router.get('/me/devices', authenticate, UserController.listMyDevices);
 router.get('/me', authenticate, UserController.getMe);
 
 // PATCH /api/v1/users/me  (also accepts avatar_path to commit a presigned upload, or null to delete)
-router.patch('/me', authenticate, validate(updateMeSchema), UserController.updateMe);
+// When body includes `password`, requires X-Sudo-Token with action 'change_password'.
+// Use changePasswordSchema to validate password-only updates; otherwise updateMeSchema.
+router.patch('/me', authenticate, (req, res, next) => {
+  const hasPassword = typeof (req.body as Record<string, unknown>)['password'] === 'string';
+  return validate(hasPassword ? changePasswordSchema : updateMeSchema)(req, res, next);
+}, UserController.updateMe);
 
-// POST /api/v1/users/me/validate-password
-router.post('/me/validate-password', authenticate, validate(validatePasswordSchema), UserController.validatePassword);
+// POST /api/v1/users/me/validate-password — issues an action-scoped sudo token
+router.post('/me/validate-password', authenticate, sudoRateLimiter, validate(validatePasswordSchema), UserController.validatePassword);
+
+// DELETE /api/v1/users/me — self-delete, requires X-Sudo-Token with action 'delete_account'
+router.delete('/me', authenticate, UserController.deleteSelf);
 
 // POST /api/v1/users/me/login-channel  — request login channel switch (sends OTP)
 router.post('/me/login-channel', authenticate, validate(loginChannelSchema), UserController.requestLoginChannelChange);
