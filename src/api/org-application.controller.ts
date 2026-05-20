@@ -31,10 +31,7 @@ export const OrgApplicationController = {
         return next(new AppError('BUSINESS_CERTIFICATE_MUST_BE_PDF', 415));
       }
 
-      // orgId is unknown at this stage — use a placeholder prefix; the actual path
-      // is stored in OrgDocument after the org is created in POST /apply.
-      // We use 'pending' as the org segment so uploads can proceed before org creation.
-      const result = await MediaService.generateOrgDocumentPresignedUrl('pending', doc_type, content_type);
+      const result = await MediaService.generateOrgDocumentPresignedUrl(doc_type, content_type);
       res.status(200).json(result);
     } catch (err) {
       next(err);

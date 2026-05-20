@@ -10,7 +10,7 @@ const mockIsAllowedDocContentType = vi.fn();
 const mockGeneratePresignedPutUrl = vi.fn().mockResolvedValue({ uploadUrl: 'https://s3.example.com/put', path: 'key/file.jpg' });
 const mockUserAvatarKey = vi.fn().mockReturnValue('avatars/user-1/avatar.jpg');
 const mockOrgLogoKey = vi.fn().mockReturnValue('logos/org-1/logo.png');
-const mockOrgDocumentKey = vi.fn().mockReturnValue('org-docs/org-1/cert.pdf');
+const mockOrgDocumentKey = vi.fn().mockReturnValue('org-docs/cert.pdf');
 
 vi.mock('../../src/utils/s3.js', () => ({
   isAllowedContentType: mockIsAllowedContentType,
@@ -68,22 +68,22 @@ describe('MediaService.generateOrgLogoPresignedUrl', () => {
 describe('MediaService.generateOrgDocumentPresignedUrl', () => {
   it('throws UNSUPPORTED_MEDIA_TYPE for invalid doc content type', async () => {
     mockIsAllowedDocContentType.mockReturnValue(false);
-    await expect(MediaService.generateOrgDocumentPresignedUrl('org-1', 'business_certificate', 'image/gif')).rejects.toMatchObject({
+    await expect(MediaService.generateOrgDocumentPresignedUrl('business_certificate', 'image/gif')).rejects.toMatchObject({
       code: 'UNSUPPORTED_MEDIA_TYPE', status: 415,
     });
   });
 
   it('returns presigned URL for valid doc content type', async () => {
     mockIsAllowedDocContentType.mockReturnValue(true);
-    const result = await MediaService.generateOrgDocumentPresignedUrl('org-1', 'business_certificate', 'application/pdf');
-    expect(mockOrgDocumentKey).toHaveBeenCalledWith('org-1', 'business_certificate', 'application/pdf');
-    expect(mockGeneratePresignedPutUrl).toHaveBeenCalledWith('org-docs/org-1/cert.pdf', 'application/pdf');
+    const result = await MediaService.generateOrgDocumentPresignedUrl('business_certificate', 'application/pdf');
+    expect(mockOrgDocumentKey).toHaveBeenCalledWith('business_certificate', 'application/pdf');
+    expect(mockGeneratePresignedPutUrl).toHaveBeenCalledWith('org-docs/cert.pdf', 'application/pdf');
     expect(result).toEqual({ uploadUrl: 'https://s3.example.com/put', path: 'key/file.jpg' });
   });
 
   it('passes doc_type through to orgDocumentKey', async () => {
     mockIsAllowedDocContentType.mockReturnValue(true);
-    await MediaService.generateOrgDocumentPresignedUrl('org-1', 'rep_id', 'image/jpeg');
-    expect(mockOrgDocumentKey).toHaveBeenCalledWith('org-1', 'rep_id', 'image/jpeg');
+    await MediaService.generateOrgDocumentPresignedUrl('rep_id', 'image/jpeg');
+    expect(mockOrgDocumentKey).toHaveBeenCalledWith('rep_id', 'image/jpeg');
   });
 });

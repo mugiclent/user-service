@@ -88,8 +88,8 @@ export const userAvatarKey = (userId: string, contentType: string): string =>
 export const orgLogoKey = (orgId: string, contentType: string): string =>
   `logos/${orgId}/${randomUUID()}.${extFor(contentType)}`;
 
-export const orgDocumentKey = (orgId: string, docType: string, contentType: string): string =>
-  `org-docs/${orgId}/${docType}/${randomUUID()}.${extFor(contentType)}`;
+export const orgDocumentKey = (docType: string, contentType: string): string =>
+  `org-docs/${docType}/${randomUUID()}.${extFor(contentType)}`;
 
 // ---------------------------------------------------------------------------
 // Delete

@@ -93,13 +93,13 @@ describe('orgLogoKey', () => {
 });
 
 describe('orgDocumentKey', () => {
-  it('returns org-docs/<orgId>/<docType>/<uuid>.pdf for application/pdf', () => {
-    const key = orgDocumentKey('org-1', 'business_certificate', 'application/pdf');
-    expect(key).toMatch(/^org-docs\/org-1\/business_certificate\/[0-9a-f-]{36}\.pdf$/);
+  it('returns org-docs/<docType>/<uuid>.pdf for application/pdf', () => {
+    const key = orgDocumentKey('business_certificate', 'application/pdf');
+    expect(key).toMatch(/^org-docs\/business_certificate\/[0-9a-f-]{36}\.pdf$/);
   });
 
   it('uses .bin for unknown content types', () => {
-    const key = orgDocumentKey('org-1', 'rep_id', 'application/octet-stream');
+    const key = orgDocumentKey('rep_id', 'application/octet-stream');
     expect(key).toMatch(/\.bin$/);
   });
 });

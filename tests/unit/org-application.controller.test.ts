@@ -63,7 +63,7 @@ describe('OrgApplicationController.getDocumentPresignedUrl', () => {
     const req = { query: { doc_type: 'business_certificate', content_type: 'application/pdf' } } as unknown as Request;
     const res = makeRes();
     await OrgApplicationController.getDocumentPresignedUrl(req, res, next);
-    expect(mockGenerateOrgDocumentPresignedUrl).toHaveBeenCalledWith('pending', 'business_certificate', 'application/pdf');
+    expect(mockGenerateOrgDocumentPresignedUrl).toHaveBeenCalledWith('business_certificate', 'application/pdf');
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({ uploadUrl: 'https://...', path: 'doc.pdf' });
   });
@@ -72,7 +72,7 @@ describe('OrgApplicationController.getDocumentPresignedUrl', () => {
     const req = { query: { doc_type: 'rep_id', content_type: 'image/jpeg' } } as unknown as Request;
     const res = makeRes();
     await OrgApplicationController.getDocumentPresignedUrl(req, res, next);
-    expect(mockGenerateOrgDocumentPresignedUrl).toHaveBeenCalledWith('pending', 'rep_id', 'image/jpeg');
+    expect(mockGenerateOrgDocumentPresignedUrl).toHaveBeenCalledWith('rep_id', 'image/jpeg');
     expect(res.status).toHaveBeenCalledWith(200);
   });
 

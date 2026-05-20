@@ -59,14 +59,13 @@ export const MediaService = {
    * doc_type: 'business_certificate' (PDF) or 'rep_id' (image or PDF)
    */
   async generateOrgDocumentPresignedUrl(
-    orgId: string,
     docType: string,
     contentType: string,
   ): Promise<PresignedResult> {
     if (!isAllowedDocContentType(contentType)) {
       throw new AppError('UNSUPPORTED_MEDIA_TYPE', 415);
     }
-    const key = orgDocumentKey(orgId, docType, contentType);
+    const key = orgDocumentKey(docType, contentType);
     return generatePresignedPutUrl(key, contentType);
   },
 };
