@@ -4,7 +4,7 @@ import { config } from './config/index.js';
 import { createApp } from './loaders/express.js';
 import { initPrisma } from './loaders/prisma.js';
 import { initRedis } from './loaders/redis.js';
-import { initRabbitMQ, closeRabbitMQ } from './loaders/rabbitmq.js';
+import { initRabbitMQ, closeRabbitMQ, onRabbitMQReconnect } from './loaders/rabbitmq.js';
 import { initCleanup } from './loaders/cleanup.js';
 import { bootstrap } from './loaders/bootstrap.js';
 import { prisma } from './models/index.js';
@@ -19,6 +19,10 @@ const start = async (): Promise<void> => {
   await initRabbitMQ();
   await initBillingSubscriber();
   await initPaymentSubscriber();
+  onRabbitMQReconnect(async () => {
+    await initBillingSubscriber();
+    await initPaymentSubscriber();
+  });
   initCleanup();
 
   const app = createApp();
