@@ -1,4 +1,4 @@
-import { getConsumerChannel } from '../loaders/rabbitmq.js';
+import type { Channel } from 'amqplib';
 import { getRedisClient } from '../loaders/redis.js';
 import { prisma } from '../models/index.js';
 
@@ -44,8 +44,7 @@ interface RefundCompleted {
 
 type PaymentEvent = TopupPaymentConfirmed | TopupPaymentFailed | TicketPaymentConfirmed | RefundCompleted;
 
-export const initPaymentSubscriber = async (): Promise<void> => {
-  const ch = await getConsumerChannel();
+export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
   const redis = getRedisClient();
 
   await ch.assertQueue(QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': 'payment.dlx' } });
@@ -89,10 +88,10 @@ export const initPaymentSubscriber = async (): Promise<void> => {
           break;
       }
 
-      ch.ack(msg);
+      try { ch.ack(msg); } catch { /* channel closed; broker requeues */ }
     } catch (err) {
       console.error('[payment-subscriber] Failed to process message', err);
-      ch.nack(msg, false, false);
+      try { ch.nack(msg, false, false); } catch { /* channel closed; broker requeues */ }
     }
   });
 

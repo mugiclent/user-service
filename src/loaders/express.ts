@@ -5,6 +5,9 @@ import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import { config } from '../config/index.js';
+import { checkDbHealth } from './prisma.js';
+import { getRabbitMQHealth } from './rabbitmq.js';
+import { getRedisHealth } from './redis.js';
 import authRouter from '../api/auth.routes.js';
 import userRouter from '../api/user.routes.js';
 import walletRouter from '../api/wallet.routes.js';
@@ -47,7 +50,24 @@ export const createApp = (): Application => {
 
   // Health check — unauthenticated, for gateway / load-balancer probes
   app.get('/health', (_req: Request, res: Response) => {
-    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+    void (async () => {
+      const [db, rabbit, redis] = await Promise.all([
+        checkDbHealth(),
+        Promise.resolve(getRabbitMQHealth()),
+        Promise.resolve(getRedisHealth()),
+      ]);
+      const allOk = db.ok && rabbit.ok && redis.ok;
+      res.status(allOk ? 200 : 503).json({
+        status: allOk ? 'ok' : 'degraded',
+        service: 'user-svc',
+        timestamp: new Date().toISOString(),
+        checks: {
+          database: db.ok ? 'up' : { status: 'down', error: db.error },
+          rabbitmq: rabbit.ok ? 'up' : { status: 'down', error: rabbit.error },
+          redis: redis.ok ? 'up' : { status: 'down', error: redis.error },
+        },
+      });
+    })();
   });
 
   // JWKS endpoint — exposes EdDSA public key so the API gateway and other

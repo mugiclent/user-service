@@ -4,12 +4,10 @@ import { config } from './config/index.js';
 import { createApp } from './loaders/express.js';
 import { initPrisma } from './loaders/prisma.js';
 import { initRedis } from './loaders/redis.js';
-import { initRabbitMQ, closeRabbitMQ, onRabbitMQReconnect } from './loaders/rabbitmq.js';
+import { initRabbitMQ, closeRabbitMQ } from './loaders/rabbitmq.js';
 import { initCleanup } from './loaders/cleanup.js';
 import { bootstrap } from './loaders/bootstrap.js';
 import { prisma } from './models/index.js';
-import { initBillingSubscriber } from './subscribers/billing.subscriber.js';
-import { initPaymentSubscriber } from './subscribers/payment.subscriber.js';
 
 const start = async (): Promise<void> => {
   // Initialize infrastructure
@@ -17,12 +15,6 @@ const start = async (): Promise<void> => {
   await bootstrap();
   initRedis();
   await initRabbitMQ();
-  await initBillingSubscriber();
-  await initPaymentSubscriber();
-  onRabbitMQReconnect(async () => {
-    await initBillingSubscriber();
-    await initPaymentSubscriber();
-  });
   initCleanup();
 
   const app = createApp();

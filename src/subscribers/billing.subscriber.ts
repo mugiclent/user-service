@@ -1,4 +1,4 @@
-import { getConsumerChannel } from '../loaders/rabbitmq.js';
+import type { Channel } from 'amqplib';
 import { prisma } from '../models/index.js';
 import { notifyUser } from '../utils/publishers.js';
 import type { NotifiableUser } from '../utils/publishers.js';
@@ -36,8 +36,7 @@ const getOrgAdmins = (orgId: string) =>
     select: { email: true, phone_number: true, fcm_token: true, notif_channel: true, locale: true },
   });
 
-export const initBillingSubscriber = async (): Promise<void> => {
-  const ch = await getConsumerChannel();
+export const initBillingSubscriber = async (ch: Channel): Promise<void> => {
 
   await ch.assertQueue(QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': 'billing.dlx' } });
   await ch.bindQueue(QUEUE, EXCHANGE, ROUTING_KEY);
@@ -66,10 +65,10 @@ export const initBillingSubscriber = async (): Promise<void> => {
         }
       }
 
-      ch.ack(msg);
+      try { ch.ack(msg); } catch { /* channel closed; broker requeues */ }
     } catch (err) {
       console.error('[billing-subscriber] Failed to process message', err);
-      ch.nack(msg, false, false);
+      try { ch.nack(msg, false, false); } catch { /* channel closed; broker requeues */ }
     }
   });
 
