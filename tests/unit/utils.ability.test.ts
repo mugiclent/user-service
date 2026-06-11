@@ -1,589 +1,224 @@
 /**
- * Tests for src/utils/ability.ts
+ * Tests for src/utils/ability.ts — the catalog-driven authorization core.
  *
- * Covers:
- *   - buildRulesFromGrants  (wildcard expansion, scope deduplication)
- *   - buildAbilityFromRules / buildAbility (CASL wiring)
- *   - isValidPattern        (catalog validation, edge cases)
- *   - maxScopeFromPatterns  (privilege-escalation helper)
- *
- * Pattern format: "{subject|*}:{action|*}:{own|org|platform}"
+ * Focus areas:
+ *   - subject map covers every Prisma subject (regression for the dropped-rules bug)
+ *   - lossless compress/expand:  effective(compress(P)) === effective(P)
+ *   - safe `manage` emission (never over-grants platform-only actions at org scope)
+ *   - self-contained scope conditions (User→id, Org→id, others→user_id/org_id)
+ *   - canAssignGrants ("can't grant power you don't hold")
  */
 import { describe, it, expect } from 'vitest';
-import { packRules } from '@casl/ability/extra';
 import {
   buildRulesFromGrants,
-  buildAbility,
   buildAbilityFromRules,
-  isValidPattern,
-  maxScopeFromPatterns,
+  expandToEffective,
   compressPatterns,
-  SCOPE_RANK,
+  isValidPattern,
+  canAssignGrants,
+  getScopeFor,
+  SUBJECT_CODE_TO_ENUM,
   ALL_SUBJECTS,
+  toSubjectCode,
 } from '../../src/utils/ability.js';
-import type { PermissionScope } from '../../src/utils/ability.js';
-import type { PermissionAction, PermissionSubject } from '@prisma/client';
-
-// ---------------------------------------------------------------------------
-// Minimal permission catalog for validation tests
-// ---------------------------------------------------------------------------
-
-const catalog: Array<{ action: PermissionAction; subject: PermissionSubject; scopes: PermissionScope[] }> = [
-  { action: 'read',    subject: 'User',        scopes: ['own', 'org', 'platform'] },
-  { action: 'update',  subject: 'User',        scopes: ['own', 'org', 'platform'] },
-  { action: 'delete',  subject: 'User',        scopes: ['own', 'org', 'platform'] },
-  { action: 'invite',  subject: 'User',        scopes: ['org', 'platform'] },
-  { action: 'suspend', subject: 'User',        scopes: ['org', 'platform'] },
-  { action: 'read',    subject: 'Org',         scopes: ['own', 'org', 'platform'] },
-  { action: 'create',  subject: 'Org',         scopes: ['platform'] },
-  { action: 'update',  subject: 'Org',         scopes: ['org', 'platform'] },
-  { action: 'read',    subject: 'Role',        scopes: ['org', 'platform'] },
-  { action: 'create',  subject: 'Role',        scopes: ['org', 'platform'] },
-  { action: 'update',  subject: 'Role',        scopes: ['org', 'platform'] },
-  { action: 'delete',  subject: 'Role',        scopes: ['org', 'platform'] },
-  { action: 'read',    subject: 'Invitation',  scopes: ['org', 'platform'] },
-  { action: 'upload',  subject: 'MediaAsset',  scopes: ['own', 'org', 'platform'] },
-  { action: 'delete',  subject: 'MediaAsset',  scopes: ['own', 'org', 'platform'] },
-  { action: 'read',    subject: 'AuditLog',    scopes: ['org', 'platform'] },
-  { action: 'export',  subject: 'AuditLog',    scopes: ['org', 'platform'] },
-];
+import { PERMISSIONS } from '../../src/utils/catalog.js';
 
 const USER = 'user-abc';
-const ORG  = 'org-xyz';
+const ORG = 'org-xyz';
+
+const rulesFor = (patterns: string[], userId = USER, orgId: string | null = ORG) =>
+  buildRulesFromGrants(patterns, userId, orgId, PERMISSIONS);
+
+const abilityFor = (patterns: string[], userId = USER, orgId: string | null = ORG) =>
+  buildAbilityFromRules(rulesFor(patterns, userId, orgId));
+
+const effectiveSet = (patterns: string[]) =>
+  new Set([...expandToEffective(patterns, PERMISSIONS).values()].map((g) => `${g.subject}:${g.action}:${g.scope}`));
+
+// Representative org-admin grant set (org scope, no platform powers).
+const ORG_ADMIN = [
+  'user:*:org', 'org:read:org', 'org:update:org', 'role:*:org', 'invitation:*:org',
+  'trip:*:org', 'route:*:org', 'bus:*:org', 'ticket:*:org', 'price:read:org',
+  'finance:read:org', 'finance:export:org', 'billing:read:org', 'billing:pay:org',
+  'payout:read:org', 'payment:read:org', 'refund:read:org', 'report:*:org',
+  'audit_log:read:org', 'notification:receive:org', 'notification:configure:org',
+  'org_document:*:org',
+];
+const PASSENGER = [
+  'ticket:read:own', 'ticket:cancel:own', 'wallet:read:own', 'wallet:topup:own',
+  'payment:read:own', 'user:read:own', 'user:update:own', 'notification:receive:own',
+];
 
 // ---------------------------------------------------------------------------
-// buildRulesFromGrants — wildcard expansion
+// Subject map completeness — the original bug
 // ---------------------------------------------------------------------------
 
-describe('buildRulesFromGrants — *:*:platform', () => {
-  it('produces a single manage:all rule (no conditions)', () => {
-    const rules = buildRulesFromGrants(['*:*:platform'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'manage', subject: 'all' });
-    expect((rules[0] as Record<string, unknown>)['conditions']).toBeUndefined();
+describe('subject map', () => {
+  it('maps every Prisma subject (auto-derived, no drift)', () => {
+    for (const subj of ALL_SUBJECTS) {
+      expect(SUBJECT_CODE_TO_ENUM[toSubjectCode(subj)]).toBe(subj);
+    }
+    expect(Object.keys(SUBJECT_CODE_TO_ENUM)).toHaveLength(ALL_SUBJECTS.length);
   });
 
-  it('ability can do anything', () => {
-    const ability = buildAbilityFromRules(buildRulesFromGrants(['*:*:platform'], USER, ORG));
-    expect(ability.can('read',   'User')).toBe(true);
-    expect(ability.can('delete', 'Org')).toBe(true);
-    expect(ability.can('manage', 'Role')).toBe(true);
+  it('expands financial/trip subjects that the old 7-subject map dropped', () => {
+    // These all previously produced ZERO rules — the central bug.
+    expect(abilityFor(['trip:read:own']).can('read', 'Trip')).toBe(true);
+    expect(abilityFor(['ticket:read:own']).can('read', 'Ticket')).toBe(true);
+    expect(abilityFor(['wallet:read:own']).can('read', 'Wallet')).toBe(true);
+    expect(abilityFor(['finance:read:org']).can('read', 'Finance')).toBe(true);
   });
 });
 
-describe('buildRulesFromGrants — *:*:org', () => {
-  it('produces one manage rule per known subject plus an extra read:Role{org_id:null} rule', () => {
-    const rules = buildRulesFromGrants(['*:*:org'], USER, ORG);
-    // One manage rule per subject + 1 synthetic read:Role{org_id:null} for global template visibility
-    expect(rules).toHaveLength(ALL_SUBJECTS.length + 1);
-    const manageRules = rules.filter((r) => r.action === 'manage');
-    expect(manageRules).toHaveLength(ALL_SUBJECTS.length);
-    for (const rule of manageRules) {
-      // Every manage rule must have org_id or id condition (never unconditioned)
-      expect((rule as Record<string, unknown>)['conditions']).toBeDefined();
-    }
-    // The synthetic rule allows reading global role templates
-    const globalReadRule = rules.find((r) => r.action === 'read' && r.subject === 'Role');
-    expect(globalReadRule).toBeDefined();
-    expect((globalReadRule as Record<string, unknown>)['conditions']).toEqual({ org_id: null });
+// ---------------------------------------------------------------------------
+// Platform god-mode
+// ---------------------------------------------------------------------------
+
+describe('*:*:platform', () => {
+  it('collapses to a single manage-all rule', () => {
+    const rules = rulesFor(['*:*:platform']);
+    expect(rules).toEqual([{ action: 'manage', subject: 'all' }]);
   });
 
-  it('Org subject gets { id: orgId } (not org_id) for org scope', () => {
-    const rules = buildRulesFromGrants(['*:*:org'], USER, ORG);
-    const orgRule = rules.find((r) => r.subject === 'Org');
-    expect(orgRule).toBeDefined();
-    expect((orgRule as Record<string, unknown>)['conditions']).toEqual({ id: ORG });
+  it('reaches own-only subjects like Wallet (catalog-independent god mode)', () => {
+    const ability = abilityFor(['*:*:platform']);
+    expect(ability.can('read', 'Wallet')).toBe(true);
+    expect(ability.can('provision', 'Vsdc')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lossless compression/expansion
+// ---------------------------------------------------------------------------
+
+describe('compress/expand is lossless', () => {
+  const cases: Record<string, string[]> = {
+    'org admin': ORG_ADMIN,
+    passenger: PASSENGER,
+    'all user actions at org': ['user:read:org', 'user:create:org', 'user:update:org', 'user:delete:org', 'user:invite:org', 'user:suspend:org', 'user:assign_role:org'],
+    'mixed wildcards': ['trip:*:org', 'ticket:read:org', 'ticket:create:org'],
+  };
+
+  for (const [name, patterns] of Object.entries(cases)) {
+    it(`effective(compress(P)) === effective(P) — ${name}`, () => {
+      expect(effectiveSet(compressPatterns(patterns, PERMISSIONS))).toEqual(effectiveSet(patterns));
+    });
+  }
+
+  it('folds every user action at org into user:*:org', () => {
+    const all = ['user:read:org', 'user:create:org', 'user:update:org', 'user:delete:org', 'user:invite:org', 'user:suspend:org', 'user:assign_role:org'];
+    expect(compressPatterns(all, PERMISSIONS)).toEqual(['user:*:org']);
   });
 
-  it('User subject gets { org_id: orgId } for org scope', () => {
-    const rules = buildRulesFromGrants(['*:*:org'], USER, ORG);
+  it('collapses *:*:platform from a fully-covered platform set', () => {
+    expect(compressPatterns(['*:*:platform', 'user:read:own'], PERMISSIONS)).toEqual(['*:*:platform']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Safe manage emission — never over-grants
+// ---------------------------------------------------------------------------
+
+describe('manage emission safety', () => {
+  it('emits manage for a fully-held subject (user:*:org)', () => {
+    const rules = rulesFor(['user:*:org']);
     const userRule = rules.find((r) => r.subject === 'User');
-    expect((userRule as Record<string, unknown>)['conditions']).toEqual({ org_id: ORG });
+    expect(userRule?.action).toBe('manage');
+    expect(userRule?.conditions).toEqual({ org_id: ORG });
   });
 
-  it('ability conditioned correctly — can manage User in org, not others', () => {
-    const ability = buildAbilityFromRules(buildRulesFromGrants(['*:*:org'], USER, ORG));
-    // Without an object instance, ability.can returns true if any matching rule exists
-    expect(ability.can('manage', 'User')).toBe(true);
-    expect(ability.can('delete', 'Role')).toBe(true);
-  });
-});
-
-describe('buildRulesFromGrants — user:*:org', () => {
-  it('produces a single manage:User rule conditioned to org_id', () => {
-    const rules = buildRulesFromGrants(['user:*:org'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'manage', subject: 'User', conditions: { org_id: ORG } });
-  });
-});
-
-describe('buildRulesFromGrants — user:*:own', () => {
-  it('produces a single manage:User rule conditioned to { id: userId }', () => {
-    const rules = buildRulesFromGrants(['user:*:own'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'manage', subject: 'User', conditions: { id: USER } });
-  });
-
-  it('works without orgId', () => {
-    const rules = buildRulesFromGrants(['user:*:own'], USER, null);
-    expect(rules[0]).toMatchObject({ conditions: { id: USER } });
-  });
-});
-
-describe('buildRulesFromGrants — concrete action+subject+scope', () => {
-  it('user:read:org → read:User with org_id condition', () => {
-    const rules = buildRulesFromGrants(['user:read:org'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'read', subject: 'User', conditions: { org_id: ORG } });
-  });
-
-  it('user:read:platform → read:User with no conditions', () => {
-    const rules = buildRulesFromGrants(['user:read:platform'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'read', subject: 'User' });
-    expect((rules[0] as Record<string, unknown>)['conditions']).toBeUndefined();
-  });
-
-  it('audit_log:read:org → read:AuditLog (snake_case subject code)', () => {
-    const rules = buildRulesFromGrants(['audit_log:read:org'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'read', subject: 'AuditLog', conditions: { org_id: ORG } });
-  });
-
-  it('org_document:upload:org → upload:OrgDocument', () => {
-    const rules = buildRulesFromGrants(['org_document:upload:org'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'upload', subject: 'OrgDocument', conditions: { org_id: ORG } });
-  });
-
-  it('notification:receive:own → receive:Notification with { id: userId }', () => {
-    const rules = buildRulesFromGrants(['notification:receive:own'], USER, ORG);
-    expect(rules[0]).toMatchObject({ action: 'receive', subject: 'Notification', conditions: { id: USER } });
-  });
-});
-
-describe('buildRulesFromGrants — *:action:scope (subject wildcard, concrete action)', () => {
-  it('*:read:platform → one read rule per subject, all unconditioned', () => {
-    const rules = buildRulesFromGrants(['*:read:platform'], USER, ORG);
-    expect(rules).toHaveLength(ALL_SUBJECTS.length);
-    for (const rule of rules) {
-      expect(rule.action).toBe('read');
-      expect((rule as Record<string, unknown>)['conditions']).toBeUndefined();
-    }
-  });
-
-  it('*:delete:org → one delete rule per subject, all conditioned', () => {
-    const rules = buildRulesFromGrants(['*:delete:org'], USER, ORG);
-    expect(rules).toHaveLength(ALL_SUBJECTS.length);
-    for (const rule of rules) {
-      expect(rule.action).toBe('delete');
-      expect((rule as Record<string, unknown>)['conditions']).toBeDefined();
-    }
+  it('does NOT grant platform-only actions to an org admin', () => {
+    const ability = abilityFor(ORG_ADMIN);
+    expect(ability.can('update', 'Org')).toBe(true);   // org-scoped
+    expect(ability.can('delete', 'Org')).toBe(false);  // platform-only — must stay false
+    expect(ability.can('suspend', 'Org')).toBe(false); // platform-only
+    expect(ability.can('create', 'Price')).toBe(false); // price create is platform-only
+    expect(ability.can('read', 'Price')).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// buildRulesFromGrants — scope deduplication
+// Self-contained scope conditions
 // ---------------------------------------------------------------------------
 
-describe('buildRulesFromGrants — scope deduplication (broadest scope wins)', () => {
-  it('platform scope beats org scope for same action+subject', () => {
-    const rules = buildRulesFromGrants(
-      ['user:read:org', 'user:read:platform'],
-      USER, ORG,
-    );
-    const readUser = rules.filter((r) => r.action === 'read' && r.subject === 'User');
-    expect(readUser).toHaveLength(1);
-    expect((readUser[0] as Record<string, unknown>)['conditions']).toBeUndefined();
+describe('scope conditions', () => {
+  it('own User uses {id}, own Wallet uses {user_id}', () => {
+    const userRule = rulesFor(['user:read:own']).find((r) => r.subject === 'User');
+    expect(userRule?.conditions).toEqual({ id: USER });
+    const walletRule = rulesFor(['wallet:read:own']).find((r) => r.subject === 'Wallet');
+    expect(walletRule?.conditions).toEqual({ user_id: USER });
   });
 
-  it('platform scope beats own scope', () => {
-    const rules = buildRulesFromGrants(
-      ['user:read:own', 'user:read:platform'],
-      USER, ORG,
-    );
-    const readUser = rules.filter((r) => r.action === 'read' && r.subject === 'User');
-    expect(readUser).toHaveLength(1);
-    expect((readUser[0] as Record<string, unknown>)['conditions']).toBeUndefined();
+  it('org subjects use {org_id}, Org itself uses {id}', () => {
+    const tripRule = rulesFor(['trip:read:org']).find((r) => r.subject === 'Trip');
+    expect(tripRule?.conditions).toEqual({ org_id: ORG });
+    const orgRule = rulesFor(['org:read:org']).find((r) => r.subject === 'Org');
+    expect(orgRule?.conditions).toEqual({ id: ORG });
   });
 
-  it('org scope beats own scope', () => {
-    const rules = buildRulesFromGrants(
-      ['user:read:own', 'user:read:org'],
-      USER, ORG,
-    );
-    const readUser = rules.filter((r) => r.action === 'read' && r.subject === 'User');
-    expect(readUser).toHaveLength(1);
-    expect((readUser[0] as Record<string, unknown>)['conditions']).toEqual({ org_id: ORG });
-  });
-
-  it('*:*:platform supersedes all other patterns', () => {
-    const rules = buildRulesFromGrants(
-      ['user:read:own', 'org:update:org', '*:*:platform'],
-      USER, ORG,
-    );
-    // manage:all should dominate; deduplication keeps the broadest per (action,subject) key
-    const manageAll = rules.find((r) => r.action === 'manage' && r.subject === 'all');
-    expect(manageAll).toBeDefined();
-    // user:read:own and org:update:org are narrower than manage:all on their (action,subject) pairs
-    // manage:all covers manage:User and manage:Org, so read:User and update:Org may still appear
-    // as separate entries (different action keys). The important check is manage:all is present.
-  });
-
-  it('duplicate patterns do not double-emit rules', () => {
-    const rules = buildRulesFromGrants(
-      ['user:read:org', 'user:read:org'],
-      USER, ORG,
-    );
-    const readUser = rules.filter((r) => r.action === 'read' && r.subject === 'User');
-    expect(readUser).toHaveLength(1);
+  it('platform scope carries no condition', () => {
+    const rule = rulesFor(['user:read:platform']).find((r) => r.subject === 'User');
+    expect(rule?.conditions).toBeUndefined();
+    expect(getScopeFor(abilityFor(['user:read:platform']), 'read', 'User')).toBe('platform');
   });
 });
 
 // ---------------------------------------------------------------------------
-// buildRulesFromGrants — null orgId edge cases
+// canAssignGrants — escalation guard
 // ---------------------------------------------------------------------------
 
-describe('buildRulesFromGrants — null orgId', () => {
-  it('org-scoped User rule has no conditions when orgId is null', () => {
-    const rules = buildRulesFromGrants(['user:read:org'], USER, null);
-    expect((rules[0] as Record<string, unknown>)['conditions']).toBeUndefined();
+describe('canAssignGrants', () => {
+  const platform = abilityFor(['*:*:platform']);
+  const orgAdmin = abilityFor(ORG_ADMIN);
+
+  it('platform admin can assign anything', () => {
+    expect(canAssignGrants(platform, ['*:*:platform'], PERMISSIONS)).toBe(true);
+    expect(canAssignGrants(platform, PASSENGER, PERMISSIONS)).toBe(true);
+    expect(canAssignGrants(platform, ORG_ADMIN, PERMISSIONS)).toBe(true);
   });
 
-  it('*:*:org with null orgId produces unconditioned rules', () => {
-    const rules = buildRulesFromGrants(['*:*:org'], USER, null);
-    for (const rule of rules) {
-      expect((rule as Record<string, unknown>)['conditions']).toBeUndefined();
-    }
+  it('org admin CANNOT assign platform-admin (fixes the invite escalation)', () => {
+    expect(canAssignGrants(orgAdmin, ['*:*:platform'], PERMISSIONS)).toBe(false);
+  });
+
+  it('org admin CANNOT assign passenger (lacks wallet/own grants) — replaces slug hiding', () => {
+    expect(canAssignGrants(orgAdmin, PASSENGER, PERMISSIONS)).toBe(false);
+  });
+
+  it('org admin CAN assign org-scoped roles it holds', () => {
+    expect(canAssignGrants(orgAdmin, ['user:read:org', 'trip:create:org'], PERMISSIONS)).toBe(true);
+  });
+
+  it('cannot grant a broader scope than held (own holder cannot grant org)', () => {
+    const ownOnly = abilityFor(['ticket:read:own'], USER, null);
+    expect(canAssignGrants(ownOnly, ['ticket:read:org'], PERMISSIONS)).toBe(false);
+    expect(canAssignGrants(ownOnly, ['ticket:read:own'], PERMISSIONS)).toBe(true);
   });
 });
 
 // ---------------------------------------------------------------------------
-// buildRulesFromGrants — empty / unknown patterns
-// ---------------------------------------------------------------------------
-
-describe('buildRulesFromGrants — edge cases', () => {
-  it('empty patterns array returns empty rules', () => {
-    expect(buildRulesFromGrants([], USER, ORG)).toEqual([]);
-  });
-
-  it('unknown subject code produces zero rules (skipped silently)', () => {
-    const rules = buildRulesFromGrants(['nonexistent_subject:read:org'], USER, ORG);
-    expect(rules).toHaveLength(0);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Managed role grant sets
-// ---------------------------------------------------------------------------
-
-describe('buildRulesFromGrants — managed role patterns', () => {
-  it('passenger grants (user:*:own, notification:*:own) → 2 conditioned rules', () => {
-    const rules = buildRulesFromGrants(['user:*:own', 'notification:*:own'], USER, null);
-    expect(rules).toHaveLength(2);
-    expect(rules.every((r) => r.action === 'manage')).toBe(true);
-    expect(rules.every((r) => !!(r as Record<string, unknown>)['conditions'])).toBe(true);
-  });
-
-  it('dispatcher grants — 5 patterns → ≤5 distinct (action,subject) rules', () => {
-    const patterns = [
-      'user:read:org',
-      'user:invite:org',
-      'user:suspend:org',
-      'invitation:*:org',
-      'audit_log:read:org',
-    ];
-    const rules = buildRulesFromGrants(patterns, USER, ORG);
-    // read+invite+suspend:User + manage:Invitation + read:AuditLog = 5 rules
-    expect(rules).toHaveLength(5);
-    expect(rules.every((r) => !!(r as Record<string, unknown>)['conditions'])).toBe(true);
-  });
-
-  it('org-admin (*:*:org + org:read:own) — org scope dominates own scope for Org subject', () => {
-    const rules = buildRulesFromGrants(['*:*:org', 'org:read:own'], USER, ORG);
-    const orgRules = rules.filter((r) => r.subject === 'Org');
-    // manage:Org from *:*:org (org scope) should dominate read:Org:own
-    const manageOrg = orgRules.find((r) => r.action === 'manage');
-    expect(manageOrg).toBeDefined();
-    expect((manageOrg as Record<string, unknown>)['conditions']).toEqual({ id: ORG });
-  });
-
-  it('platform-admin (*:*:platform) → 1 rule total', () => {
-    const rules = buildRulesFromGrants(['*:*:platform'], USER, ORG);
-    expect(rules).toHaveLength(1);
-    expect(rules[0]).toMatchObject({ action: 'manage', subject: 'all' });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// buildAbility / buildAbilityFromRules
-// ---------------------------------------------------------------------------
-
-describe('buildAbilityFromRules', () => {
-  it('can() returns true for matching rule', () => {
-    const ability = buildAbilityFromRules([{ action: 'read', subject: 'User' }]);
-    expect(ability.can('read', 'User')).toBe(true);
-  });
-
-  it('can() returns false for non-matching action', () => {
-    const ability = buildAbilityFromRules([{ action: 'read', subject: 'User' }]);
-    expect(ability.can('delete', 'User')).toBe(false);
-  });
-
-  it('manage action covers all CRUD', () => {
-    const ability = buildAbilityFromRules([{ action: 'manage', subject: 'User' }]);
-    expect(ability.can('create', 'User')).toBe(true);
-    expect(ability.can('read',   'User')).toBe(true);
-    expect(ability.can('update', 'User')).toBe(true);
-    expect(ability.can('delete', 'User')).toBe(true);
-  });
-
-  it('manage:all covers every subject', () => {
-    const ability = buildAbilityFromRules([{ action: 'manage', subject: 'all' }]);
-    expect(ability.can('delete', 'User')).toBe(true);
-    expect(ability.can('create', 'Org')).toBe(true);
-    expect(ability.can('read',   'Role')).toBe(true);
-  });
-});
-
-describe('buildAbility (packed rules round-trip)', () => {
-  it('pack → unpack round-trip produces correct ability', () => {
-    const rawRules = [{ action: 'read' as const, subject: 'Org' as const }];
-    const packed = packRules(rawRules);
-    const ability = buildAbility(packed);
-    expect(ability.can('read', 'Org')).toBe(true);
-    expect(ability.can('write', 'Org')).toBe(false);
-  });
-
-  it('manage:all packs/unpacks correctly', () => {
-    const rules = buildRulesFromGrants(['*:*:platform'], USER, ORG);
-    const packed = packRules(rules);
-    const ability = buildAbility(packed);
-    expect(ability.can('delete', 'User')).toBe(true);
-    expect(ability.can('create', 'Role')).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// isValidPattern
+// isValidPattern — new action set
 // ---------------------------------------------------------------------------
 
 describe('isValidPattern', () => {
-  it('exact valid pattern → true', () => {
-    expect(isValidPattern('user:read:org', catalog)).toBe(true);
+  it('accepts the new lifecycle actions', () => {
+    expect(isValidPattern('notification:configure:own', PERMISSIONS)).toBe(true);
+    expect(isValidPattern('vsdc:provision:platform', PERMISSIONS)).toBe(true);
+    expect(isValidPattern('ticket:validate:org', PERMISSIONS)).toBe(true);
   });
 
-  it('wildcard subject + wildcard action + valid scope → true', () => {
-    expect(isValidPattern('*:*:platform', catalog)).toBe(true);
+  it('rejects the removed literal manage action', () => {
+    expect(isValidPattern('notification:manage:own', PERMISSIONS)).toBe(false);
   });
 
-  it('wildcard subject + concrete action + valid scope → true', () => {
-    expect(isValidPattern('*:read:org', catalog)).toBe(true);
+  it('rejects unknown subjects, bad scopes, and wrong arity', () => {
+    expect(isValidPattern('dragon:read:org', PERMISSIONS)).toBe(false);
+    expect(isValidPattern('user:read:galaxy', PERMISSIONS)).toBe(false);
+    expect(isValidPattern('user:read', PERMISSIONS)).toBe(false);
   });
 
-  it('concrete subject + wildcard action + valid scope → true', () => {
-    expect(isValidPattern('user:*:own', catalog)).toBe(true);
-  });
-
-  it('known permission in catalog scope → true', () => {
-    expect(isValidPattern('org:create:platform', catalog)).toBe(true);
-  });
-
-  it('permission NOT valid at that scope → false (org:create only at platform)', () => {
-    expect(isValidPattern('org:create:org', catalog)).toBe(false);
-  });
-
-  it('unknown subject code → false', () => {
-    expect(isValidPattern('vehicle:read:org', catalog)).toBe(false);
-  });
-
-  it('unknown action → false', () => {
-    expect(isValidPattern('user:fly:org', catalog)).toBe(false);
-  });
-
-  it('invalid scope → false', () => {
-    expect(isValidPattern('user:read:global', catalog)).toBe(false);
-  });
-
-  it('wrong part count (2 parts) → false', () => {
-    expect(isValidPattern('user:read', catalog)).toBe(false);
-  });
-
-  it('wrong part count (4 parts) → false', () => {
-    expect(isValidPattern('user:read:org:extra', catalog)).toBe(false);
-  });
-
-  it('empty string → false', () => {
-    expect(isValidPattern('', catalog)).toBe(false);
-  });
-
-  it('invite:User not valid at own scope (scopes=[org,platform])', () => {
-    expect(isValidPattern('user:invite:own', catalog)).toBe(false);
-  });
-
-  it('wildcard subject with platform scope and action valid for at least one subject → true', () => {
-    // *:create:platform — 'create' is valid on Org:platform and Role:platform in catalog
-    expect(isValidPattern('*:create:platform', catalog)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// maxScopeFromPatterns
-// ---------------------------------------------------------------------------
-
-describe('maxScopeFromPatterns', () => {
-  it('returns own for single own-scope pattern', () => {
-    expect(maxScopeFromPatterns(['user:read:own'])).toBe<PermissionScope>('own');
-  });
-
-  it('returns org for single org-scope pattern', () => {
-    expect(maxScopeFromPatterns(['user:read:org'])).toBe<PermissionScope>('org');
-  });
-
-  it('returns platform for single platform-scope pattern', () => {
-    expect(maxScopeFromPatterns(['*:*:platform'])).toBe<PermissionScope>('platform');
-  });
-
-  it('returns highest scope across mixed patterns', () => {
-    expect(maxScopeFromPatterns(['user:read:own', 'user:invite:org'])).toBe<PermissionScope>('org');
-    expect(maxScopeFromPatterns(['user:read:own', 'org:create:platform'])).toBe<PermissionScope>('platform');
-  });
-
-  it('returns own for empty list (default baseline)', () => {
-    expect(maxScopeFromPatterns([])).toBe<PermissionScope>('own');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// compressPatterns
-// ---------------------------------------------------------------------------
-
-// Small catalog: User at org has exactly {read, update, delete}
-const compressCatalog: Array<{ action: PermissionAction; subject: PermissionSubject; scopes: PermissionScope[] }> = [
-  { action: 'read',    subject: 'User',         scopes: ['own', 'org'] },
-  { action: 'update',  subject: 'User',         scopes: ['own', 'org'] },
-  { action: 'delete',  subject: 'User',         scopes: ['own', 'org'] },
-  { action: 'receive', subject: 'Notification', scopes: ['own'] },
-  { action: 'read',    subject: 'Role',         scopes: ['org'] },
-  { action: 'create',  subject: 'Role',         scopes: ['org'] },
-];
-
-describe('compressPatterns — no-op cases', () => {
-  it('returns empty array unchanged', () => {
-    expect(compressPatterns([], compressCatalog)).toEqual([]);
-  });
-
-  it('single pattern with no compression possible → unchanged', () => {
-    expect(compressPatterns(['user:read:org'], compressCatalog)).toEqual(['user:read:org']);
-  });
-
-  it('partial action coverage → unchanged', () => {
-    const result = compressPatterns(['user:read:org', 'user:update:org'], compressCatalog);
-    expect(result).toContain('user:read:org');
-    expect(result).toContain('user:update:org');
-    expect(result).not.toContain('user:*:org');
-  });
-
-  it('empty catalog → patterns returned unchanged', () => {
-    const result = compressPatterns(['user:read:org', 'user:update:org'], []);
-    expect(result).toContain('user:read:org');
-    expect(result).toContain('user:update:org');
-  });
-});
-
-describe('compressPatterns — action-level compression (→ subject:*:scope)', () => {
-  it('all 3 User org actions → user:*:org', () => {
-    const result = compressPatterns(
-      ['user:read:org', 'user:update:org', 'user:delete:org'],
-      compressCatalog,
-    );
-    expect(result).toEqual(['user:*:org']);
-  });
-
-  it('all 3 User own actions → user:*:own', () => {
-    const result = compressPatterns(
-      ['user:read:own', 'user:update:own', 'user:delete:own'],
-      compressCatalog,
-    );
-    expect(result).toEqual(['user:*:own']);
-  });
-
-  it('compresses User but leaves Role untouched when Role is incomplete', () => {
-    const result = compressPatterns(
-      ['user:read:org', 'user:update:org', 'user:delete:org', 'role:read:org'],
-      compressCatalog,
-    );
-    expect(result).toContain('user:*:org');
-    expect(result).toContain('role:read:org');
-    expect(result).not.toContain('role:*:org');
-  });
-});
-
-describe('compressPatterns — subject-level compression (→ *:*:scope)', () => {
-  it('all subjects wildcarded at org → *:*:org', () => {
-    // catalog has User + Role at org scope
-    const result = compressPatterns(
-      ['user:read:org', 'user:update:org', 'user:delete:org', 'role:read:org', 'role:create:org'],
-      compressCatalog,
-    );
-    expect(result).toEqual(['*:*:org']);
-  });
-
-  it('all subjects at org but one incomplete → no *:*:org', () => {
-    const result = compressPatterns(
-      ['user:read:org', 'user:update:org', 'user:delete:org', 'role:read:org'],
-      compressCatalog,
-    );
-    expect(result).toContain('user:*:org');
-    expect(result).toContain('role:read:org');
-    expect(result).not.toContain('*:*:org');
-  });
-});
-
-describe('compressPatterns — *:*:platform fast path', () => {
-  it('returns only *:*:platform when present', () => {
-    expect(compressPatterns(['*:*:platform'], compressCatalog)).toEqual(['*:*:platform']);
-  });
-
-  it('drops everything else when *:*:platform is present', () => {
-    const result = compressPatterns(
-      ['user:read:org', 'user:update:org', '*:*:platform'],
-      compressCatalog,
-    );
-    expect(result).toEqual(['*:*:platform']);
-  });
-});
-
-describe('compressPatterns — Phase 1: remove patterns subsumed by existing wildcards', () => {
-  it('user:read:org removed when user:*:org is also present', () => {
-    const result = compressPatterns(['user:*:org', 'user:read:org'], compressCatalog);
-    expect(result).toEqual(['user:*:org']);
-  });
-
-  it('specific patterns removed when *:*:org is present', () => {
-    const result = compressPatterns(['*:*:org', 'user:read:org', 'role:create:org'], compressCatalog);
-    expect(result).toEqual(['*:*:org']);
-  });
-
-  it('subject:*:scope removed when *:*:scope is present', () => {
-    const result = compressPatterns(['*:*:org', 'user:*:org'], compressCatalog);
-    expect(result).toEqual(['*:*:org']);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// SCOPE_RANK values
-// ---------------------------------------------------------------------------
-
-describe('SCOPE_RANK', () => {
-  it('platform > org > own', () => {
-    expect(SCOPE_RANK['platform']).toBeGreaterThan(SCOPE_RANK['org']);
-    expect(SCOPE_RANK['org']).toBeGreaterThan(SCOPE_RANK['own']);
-  });
-
-  it('can compare scopes correctly', () => {
-    const a: PermissionScope = 'own';
-    const b: PermissionScope = 'platform';
-    expect(SCOPE_RANK[b] > SCOPE_RANK[a]).toBe(true);
+  it('rejects an action at a scope the catalog disallows', () => {
+    expect(isValidPattern('org:delete:org', PERMISSIONS)).toBe(false); // delete is platform-only
+    expect(isValidPattern('org:delete:platform', PERMISSIONS)).toBe(true);
   });
 });

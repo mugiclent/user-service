@@ -44,6 +44,11 @@ vi.mock('../../src/utils/publishers.js', () => ({
   publishUserDomainEvent: vi.fn(),
 }));
 
+const mockRevokeAllForUser = vi.fn();
+vi.mock('../../src/services/token.service.js', () => ({
+  TokenService: { revokeAllForUser: mockRevokeAllForUser },
+}));
+
 const { PasswordService } = await import('../../src/services/password.service.js');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -127,13 +132,11 @@ describe('PasswordService.resetPassword', () => {
     mockUserFindFirst.mockResolvedValueOnce(makeUser());
     await PasswordService.resetPassword('+250788000001', '123456', 'NewPass1!');
     expect(mockHashPassword).toHaveBeenCalledWith('NewPass1!');
-    expect(mockTransaction).toHaveBeenCalled();
     expect(mockUserUpdate).toHaveBeenCalledWith(
       expect.objectContaining({ data: { password_hash: 'new-hash' } }),
     );
-    expect(mockRefreshTokenUpdateMany).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { revoked_at: expect.any(Date) } }),
-    );
+    // Anonymous reset → kill every session (refresh revoked + blacklist:user)
+    expect(mockRevokeAllForUser).toHaveBeenCalledWith(expect.any(String));
   });
 
   it('notifies the user after password change', async () => {
@@ -142,6 +145,7 @@ describe('PasswordService.resetPassword', () => {
     expect(mockNotifyUser).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ sms: expect.objectContaining({ type: 'security.password_changed' }) }),
+      undefined, // reqLocale — not passed in this test
     );
   });
 
@@ -161,6 +165,7 @@ describe('PasswordService.resetPassword', () => {
       expect.objectContaining({
         mail: expect.objectContaining({ type: 'security.password_changed', email: 'jane@example.com' }),
       }),
+      undefined, // reqLocale — not passed in this test
     );
   });
 });

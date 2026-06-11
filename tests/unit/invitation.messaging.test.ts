@@ -104,7 +104,7 @@ const makeOrgAdmin = () => ({
   user_type: 'staff',
 });
 
-const baseRole = { id: 'role-org-staff', slug: 'org_staff', org_id: null };
+const baseRole = { id: 'role-org-staff', slug: 'org_staff', org_id: null, role_grants: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();

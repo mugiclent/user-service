@@ -262,6 +262,7 @@ describe('OrgService.updateOrg', () => {
   });
 
   it('throws FORBIDDEN for org_admin updating a different org', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce({ id: 'org-2', logo_path: null, status: 'active' });
     const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1', rules: orgAdminRules('org-1') });
     await expect(OrgService.updateOrg(authUser as never, 'org-2', {})).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,
@@ -269,6 +270,7 @@ describe('OrgService.updateOrg', () => {
   });
 
   it('throws FORBIDDEN when org_admin tries to change status', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce({ id: 'org-1', logo_path: null, status: 'pending' });
     const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1', rules: orgAdminRules('org-1') });
     await expect(OrgService.updateOrg(authUser as never, 'org-1', { status: 'active' })).rejects.toMatchObject({
       code: 'FORBIDDEN', status: 403,

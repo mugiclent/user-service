@@ -30,7 +30,14 @@ const schema = Joi.object({
 
   JWT_PRIVATE_KEY: Joi.string().required(), // PEM Ed25519 private key (-----BEGIN PRIVATE KEY-----)
   JWT_EXPIRES_IN: Joi.string().default('15m'),
-  REFRESH_TOKEN_TTL_DAYS: Joi.number().default(7),
+  // Session lifetimes — split by client. Refresh = sliding idle window (rolls
+  // forward on each rotation); absolute = hard ceiling that forces a full
+  // re-login regardless of activity. Web is kept tight (a work shift); mobile
+  // is generous (consumer "stay logged in") but capped.
+  REFRESH_TTL_WEB_HOURS: Joi.number().default(8),
+  REFRESH_TTL_MOBILE_DAYS: Joi.number().default(30),
+  SESSION_ABSOLUTE_WEB_HOURS: Joi.number().default(12),
+  SESSION_ABSOLUTE_MOBILE_DAYS: Joi.number().default(90),
 
   COOKIE_SECURE: Joi.boolean().default(true),
   TRUST_PROXY: Joi.number().integer().min(0).default(1),
@@ -89,7 +96,10 @@ export const env = value as {
   RABBITMQ_PORT: number;
   JWT_PRIVATE_KEY: string;
   JWT_EXPIRES_IN: string;
-  REFRESH_TOKEN_TTL_DAYS: number;
+  REFRESH_TTL_WEB_HOURS: number;
+  REFRESH_TTL_MOBILE_DAYS: number;
+  SESSION_ABSOLUTE_WEB_HOURS: number;
+  SESSION_ABSOLUTE_MOBILE_DAYS: number;
   COOKIE_SECURE: boolean;
   TRUST_PROXY: number;
   DELETION_GRACE_DAYS: number;

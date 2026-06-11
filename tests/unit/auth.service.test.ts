@@ -209,6 +209,7 @@ describe('AuthService.login', () => {
     expect(mockNotifyUser).toHaveBeenCalledWith(
       user,
       expect.objectContaining({ sms: expect.objectContaining({ type: 'security.login_new_device' }) }),
+      undefined, // req_locale — not passed in this test
     );
   });
 
@@ -354,14 +355,14 @@ describe('AuthService.verifyPhone', () => {
 describe('AuthService.forgotPassword', () => {
   it('delegates to PasswordService.forgotPassword', async () => {
     await AuthService.forgotPassword('user@example.com');
-    expect(mockForgotPassword).toHaveBeenCalledWith('user@example.com');
+    expect(mockForgotPassword).toHaveBeenCalledWith('user@example.com', undefined);
   });
 });
 
 describe('AuthService.resetPassword', () => {
   it('delegates to PasswordService.resetPassword', async () => {
     await AuthService.resetPassword('user@example.com', '123456', 'NewPass1!');
-    expect(mockResetPassword).toHaveBeenCalledWith('user@example.com', '123456', 'NewPass1!');
+    expect(mockResetPassword).toHaveBeenCalledWith('user@example.com', '123456', 'NewPass1!', undefined);
   });
 });
 
@@ -370,7 +371,7 @@ describe('AuthService.refresh', () => {
     const result = { user: makeUser(), tokens: { access: 'a', refresh: 'r' } };
     mockRotateRefreshToken.mockResolvedValueOnce(result);
     const out = await AuthService.refresh('raw-token');
-    expect(mockRotateRefreshToken).toHaveBeenCalledWith('raw-token');
+    expect(mockRotateRefreshToken).toHaveBeenCalledWith('raw-token', 'web');
     expect(out).toBe(result);
   });
 });

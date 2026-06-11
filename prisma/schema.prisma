@@ -60,13 +60,17 @@ enum PermissionAction {
   upload
   export
   receive
-  manage
   cancel
   refund
   topup
   pay
   override
   read_manifest
+  // `manage` is intentionally NOT a literal action — it is reserved for CASL's
+  // wildcard ("any action"). Lifecycle verbs below replace the old literal use.
+  configure
+  provision
+  validate
 }
 
 enum PermissionSubject {
@@ -270,16 +274,20 @@ model UserRole {
 }
 
 model RefreshToken {
-  id           String    @id @default(uuid())
-  token_hash   String    @unique
-  user_id      String
-  device_name  String?   @db.VarChar(200)
-  ip_address   String?   @db.VarChar(45)
-  user_agent   String?   @db.VarChar(500)
-  expires_at   DateTime
-  revoked_at   DateTime?
-  last_used_at DateTime?
-  created_at   DateTime  @default(now())
+  id                  String    @id @default(uuid())
+  token_hash          String    @unique
+  user_id             String
+  device_name         String?   @db.VarChar(200)
+  ip_address          String?   @db.VarChar(45)
+  user_agent          String?   @db.VarChar(500)
+  expires_at          DateTime
+  // Hard ceiling for the whole session lineage — carried forward unchanged across
+  // rotations so an active session is still forced to re-login after this instant.
+  // Nullable for rows created before absolute caps existed (treated as no cap).
+  absolute_expires_at DateTime?
+  revoked_at          DateTime?
+  last_used_at        DateTime?
+  created_at          DateTime  @default(now())
 
   user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
 

@@ -15,6 +15,7 @@ import {
   loginChannelConfirmSchema,
   updateInvitationSchema,
   addUserGrantsSchema,
+  assignRolesSchema,
 } from '../middleware/schemas/user.schema.js';
 import { sudoRateLimiter } from '../middleware/rateLimiter.js';
 
@@ -75,6 +76,9 @@ router.get('/:id', authenticate, authorize('read', 'User'), UserController.getUs
 
 // PATCH /api/v1/users/:id
 router.patch('/:id', authenticate, authorize('update', 'User'), validate(updateUserSchema), UserController.updateUser);
+
+// PUT /api/v1/users/:id/roles — replace a user's roles (assign_role scope; subset-guarded in service)
+router.put('/:id/roles', authenticate, authorize('assign_role', 'User'), validate(assignRolesSchema), UserController.assignRoles);
 
 // DELETE /api/v1/users/:id
 router.delete('/:id', authenticate, authorize('delete', 'User'), UserController.deleteUser);

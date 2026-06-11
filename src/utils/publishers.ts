@@ -339,11 +339,16 @@ export const notifyUser = (
     mail?: MailEvent;
     push?: { type: PushEvent['type']; data?: Record<string, string> };
   },
+  // Locale for THIS message. Pass the request locale (x-user-locale) for
+  // self-actions so a user's UI language choice (incl. anonymous flows) drives
+  // their own notifications. Omit for cross-user notifications (admin→target,
+  // broadcasts) so each recipient is messaged in their own saved language.
+  localeOverride?: string,
 ): void => {
   const ch = user.notif_channel;
   const hasFcm = !!user.fcm_token;
   const hasEmail = !!user.email;
-  const locale = (user.locale as Locale | undefined) ?? 'rw';
+  const locale = (localeOverride ?? (user.locale as Locale | undefined) ?? 'rw') as Locale;
 
   const hasPhone = !!user.phone_number;
   const shouldSms  = hasPhone && (ch.includes('sms') || (ch.includes('app') && !hasFcm));

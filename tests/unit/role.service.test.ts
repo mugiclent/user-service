@@ -72,7 +72,6 @@ vi.mock('../../src/utils/ability.js', async (importOriginal) => {
   return {
     ...actual,
     isValidPattern: vi.fn().mockReturnValue(true),
-    maxScopeFromPatterns: vi.fn().mockReturnValue('org'),
     compressPatterns: mockCompressPatterns,
     SCOPE_RANK: { own: 0, org: 1, platform: 2 },
   };
@@ -105,10 +104,8 @@ const makeOrgAdmin = (overrides: Record<string, unknown> = {}) => ({
   org_id: 'org-1',
   user_type: 'staff' as const,
   role_slugs: ['org-admin'],
-  rules: [
-    { action: 'manage', subject: 'Role', conditions: { org_id: 'org-1' } },
-    { action: 'read',   subject: 'Role', conditions: { org_id: null } },
-  ],
+  // Org admin: can do anything within their own org, nothing at platform scope.
+  rules: [{ action: 'manage', subject: 'all', conditions: { org_id: 'org-1' } }],
   ...overrides,
 });
 
@@ -149,15 +146,12 @@ beforeEach(() => {
 // ── listRoles ─────────────────────────────────────────────────────────────────
 
 describe('RoleService.listRoles', () => {
-  it('non-admin staff see global + own org roles, excluding passenger', async () => {
+  it('non-admin staff see global + own org roles', async () => {
     mockRoleFindMany.mockResolvedValueOnce([]);
     await RoleService.listRoles(makeOtherUser() as never, {});
     expect(mockRoleFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          OR: [{ org_id: null }, { org_id: 'org-1' }],
-          slug: { not: 'passenger' },
-        },
+        where: { OR: [{ org_id: null }, { org_id: 'org-1' }] },
       }),
     );
   });
@@ -179,15 +173,12 @@ describe('RoleService.listRoles', () => {
     );
   });
 
-  it('org admin sees global + own org roles, excluding passenger', async () => {
+  it('org admin sees global + own org roles', async () => {
     mockRoleFindMany.mockResolvedValueOnce([makeRole()]);
     await RoleService.listRoles(makeOrgAdmin() as never, {});
     expect(mockRoleFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: {
-          OR: [{ org_id: null }, { org_id: 'org-1' }],
-          slug: { not: 'passenger' },
-        },
+        where: { OR: [{ org_id: null }, { org_id: 'org-1' }] },
       }),
     );
   });
@@ -301,11 +292,14 @@ describe('RoleService.getRoleById', () => {
     });
   });
 
-  it('non-admin staff cannot view the passenger role', async () => {
-    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, slug: 'passenger' }));
-    await expect(RoleService.getRoleById(makeOtherUser() as never, 'role-1')).rejects.toMatchObject({
-      code: 'FORBIDDEN', status: 403,
-    });
+  it('staff can VIEW the global passenger template but cannot assign it (can_assign=false)', async () => {
+    // Viewing global templates is fine; assignability is governed by the subset
+    // guard, not by slug hiding. makeOtherUser holds no grants → cannot assign.
+    mockRoleFindUnique.mockResolvedValueOnce(
+      makeRole({ org_id: null, slug: 'passenger', role_grants: [{ id: 'g', pattern: 'wallet:read:own', is_managed: true, created_at: new Date() }] }),
+    );
+    const result = await RoleService.getRoleById(makeOtherUser() as never, 'role-1');
+    expect(result).toMatchObject({ id: 'role-1', can_assign: false });
   });
 
   it('throws ROLE_NOT_FOUND when role does not exist', async () => {

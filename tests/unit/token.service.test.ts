@@ -42,10 +42,22 @@ vi.mock('../../src/utils/ability.js', () => ({
 }));
 
 vi.mock('../../src/config/index.js', () => ({
-  config: { jwt: { refreshTtlMs: 604_800_000 } },
+  config: {
+    jwt: {
+      session: {
+        web: { idleMs: 8 * 60 * 60 * 1000, absoluteMs: 12 * 60 * 60 * 1000 },
+        mobile: { idleMs: 30 * 24 * 60 * 60 * 1000, absoluteMs: 90 * 24 * 60 * 60 * 1000 },
+      },
+    },
+  },
 }));
 
 vi.mock('../../src/utils/publishers.js', () => ({}));
+
+const mockRedisSet = vi.fn().mockResolvedValue('OK');
+vi.mock('../../src/loaders/redis.js', () => ({
+  getRedisClient: () => ({ set: mockRedisSet }),
+}));
 
 const { TokenService } = await import('../../src/services/token.service.js');
 
@@ -71,11 +83,13 @@ const futureDate = new Date(Date.now() + 60_000);
 const pastDate = new Date(Date.now() - 60_000);
 
 const makeStoredToken = (overrides: Record<string, unknown> = {}) => ({
+  id: 'session-1',
   token_hash: 'hashed-token',
   user_id: 'user-1',
   device_name: 'iPhone',
   revoked_at: null,
   expires_at: futureDate,
+  absolute_expires_at: futureDate,
   ...overrides,
 });
 
@@ -86,7 +100,7 @@ beforeEach(() => vi.clearAllMocks());
 describe('TokenService.issueTokenPair', () => {
   it('creates a refresh token record in the DB', async () => {
     const user = makeUser() as never;
-    await TokenService.issueTokenPair(user, 'iPhone', '1.2.3.4', 'Mozilla/5.0');
+    await TokenService.issueTokenPair(user, { device_name: 'iPhone', ip_address: '1.2.3.4', user_agent: 'Mozilla/5.0' });
     expect(mockCreateRefreshToken).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -147,6 +161,22 @@ describe('TokenService.rotateRefreshToken — expired token', () => {
   });
 });
 
+describe('TokenService.rotateRefreshToken — absolute cap reached', () => {
+  it('revokes the token and throws SESSION_EXPIRED (401)', async () => {
+    mockFindUniqueRefreshToken.mockResolvedValueOnce(
+      makeStoredToken({ expires_at: futureDate, absolute_expires_at: pastDate }),
+    );
+    await expect(TokenService.rotateRefreshToken('raw')).rejects.toMatchObject({
+      code: 'SESSION_EXPIRED', status: 401,
+    });
+    expect(mockUpdateRefreshToken).toHaveBeenCalledWith({
+      where: { token_hash: 'hashed-token' },
+      data: { revoked_at: expect.any(Date) },
+    });
+    expect(mockFindUniqueUser).not.toHaveBeenCalled();
+  });
+});
+
 describe('TokenService.rotateRefreshToken — user not found or deleted', () => {
   it('throws INVALID_REFRESH_TOKEN when user does not exist', async () => {
     mockFindUniqueRefreshToken.mockResolvedValueOnce(makeStoredToken());
@@ -203,24 +233,41 @@ describe('TokenService.rotateRefreshToken — success', () => {
 // ── revokeByRawToken ──────────────────────────────────────────────────────────
 
 describe('TokenService.revokeByRawToken', () => {
-  it('updates the matching token to revoked', async () => {
+  it('revokes the matching token and blacklists its session', async () => {
+    mockFindUniqueRefreshToken.mockResolvedValueOnce({ id: 'sess-1', revoked_at: null });
     await TokenService.revokeByRawToken('my-raw-token');
-    expect(mockUpdateManyRefreshToken).toHaveBeenCalledWith({
-      where: { token_hash: 'hashed-token', revoked_at: null },
+    expect(mockUpdateRefreshToken).toHaveBeenCalledWith({
+      where: { token_hash: 'hashed-token' },
       data: { revoked_at: expect.any(Date) },
     });
+    // session_id === refresh_tokens.id — kills the in-flight access token
+    expect(mockRedisSet).toHaveBeenCalledWith('blacklist:session:sess-1', '1', 'EX', 900);
+  });
+
+  it('is a no-op when the token does not exist', async () => {
+    mockFindUniqueRefreshToken.mockResolvedValueOnce(null);
+    await TokenService.revokeByRawToken('unknown');
+    expect(mockUpdateRefreshToken).not.toHaveBeenCalled();
+  });
+
+  it('still blacklists the session when the token is already revoked (idempotent)', async () => {
+    mockFindUniqueRefreshToken.mockResolvedValueOnce({ id: 'sess-2', revoked_at: new Date() });
+    await TokenService.revokeByRawToken('already-revoked');
+    expect(mockUpdateRefreshToken).not.toHaveBeenCalled();
+    expect(mockRedisSet).toHaveBeenCalledWith('blacklist:session:sess-2', '1', 'EX', 900);
   });
 });
 
 // ── revokeAllForUser ──────────────────────────────────────────────────────────
 
 describe('TokenService.revokeAllForUser', () => {
-  it('revokes all non-revoked tokens for the user', async () => {
+  it('revokes all non-revoked tokens and blacklists the user', async () => {
     await TokenService.revokeAllForUser('user-42');
     expect(mockUpdateManyRefreshToken).toHaveBeenCalledWith({
       where: { user_id: 'user-42', revoked_at: null },
       data: { revoked_at: expect.any(Date) },
     });
+    expect(mockRedisSet).toHaveBeenCalledWith('blacklist:user:user-42', '1', 'EX', 900);
   });
 });
 

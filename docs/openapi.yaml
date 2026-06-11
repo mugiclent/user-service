@@ -8,13 +8,37 @@ info:
 
     ## Authentication
 
-    All protected endpoints require a valid JWT access token (15 min TTL by default).
+    All protected endpoints require a valid JWT access token (15 min TTL).
 
     **Mobile clients** — include `X-Client-Type: mobile` and send `Authorization: Bearer <access_token>`.
     Tokens are returned in the response body.
 
     **Web clients** — the server sets `access_token` and `refresh_token` as `HttpOnly` cookies automatically.
     No `Authorization` header is needed; cookies are sent back with every request.
+
+    ## Sessions & token lifetimes
+
+    The access token is always 15 min. The **refresh token is a sliding idle window**
+    (it rolls forward on every `POST /auth/refresh`), bounded by a hard **absolute cap**
+    after which a full re-login is required. Lifetimes differ by client:
+
+    | Client | Access | Refresh idle (sliding) | Absolute cap |
+    |---|---|---|---|
+    | Web (default) | 15 min | 8 h | 12 h |
+    | Mobile (`X-Client-Type: mobile`) | 15 min | 30 d | 90 d |
+
+    Once the absolute cap is reached, `POST /auth/refresh` returns `401 SESSION_EXPIRED`.
+
+    **Revocation is enforced in real time** by the API gateway (Redis blacklist): `logout`,
+    `logout-all`, account suspend/delete, and password change/reset invalidate the relevant
+    access tokens immediately rather than waiting out the 15-min TTL.
+
+    ## Localization
+
+    Send the user's selected UI language as `X-Locale: rw | en | fr`. It is honoured on every
+    request (including anonymous ones) and drives both responses and notifications (OTP, welcome,
+    security alerts) for self-actions. Resolution precedence:
+    `X-Locale` > the logged-in user's saved `locale` > `Accept-Language` > `rw`.
 
     ## IAM — Roles & Permissions
 
@@ -306,6 +330,18 @@ components:
         Omit for web clients (tokens returned as `HttpOnly` cookies).
         Send `mobile` to receive tokens in the JSON response body instead.
 
+    Locale:
+      in: header
+      name: X-Locale
+      required: false
+      schema:
+        type: string
+        enum: [rw, en, fr]
+      description: |
+        The user's selected UI language. Honoured on every request (including anonymous
+        ones) and used for both responses and notifications. Overrides the saved account
+        locale for this request. Precedence: `X-Locale` > saved `locale` > `Accept-Language` > `rw`.
+
     SudoToken:
       in: header
       name: x-sudo-token
@@ -386,10 +422,12 @@ components:
       properties:
         access_token:
           type: string
-          description: 'Short-lived JWT (15 min by default). Send as `Authorization: Bearer` on subsequent requests.'
+          description: 'Short-lived JWT (15 min). Send as `Authorization: Bearer` on subsequent requests.'
         refresh_token:
           type: string
-          description: Long-lived opaque token. Use with `POST /auth/refresh` to rotate.
+          description: |
+            Opaque token; rotate via `POST /auth/refresh`. Sliding idle window —
+            8 h (web) / 30 d (mobile) — bounded by an absolute cap of 12 h (web) / 90 d (mobile).
 
     AuthResponse:
       type: object
@@ -1276,8 +1314,10 @@ paths:
       summary: Login with phone or email + password
       parameters:
         - $ref: '#/components/parameters/ClientType'
+        - $ref: '#/components/parameters/Locale'
       description: |
         Accepts a phone number in E.164 format or an email address as `identifier`.
+        Session lifetimes depend on `X-Client-Type` (see **Sessions & token lifetimes**).
 
         **Normal** → `200` with full `AuthResponse`.
 
@@ -1406,7 +1446,7 @@ paths:
       summary: Request a password-reset OTP
       description: |
         Sends a 6-digit OTP to the user's phone or email depending on whether `identifier` is
-        a phone number or email address.
+        a phone number or email address. The OTP message uses the `X-Locale` language when sent.
 
         Always returns `204` regardless of whether the identifier exists — this prevents
         user enumeration attacks.
@@ -1414,6 +1454,8 @@ paths:
         Rate-limited to **3 attempts per hour per IP** by default.
         Configurable via `RATE_LIMIT_RESET_MAX` and `RATE_LIMIT_RESET_WINDOW_SECONDS`.
       security: []
+      parameters:
+        - $ref: '#/components/parameters/Locale'
       requestBody:
         required: true
         content:
@@ -1439,9 +1481,13 @@ paths:
       summary: Reset password with OTP
       description: |
         Verifies the OTP issued by `POST /auth/forgot-password` and sets a new password.
-        All existing refresh token sessions are revoked immediately.
+        All sessions are revoked immediately — refresh tokens revoked and the user
+        blacklisted so in-flight access tokens are rejected at once. The user must log in
+        again with the new password (no tokens are returned here).
         A `security.password_changed` notification is sent via SMS, email, and push.
       security: []
+      parameters:
+        - $ref: '#/components/parameters/Locale'
       requestBody:
         required: true
         content:
@@ -1475,6 +1521,10 @@ paths:
       summary: Rotate refresh token
       description: |
         Issues a new access + refresh token pair and invalidates the old refresh token.
+        The refresh token is a **sliding window** — each rotation resets the idle timer,
+        but the session's **absolute cap** (12 h web / 90 d mobile) is carried forward
+        unchanged. Once the cap is reached, rotation fails with `401 SESSION_EXPIRED` and
+        the user must log in again.
 
         **Mobile** — send `Authorization: Bearer <refresh_token>` with `X-Client-Type: mobile`.
 
@@ -1495,7 +1545,11 @@ paths:
                 properties:
                   tokens: { $ref: '#/components/schemas/Tokens' }
         '401':
-          description: Refresh token missing, invalid, expired, or user is suspended
+          description: |
+            Refresh token missing, invalid, or the user is suspended. Specific codes:
+            `INVALID_REFRESH_TOKEN` (unknown/idle-expired), `TOKEN_REUSE_DETECTED`
+            (revoked token replayed — all sessions wiped), `SESSION_EXPIRED` (absolute
+            cap reached — full re-login required), `ACCOUNT_SUSPENDED`.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1505,7 +1559,9 @@ paths:
       tags: [Auth]
       summary: Logout — revoke current session
       description: |
-        Revokes the current session's refresh token. Idempotent — safe to call multiple times.
+        Revokes the current session's refresh token **and blacklists that session**, so the
+        in-flight access token is rejected by the gateway immediately (not after its 15-min TTL).
+        Idempotent — safe to call multiple times.
 
         **Mobile** — send refresh token via `Authorization: Bearer` with `X-Client-Type: mobile`.
         **Web** — reads from the `refresh_token` cookie; clears both auth cookies on response.
@@ -1518,7 +1574,8 @@ paths:
       tags: [Auth]
       summary: Logout all sessions
       description: |
-        Revokes all refresh tokens for the authenticated user across all devices.
+        Revokes all refresh tokens for the authenticated user across all devices, and
+        blacklists the user so every in-flight access token is rejected immediately.
         Requires a valid access token (not a refresh token).
       responses:
         '204': { description: All sessions revoked }
@@ -2481,8 +2538,16 @@ paths:
 
         **Password change mode** — send `{ "password": "newPassword" }` (only):
         Requires `x-sudo-token` header with action `change_password` (obtain from
-        `POST /users/me/validate-password`). On success returns `204` and revokes
-        all other active sessions so other devices are forced to re-authenticate.
+        `POST /users/me/validate-password`).
+
+        Follows the "sign out everywhere **except this device**" pattern: all existing
+        sessions are revoked (other devices are logged out immediately), and a **fresh
+        token pair is issued for the current device** so the caller stays logged in.
+        Delivery mirrors login:
+        - **Web** — new `access_token` / `refresh_token` `HttpOnly` cookies are set; responds `204`.
+        - **Mobile** (`X-Client-Type: mobile`) — responds `200` with the new tokens in the body;
+          the client **must replace its stored tokens** with these.
+
         A `security.password_changed` notification is sent via all configured channels.
 
         **Profile update mode** — any other field combination (no `password`):
@@ -2504,6 +2569,8 @@ paths:
         - $ref: '#/components/parameters/SudoToken'
           required: false
           description: Required only when `password` is present in the body (action `change_password`).
+        - $ref: '#/components/parameters/ClientType'
+        - $ref: '#/components/parameters/Locale'
       requestBody:
         required: true
         content:
@@ -2563,14 +2630,17 @@ paths:
                 value: { password: 'MyNewSecurePass1!' }
       responses:
         '200':
-          description: Profile updated (returned only for profile update mode — not password change)
+          description: |
+            Either: a profile update (returns the updated user object), or a password change
+            from a **mobile** client (returns the fresh token pair — store these).
           content:
             application/json:
               schema:
                 oneOf:
                   - $ref: '#/components/schemas/UserMePassenger'
                   - $ref: '#/components/schemas/UserMeStaff'
-        '204': { description: Password changed — all other sessions revoked }
+                  - $ref: '#/components/schemas/Tokens'
+        '204': { description: 'Password changed (web) — other sessions revoked; fresh `access_token`/`refresh_token` cookies set on this device.' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/StepUpRequired' }
         '409':
@@ -2699,11 +2769,11 @@ paths:
 
         **Sudo-protected endpoints and their required `action` value:**
 
-        | Endpoint | `action` |
-        |---|---|
-        | `PATCH /users/me` with `password` | `change_password` |
-        | `DELETE /users/me` | `delete_account` |
-        | `POST /tickets` (Trip Service) | `purchase_ticket` |
+        | Endpoint | `action` | Applies to |
+        |---|---|---|
+        | `PATCH /users/me` with `password` | `change_password` | any user |
+        | `DELETE /users/me` | `delete_account` | any user |
+        | `POST /tickets` (Trip Service) | `purchase_ticket` | **passengers paying by wallet only** — staff are exempt |
 
         **Rate limiting:** 3 failed password attempts within a 15-minute window triggers
         a lockout. The lockout resets on a successful verification.

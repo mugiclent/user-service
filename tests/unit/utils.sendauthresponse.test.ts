@@ -8,7 +8,12 @@ import type { Request, Response } from 'express';
 vi.mock('../../src/config/index.js', () => ({
   config: {
     cookie: { secure: false },
-    jwt: { refreshTtlMs: 7 * 24 * 60 * 60 * 1000 },
+    jwt: {
+      session: {
+        web: { idleMs: 8 * 60 * 60 * 1000, absoluteMs: 12 * 60 * 60 * 1000 },
+        mobile: { idleMs: 30 * 24 * 60 * 60 * 1000, absoluteMs: 90 * 24 * 60 * 60 * 1000 },
+      },
+    },
   },
 }));
 

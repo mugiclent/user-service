@@ -181,7 +181,7 @@ describe('AuthController.verifyPhone', () => {
 
 describe('AuthController.forgotPassword', () => {
   it('returns 204', async () => {
-    const req = { body: { identifier: 'u@e.com' } } as unknown as Request;
+    const req = { body: { identifier: 'u@e.com' }, headers: {} } as unknown as Request;
     const res = makeRes();
     await AuthController.forgotPassword(req, res, next);
     expect(res.status).toHaveBeenCalledWith(204);
@@ -200,7 +200,7 @@ describe('AuthController.forgotPassword', () => {
 
 describe('AuthController.resetPassword', () => {
   it('clears cookies and returns 204', async () => {
-    const req = { body: { identifier: 'u@e.com', otp: '123456', new_password: 'NewPass1!' } } as unknown as Request;
+    const req = { body: { identifier: 'u@e.com', otp: '123456', new_password: 'NewPass1!' }, headers: {} } as unknown as Request;
     const res = makeRes();
     await AuthController.resetPassword(req, res, next);
     expect(mockClearAuthCookies).toHaveBeenCalledWith(res);
@@ -234,7 +234,7 @@ describe('AuthController.refresh', () => {
       cookies: {},
     } as unknown as Request;
     await AuthController.refresh(req, makeRes(), next);
-    expect(mockAuthServiceRefresh).toHaveBeenCalledWith('my-refresh-token');
+    expect(mockAuthServiceRefresh).toHaveBeenCalledWith('my-refresh-token', 'mobile');
     expect(mockSendRefreshResponse).toHaveBeenCalled();
   });
 
@@ -256,7 +256,7 @@ describe('AuthController.refresh', () => {
       cookies: { refresh_token: 'cookie-refresh-token' },
     } as unknown as Request;
     await AuthController.refresh(req, makeRes(), next);
-    expect(mockAuthServiceRefresh).toHaveBeenCalledWith('cookie-refresh-token');
+    expect(mockAuthServiceRefresh).toHaveBeenCalledWith('cookie-refresh-token', 'web');
   });
 
   it('calls next(err) on error', async () => {

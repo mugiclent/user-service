@@ -3,6 +3,7 @@ import type { UserWithRoles } from '../models/index.js';
 import { hashPassword, verifyPassword } from '../utils/crypto.js';
 import { AppError } from '../utils/AppError.js';
 import { TokenService } from './token.service.js';
+import type { ClientType } from './token.service.js';
 import { OtpService, type OtpPurpose } from './otp.service.js';
 import { PasswordService } from './password.service.js';
 import { publishAudit, publishSms, publishMail, notifyUser, publishUserDomainEvent, publishUserEvent } from '../utils/publishers.js';
@@ -51,6 +52,8 @@ export const AuthService = {
     device_name?: string,
     ip?: string,
     user_agent?: string,
+    client_type: ClientType = 'web',
+    req_locale?: string,
   ): Promise<LoginResult> {
     let phoneQuery = identifier;
     if (!isEmail(identifier)) {
@@ -97,7 +100,8 @@ export const AuthService = {
       }
       const purpose = channel === 'email' ? 'email_verification' : 'phone_verification';
       const { code, expiresIn } = await OtpService.create(user.id, purpose);
-      const locale = user.locale as Locale;
+      // Unverified account — prefer the language picked in the browser this request.
+      const locale = (req_locale ?? user.locale) as Locale;
       if (channel === 'email') {
         publishMail({ type: 'otp.mail', purpose: 'email_verification', email: user.email!, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale });
       } else {
@@ -117,10 +121,11 @@ export const AuthService = {
     // 2FA: send OTP via the user's login_channel, defer token issuance to verify-2fa step
     if (user.two_factor_enabled) {
       const { code, expiresIn } = await OtpService.create(user.id, '2fa');
+      const otpLocale = (req_locale ?? user.locale) as Locale;
       if (user.login_channel === 'email' && user.email) {
-        publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
+        publishMail({ type: 'otp.mail', purpose: '2fa', email: user.email, first_name: user.first_name, code, expires_in_seconds: expiresIn, locale: otpLocale });
       } else {
-        publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale: user.locale as Locale });
+        publishSms({ type: 'otp.sms', purpose: '2fa', phone_number: user.phone_number!, code, expires_in_seconds: expiresIn, locale: otpLocale });
       }
       return { requires_2fa: true, requires_verification: false, user_id: user.id, expires_in: expiresIn };
     }
@@ -144,13 +149,13 @@ export const AuthService = {
               sms: user.phone_number ? { type: 'security.login_new_device', phone_number: user.phone_number, first_name: user.first_name, device: device_name } : undefined,
               mail: user.email ? { type: 'security.login_new_device', email: user.email, first_name: user.first_name, device: device_name } : undefined,
               push: { type: 'security.login_new_device', data: device_name ? { device: device_name } : undefined },
-            });
+            }, req_locale);
           }
         });
       }).catch((err) => console.error('[auth] Failed to check new device', err));
     }
 
-    const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
+    const tokens = await TokenService.issueTokenPair(user, { device_name, ip_address: ip, user_agent, clientType: client_type });
     return { requires_2fa: false, requires_verification: false, user, tokens };
   },
 
@@ -164,6 +169,7 @@ export const AuthService = {
     device_name?: string,
     ip?: string,
     user_agent?: string,
+    client_type: ClientType = 'web',
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
     await OtpService.verify(user_id, otp, '2fa');
 
@@ -178,7 +184,7 @@ export const AuthService = {
 
     publishAudit({ actor_id: user.id, action: 'login_2fa', resource: 'User', resource_id: user.id, ip });
 
-    const tokens = await TokenService.issueTokenPair(user, device_name, ip, user_agent);
+    const tokens = await TokenService.issueTokenPair(user, { device_name, ip_address: ip, user_agent, clientType: client_type });
     return { user, tokens };
   },
 
@@ -354,6 +360,8 @@ export const AuthService = {
     device_name?: string,
     ip?: string,
     user_agent?: string,
+    client_type: ClientType = 'web',
+    req_locale?: string,
   ): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
     const user = await prisma.user.findUnique({ where: { id: user_id } });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
@@ -380,7 +388,7 @@ export const AuthService = {
     notifyUser(updated, {
       sms: updated.phone_number ? { type: 'welcome.sms', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
       mail: updated.email ? { type: 'welcome.mail', email: updated.email, first_name: updated.first_name } : undefined,
-    });
+    }, req_locale);
 
     publishUserDomainEvent({ type: 'user.activated', id: user_id, user_type: updated.user_type, login_channel: channel });
     if (updated.user_type === 'staff') {
@@ -399,23 +407,23 @@ export const AuthService = {
 
     publishAudit({ actor_id: user_id, action: 'verify_login', resource: 'User', resource_id: user_id, ip });
 
-    const tokens = await TokenService.issueTokenPair(updated, device_name, ip, user_agent);
+    const tokens = await TokenService.issueTokenPair(updated, { device_name, ip_address: ip, user_agent, clientType: client_type });
     return { user: updated, tokens };
   },
 
   /** Initiate password recovery. Always silent — no enumeration. */
-  async forgotPassword(identifier: string): Promise<void> {
-    return PasswordService.forgotPassword(identifier);
+  async forgotPassword(identifier: string, reqLocale?: string): Promise<void> {
+    return PasswordService.forgotPassword(identifier, reqLocale);
   },
 
   /** Complete password reset using the 6-digit OTP. */
-  async resetPassword(identifier: string, otp: string, newPassword: string): Promise<void> {
-    return PasswordService.resetPassword(identifier, otp, newPassword);
+  async resetPassword(identifier: string, otp: string, newPassword: string, reqLocale?: string): Promise<void> {
+    return PasswordService.resetPassword(identifier, otp, newPassword, reqLocale);
   },
 
   /** Rotate refresh token. Reuse detection wipes all sessions. */
-  async refresh(rawToken: string): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
-    return TokenService.rotateRefreshToken(rawToken);
+  async refresh(rawToken: string, client_type: ClientType = 'web'): Promise<{ user: UserWithRoles; tokens: AuthTokens }> {
+    return TokenService.rotateRefreshToken(rawToken, client_type);
   },
 
   /** Revoke one refresh token. Idempotent. */

@@ -27,7 +27,19 @@ export const config = {
     publicKey: createPublicKey(env.JWT_PRIVATE_KEY.replace(/\\n/g, '\n'))
       .export({ format: 'pem', type: 'spki' }) as string,
     expiresIn: env.JWT_EXPIRES_IN,
-    refreshTtlMs: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000,
+    // Per-client session lifetimes. `idleMs` = sliding refresh window (resets on
+    // each rotation); `absoluteMs` = hard cap enforced at rotation, forcing a
+    // full re-login regardless of activity.
+    session: {
+      web: {
+        idleMs: env.REFRESH_TTL_WEB_HOURS * 60 * 60 * 1000,
+        absoluteMs: env.SESSION_ABSOLUTE_WEB_HOURS * 60 * 60 * 1000,
+      },
+      mobile: {
+        idleMs: env.REFRESH_TTL_MOBILE_DAYS * 24 * 60 * 60 * 1000,
+        absoluteMs: env.SESSION_ABSOLUTE_MOBILE_DAYS * 24 * 60 * 60 * 1000,
+      },
+    },
   },
 
   trustProxy: env.TRUST_PROXY,

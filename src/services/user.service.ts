@@ -1,24 +1,29 @@
 import { prisma } from '../models/index.js';
-import type { Prisma, AuthenticatedUser } from '../models/index.js';
+import type { Prisma, AuthenticatedUser, UserWithRoles } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
 import { serializeUserMe, serializeUserForList, serializeUserFullProfile, maskPhone } from '../models/serializers.js';
+import { subject } from '@casl/ability';
 import {
   buildRulesFromGrants,
+  accessibleWhere,
   buildAbilityFromRules,
   getScopeFor,
   isValidPattern,
-  maxScopeFromPatterns,
+  canAssignGrants,
   compressPatterns,
-  SCOPE_RANK,
 } from '../utils/ability.js';
-import { PERMISSIONS } from '../loaders/bootstrap.js';
+import type { Subjects } from '../utils/ability.js';
+import { PERMISSIONS } from '../utils/catalog.js';
 import { generateRawToken, hashToken, hashPassword, verifyPassword } from '../utils/crypto.js';
 import { issueSudoToken } from '../utils/sudoToken.js';
 import type { SudoAction } from '../utils/sudoToken.js';
 import { clearSudoRateLimit } from '../middleware/rateLimiter.js';
 import { publishAudit, publishSms, publishMail, notifyUser, publishUserEvent, publishUserDomainEvent, publishInvitationEvent } from '../utils/publishers.js';
 import { OtpService } from './otp.service.js';
+import { TokenService } from './token.service.js';
+import type { ClientType } from './token.service.js';
+import type { AuthTokens } from '../utils/sendAuthResponse.js';
 import { config } from '../config/index.js';
 import { deleteFromS3 } from '../utils/s3.js';
 import { displayPhone } from '../utils/phone.js';
@@ -32,6 +37,35 @@ const withRoles = {
 
 // 15-minute blacklist window (matches access token TTL)
 const BLACKLIST_TTL_SECONDS = 900;
+
+// The grant that marks a platform super-admin. Used to guard against removing
+// the last one — identified by the *grant*, never by a role slug/name.
+const PLATFORM_ADMIN_PATTERN = '*:*:platform';
+
+const holdsPlatformAdmin = (user: UserWithRoles): boolean =>
+  user.user_roles.some((ur) => ur.role.role_grants.some((g) => g.pattern === PLATFORM_ADMIN_PATTERN)) ||
+  user.user_grants.some((g) => g.pattern === PLATFORM_ADMIN_PATTERN);
+
+/**
+ * Throw LAST_PLATFORM_ADMIN if `target` is a platform admin and no other active
+ * platform admin remains. Guards delete / suspend / role-removal so the platform
+ * can never be locked out of administration.
+ */
+const assertNotLastPlatformAdmin = async (target: UserWithRoles): Promise<void> => {
+  if (!holdsPlatformAdmin(target)) return;
+  const others = await prisma.user.count({
+    where: {
+      id: { not: target.id },
+      deleted_at: null,
+      status: 'active',
+      OR: [
+        { user_roles: { some: { role: { role_grants: { some: { pattern: PLATFORM_ADMIN_PATTERN } } } } } },
+        { user_grants: { some: { pattern: PLATFORM_ADMIN_PATTERN } } },
+      ],
+    },
+  });
+  if (others === 0) throw new AppError('LAST_PLATFORM_ADMIN', 409);
+};
 
 // ---------------------------------------------------------------------------
 // GET /users/me
@@ -140,7 +174,7 @@ export const UserService = {
     }
 
     const patterns = [...user.user_roles.flatMap(ur => ur.role.role_grants.map(g => g.pattern)), ...user.user_grants.map(g => g.pattern)];
-    const rules = buildRulesFromGrants(patterns, user.id, user.org_id);
+    const rules = buildRulesFromGrants(patterns, user.id, user.org_id, PERMISSIONS);
     return serializeUserMe(user, rules) as unknown as Record<string, unknown>;
   },
 
@@ -153,31 +187,26 @@ export const UserService = {
     query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string; role?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const scope = getScopeFor(ability, 'read', 'User');
+    const canSeeAcrossOrg = getScopeFor(ability, 'read', 'User') === 'platform';
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: Record<string, any> = { status: { not: 'deleted' } };
+    // The own/org/platform boundary is derived straight from the caller's rules
+    // (conditions were baked in at login) — no manual org_id/id branching here.
+    const filters: Prisma.UserWhereInput[] = [
+      accessibleWhere(ability, 'read', 'User'),
+      { status: { not: 'deleted' } },
+    ];
 
-    if (scope === 'platform') {
-      if (query.org_id) where['org_id'] = query.org_id;
-    } else if (scope === 'org') {
-      where['org_id'] = requestingUser.org_id;
-    } else {
-      // own scope — only self
-      where['id'] = requestingUser.id;
-    }
-
-    if (query.status) where['status'] = query.status;
-    if (query.user_type) where['user_type'] = query.user_type;
-    if (query.role) where['user_roles'] = { some: { role: { slug: query.role } } };
+    if (query.org_id) filters.push({ org_id: query.org_id });
+    if (query.status) filters.push({ status: query.status as Prisma.EnumUserStatusFieldUpdateOperationsInput['set'] });
+    if (query.user_type) filters.push({ user_type: query.user_type as Prisma.EnumUserTypeFieldUpdateOperationsInput['set'] });
+    if (query.role) filters.push({ user_roles: { some: { role: { slug: query.role } } } });
     if (query.q) {
       const q = query.q;
-      if (!where['AND']) where['AND'] = [];
-      where['AND'].push({ OR: [
+      filters.push({ OR: [
         { first_name:   { contains: q, mode: 'insensitive' } },
         { last_name:    { contains: q, mode: 'insensitive' } },
         { email:        { contains: q, mode: 'insensitive' } },
@@ -185,13 +214,15 @@ export const UserService = {
       ]});
     }
 
+    const where: Prisma.UserWhereInput = { AND: filters };
+
     const [users, total] = await Promise.all([
       prisma.user.findMany({ where, skip, take: limit, orderBy: { created_at: 'desc' }, ...withRoles }),
       prisma.user.count({ where }),
     ]);
 
     return {
-      data: users.map((u) => serializeUserForList(u, scope === 'platform')),
+      data: users.map((u) => serializeUserForList(u, canSeeAcrossOrg)),
       total,
       page,
       limit,
@@ -207,7 +238,7 @@ export const UserService = {
     targetId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const isAdmin = getScopeFor(ability, 'read', 'User') === 'platform';
+    const canSeeAcrossOrg = getScopeFor(ability, 'read', 'User') === 'platform';
 
     const user = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -215,18 +246,13 @@ export const UserService = {
     });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
 
-    if (!isAdmin) {
-      // Object-level scope enforcement (conditions expressed in DB query scoping)
-      if (requestingUser.org_id) {
-        // org-scoped roles (org_admin, dispatcher): users in same org only
-        if (user.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
-      } else {
-        // self-scoped roles (passenger, driver): own profile only
-        if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
-      }
+    // Object-level scope is enforced by CASL against the record's own fields
+    // (id / org_id) using conditions baked into the JWT — no manual org/self branching.
+    if (!ability.can('read', subject('User', user) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
     }
 
-    return serializeUserFullProfile(user, isAdmin);
+    return serializeUserFullProfile(user, canSeeAcrossOrg);
   },
 
   // ---------------------------------------------------------------------------
@@ -239,8 +265,7 @@ export const UserService = {
     data: { first_name?: string; last_name?: string; avatar_path?: string | null; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const isAdmin = getScopeFor(ability, 'update', 'User') === 'platform';
-    // Role assignment requires platform-scope update:User
+    const canSeeAcrossOrg = getScopeFor(ability, 'update', 'User') === 'platform';
 
     const target = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -248,18 +273,18 @@ export const UserService = {
     });
     if (!target) throw new AppError('USER_NOT_FOUND', 404);
 
-    if (!isAdmin) {
-      // Object-level scope enforcement
-      if (requestingUser.org_id) {
-        // org-scoped roles: target must be in same org
-        if (target.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
-      } else {
-        // self-scoped roles (passenger, driver): own profile only
-        if (requestingUser.id !== targetId) throw new AppError('FORBIDDEN', 403);
-      }
+    // Object-level scope enforced by CASL against the record (id / org_id).
+    if (!ability.can('update', subject('User', target) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
     }
 
-    const { role_slugs, first_name, last_name, status, org_id } = data;
+    // Role assignment lives in its own endpoint (assignRoles) — ignore role_slugs here.
+    const { first_name, last_name, status, org_id } = data;
+
+    // Suspending/deactivating must not lock out the last platform admin.
+    if (status !== undefined && status !== 'active') {
+      await assertNotLastPlatformAdmin(target);
+    }
 
     const updateData: Prisma.UserUncheckedUpdateInput = {};
     if (first_name !== undefined) updateData.first_name = first_name;
@@ -272,29 +297,22 @@ export const UserService = {
       deleteFromS3(target.avatar_path);
     }
 
-    const updated = await prisma.$transaction(async (tx) => {
-      const u = await tx.user.update({
-        where: { id: targetId },
-        data: updateData,
-        ...withRoles,
-      });
-
-      if (role_slugs && ability.can('manage', 'User') && isAdmin) {
-        // Replace roles: delete existing, insert new
-        const roles = await tx.role.findMany({ where: { slug: { in: role_slugs } } });
-        await tx.userRole.deleteMany({ where: { user_id: targetId } });
-        await tx.userRole.createMany({
-          data: roles.map((r) => ({ user_id: targetId, role_id: r.id })),
-        });
-        // Re-fetch with updated roles
-        return tx.user.findUniqueOrThrow({ where: { id: targetId }, ...withRoles });
-      }
-
-      return u;
+    const updated = await prisma.user.update({
+      where: { id: targetId },
+      data: updateData,
+      ...withRoles,
     });
 
     // Notify the target user if their account was suspended
     if (data.status === 'suspended') {
+      // Kill in-flight access tokens immediately (refresh is already blocked for
+      // suspended users at rotation; this closes the 15-min access-token window).
+      try {
+        await getRedisClient().set(`blacklist:user:${targetId}`, '1', 'EX', BLACKLIST_TTL_SECONDS);
+      } catch (err) {
+        console.error('[user] Failed to set blacklist entry on suspend', err);
+      }
+
       notifyUser(updated, {
         sms: updated.phone_number ? { type: 'security.account_suspended', phone_number: updated.phone_number, first_name: updated.first_name } : undefined,
         mail: updated.email ? { type: 'security.account_suspended', email: updated.email, first_name: updated.first_name } : undefined,
@@ -347,7 +365,89 @@ export const UserService = {
       }
     });
 
-    return serializeUserFullProfile(updated, isAdmin);
+    return serializeUserFullProfile(updated, canSeeAcrossOrg);
+  },
+
+  // ---------------------------------------------------------------------------
+  // PUT /users/:id/roles — replace a user's roles
+  // ---------------------------------------------------------------------------
+
+  async assignRoles(
+    requestingUser: AuthenticatedUser,
+    targetUserId: string,
+    roleSlugs: string[],
+  ): Promise<Record<string, unknown>> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    if (!ability.can('assign_role', 'User')) throw new AppError('FORBIDDEN', 403);
+
+    const target = await prisma.user.findUnique({ where: { id: targetUserId, deleted_at: null }, ...withRoles });
+    if (!target) throw new AppError('USER_NOT_FOUND', 404);
+
+    // Object-level scope: org-scoped assigners only reach users in their own org.
+    if (!ability.can('assign_role', subject('User', target) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
+    }
+
+    // Resolve each slug to a role visible to the target (org-specific wins over global).
+    const resolved = await Promise.all(
+      roleSlugs.map((slug) =>
+        prisma.role.findFirst({
+          where: { slug, OR: [{ org_id: target.org_id ?? null }, { org_id: null }] },
+          orderBy: { org_id: 'asc' }, // non-null (org-specific) sorts first
+          include: { role_grants: true },
+        }),
+      ),
+    );
+    for (const r of resolved) if (!r) throw new AppError('ROLE_NOT_FOUND', 404);
+    const uniqueRoles = Array.from(
+      new Map((resolved as NonNullable<typeof resolved[0]>[]).map((r) => [r.id, r])).values(),
+    );
+
+    // Escalation guard: you can only assign roles whose grants you already hold.
+    const grantPatterns = uniqueRoles.flatMap((r) => r.role_grants.map((g) => g.pattern));
+    if (!canAssignGrants(ability, grantPatterns, PERMISSIONS)) {
+      throw new AppError('GRANT_SCOPE_ESCALATION', 403);
+    }
+
+    // Removing a user's last admin powers must not lock out the platform.
+    const losesAdmin = holdsPlatformAdmin(target) &&
+      !uniqueRoles.some((r) => r.role_grants.some((g) => g.pattern === PLATFORM_ADMIN_PATTERN));
+    if (losesAdmin) await assertNotLastPlatformAdmin(target);
+
+    const beforeRoles = target.user_roles.map((ur) => ur.role.slug).sort();
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.userRole.deleteMany({ where: { user_id: targetUserId } });
+      await tx.userRole.createMany({ data: uniqueRoles.map((r) => ({ user_id: targetUserId, role_id: r.id })) });
+      return tx.user.findUniqueOrThrow({ where: { id: targetUserId }, ...withRoles });
+    });
+
+    const afterRoles = updated.user_roles.map((ur) => ur.role.slug).sort();
+
+    setImmediate(() => {
+      publishAudit({
+        actor_id: requestingUser.id,
+        action: 'update',
+        resource: 'User',
+        resource_id: targetUserId,
+        delta: { roles: { from: beforeRoles, to: afterRoles } },
+      });
+      if (updated.user_type === 'staff') {
+        publishUserEvent({
+          type: 'staff.updated',
+          id: updated.id,
+          first_name: updated.first_name,
+          last_name: updated.last_name,
+          avatar_path: updated.avatar_path,
+          org_id: updated.org_id,
+          roles: afterRoles,
+          status: updated.status,
+          updated_at: updated.updated_at.toISOString(),
+        });
+      }
+    });
+
+    return serializeUserFullProfile(updated, getScopeFor(ability, 'assign_role', 'User') === 'platform');
   },
 
   // ---------------------------------------------------------------------------
@@ -355,17 +455,17 @@ export const UserService = {
   // ---------------------------------------------------------------------------
 
   async deleteUser(requestingUser: AuthenticatedUser, targetId: string): Promise<void> {
-    const target = await prisma.user.findUnique({ where: { id: targetId } });
+    const target = await prisma.user.findUnique({ where: { id: targetId }, ...withRoles });
     if (!target || target.status === 'deleted' || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
 
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const scope = getScopeFor(ability, 'delete', 'User');
-    if (scope === 'org' && target.org_id !== requestingUser.org_id) {
+    // Object-level scope enforced by CASL against the record (id / org_id).
+    if (!ability.can('delete', subject('User', target) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
-    if (scope === 'own' && target.id !== requestingUser.id) {
-      throw new AppError('FORBIDDEN', 403);
-    }
+
+    // Never delete the last platform admin.
+    await assertNotLastPlatformAdmin(target);
 
     await prisma.$transaction([
       prisma.user.update({
@@ -440,16 +540,12 @@ export const UserService = {
     }
 
     // Resolve each slug — prefer org-specific over global template.
-    // Passenger is excluded — cannot be assigned via invitation.
     const roleResults = await Promise.all(
       data.role_slugs.map((slug) =>
         prisma.role.findFirst({
-          where: {
-            slug,
-            OR: [{ org_id: org_id ?? null }, { org_id: null }],
-            NOT: { slug: 'passenger' },
-          },
+          where: { slug, OR: [{ org_id: org_id ?? null }, { org_id: null }] },
           orderBy: { org_id: 'asc' }, // non-null sorts first → org-specific wins
+          include: { role_grants: true },
         }),
       ),
     );
@@ -460,6 +556,15 @@ export const UserService = {
     const uniqueRoles = Array.from(
       new Map((roleResults as NonNullable<typeof roleResults[0]>[]).map((r) => [r.id, r])).values(),
     );
+
+    // Escalation guard (fixes invite→platform-admin hole): the inviter may only
+    // attach roles whose grants they already hold. Passenger and platform-admin
+    // are naturally excluded for an org admin because they lack those grants —
+    // no slug special-casing.
+    const invitedGrantPatterns = uniqueRoles.flatMap((r) => r.role_grants.map((g) => g.pattern));
+    if (!canAssignGrants(ability, invitedGrantPatterns, PERMISSIONS)) {
+      throw new AppError('GRANT_SCOPE_ESCALATION', 403);
+    }
 
     const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
@@ -665,31 +770,29 @@ export const UserService = {
     query: { page?: number; limit?: number; org_id?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const hasPlatformScope = getScopeFor(ability, 'invite', 'User') === 'platform';
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const where: Record<string, any> = { accepted_at: null };
+    // Org boundary comes from the caller's Invitation rule conditions.
+    const filters: Prisma.InvitationWhereInput[] = [
+      accessibleWhere(ability, 'read', 'Invitation') as Prisma.InvitationWhereInput,
+      { accepted_at: null },
+    ];
 
-    if (hasPlatformScope) {
-      if (query.org_id) where['org_id'] = query.org_id;
-    } else {
-      where['org_id'] = requestingUser.org_id;
-    }
-
+    if (query.org_id) filters.push({ org_id: query.org_id });
     if (query.q) {
       const q = query.q;
-      if (!where['AND']) where['AND'] = [];
-      where['AND'].push({ OR: [
+      filters.push({ OR: [
         { first_name:   { contains: q, mode: 'insensitive' } },
         { last_name:    { contains: q, mode: 'insensitive' } },
         { email:        { contains: q, mode: 'insensitive' } },
         { phone_number: { contains: q, mode: 'insensitive' } },
       ]});
     }
+
+    const where: Prisma.InvitationWhereInput = { AND: filters };
 
     const [invitations, total] = await Promise.all([
       prisma.invitation.findMany({
@@ -760,21 +863,25 @@ export const UserService = {
       const roleResults = await Promise.all(
         data.role_slugs.map((slug) =>
           prisma.role.findFirst({
-            where: {
-              slug,
-              OR: [{ org_id: invitation.org_id ?? null }, { org_id: null }],
-              NOT: { slug: 'passenger' },
-            },
+            where: { slug, OR: [{ org_id: invitation.org_id ?? null }, { org_id: null }] },
             orderBy: { org_id: 'asc' },
+            include: { role_grants: true },
           }),
         ),
       );
       for (const role of roleResults) {
         if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
       }
-      uniqueRoles = Array.from(
+      const resolved = Array.from(
         new Map((roleResults as NonNullable<typeof roleResults[0]>[]).map((r) => [r.id, r])).values(),
       );
+
+      // Escalation guard — same rule as invite/assign: only grants you hold.
+      const grantPatterns = resolved.flatMap((r) => r.role_grants.map((g) => g.pattern));
+      if (!canAssignGrants(ability, grantPatterns, PERMISSIONS)) {
+        throw new AppError('GRANT_SCOPE_ESCALATION', 403);
+      }
+      uniqueRoles = resolved;
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -1075,7 +1182,11 @@ export const UserService = {
   // with action 'change_password' before invoking this method.
   // ---------------------------------------------------------------------------
 
-  async changePassword(userId: string, newPassword: string): Promise<void> {
+  async changePassword(
+    userId: string,
+    newPassword: string,
+    opts: { device_name?: string; ip_address?: string; user_agent?: string; clientType?: ClientType; reqLocale?: string } = {},
+  ): Promise<AuthTokens> {
     const password_hash = await hashPassword(newPassword);
 
     const user = await prisma.user.update({
@@ -1084,20 +1195,26 @@ export const UserService = {
       ...withRoles,
     });
 
-    // Revoke all refresh tokens so other sessions are forced to re-authenticate
-    await prisma.refreshToken.updateMany({
-      where: { user_id: userId, revoked_at: null },
-      data: { revoked_at: new Date() },
+    // "Sign out everywhere except this device" — kill every existing session
+    // (other devices: refresh revoked + access tokens blacklisted) and mint a
+    // fresh pair for the current device so the caller stays logged in.
+    const tokens = await TokenService.rotateAllSessions(user, {
+      device_name: opts.device_name,
+      ip_address: opts.ip_address,
+      user_agent: opts.user_agent,
+      clientType: opts.clientType,
     });
 
     notifyUser(user, {
       sms: user.phone_number ? { type: 'security.password_changed', phone_number: user.phone_number, first_name: user.first_name } : undefined,
       mail: user.email ? { type: 'security.password_changed', email: user.email, first_name: user.first_name } : undefined,
       push: { type: 'security.password_changed' },
-    });
+    }, opts.reqLocale);
 
     publishUserDomainEvent({ type: 'user.password_changed', id: userId, user_type: user.user_type });
     publishAudit({ actor_id: userId, action: 'change_password', resource: 'User', resource_id: userId });
+
+    return tokens;
   },
 
   // ---------------------------------------------------------------------------
@@ -1151,21 +1268,23 @@ export const UserService = {
     const ability = buildAbilityFromRules(requestingUser.rules);
     if (!ability.can('assign_role', 'User')) throw new AppError('FORBIDDEN', 403);
 
-    const isAdmin = getScopeFor(ability, 'assign_role', 'User') === 'platform';
+    const canSeeAcrossOrg = getScopeFor(ability, 'assign_role', 'User') === 'platform';
 
     const target = await prisma.user.findUnique({ where: { id: targetUserId, deleted_at: null }, ...withRoles });
     if (!target) throw new AppError('USER_NOT_FOUND', 404);
 
-    if (!isAdmin && target.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+    // Object-level scope enforced by CASL against the record (id / org_id).
+    if (!ability.can('assign_role', subject('User', target) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
+    }
 
     for (const pattern of patterns) {
       if (!isValidPattern(pattern, PERMISSIONS)) throw new AppError('INVALID_GRANT_PATTERN', 422);
     }
 
-    if (!isAdmin) {
-      if (SCOPE_RANK[maxScopeFromPatterns(patterns)] >= SCOPE_RANK['platform']) {
-        throw new AppError('GRANT_SCOPE_ESCALATION', 403);
-      }
+    // Escalation guard: you can only grant power you already hold.
+    if (!canAssignGrants(ability, patterns, PERMISSIONS)) {
+      throw new AppError('GRANT_SCOPE_ESCALATION', 403);
     }
 
     const existingPatterns = target.user_grants.map((g) => g.pattern);
@@ -1176,7 +1295,7 @@ export const UserService = {
     const toAdd = compressed.filter((p) => !existingSet.has(p));
 
     if (toAdd.length === 0 && toDelete.length === 0) {
-      return serializeUserFullProfile(target, isAdmin);
+      return serializeUserFullProfile(target, canSeeAcrossOrg);
     }
 
     await prisma.$transaction(async (tx) => {
@@ -1216,7 +1335,7 @@ export const UserService = {
       }
     });
 
-    return serializeUserFullProfile(updated, isAdmin);
+    return serializeUserFullProfile(updated, canSeeAcrossOrg);
   },
 
   // ---------------------------------------------------------------------------
@@ -1235,14 +1354,13 @@ export const UserService = {
     if (!grant || grant.user_id !== targetUserId) throw new AppError('GRANT_NOT_FOUND', 404);
     if (grant.is_managed) throw new AppError('MANAGED_GRANT_IMMUTABLE', 403);
 
-    const isAdmin = getScopeFor(ability, 'assign_role', 'User') === 'platform';
-    const target = await prisma.user.findUnique({
-      where: { id: targetUserId },
-      select: { org_id: true, deleted_at: true },
-    });
+    const target = await prisma.user.findUnique({ where: { id: targetUserId }, ...withRoles });
     if (!target || target.deleted_at) throw new AppError('USER_NOT_FOUND', 404);
 
-    if (!isAdmin && target.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+    // Object-level scope enforced by CASL against the record (id / org_id).
+    if (!ability.can('assign_role', subject('User', target) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
+    }
 
     await prisma.userGrant.delete({ where: { id: grantId } });
 

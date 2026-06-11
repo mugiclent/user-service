@@ -5,6 +5,7 @@ import { OtpService } from './otp.service.js';
 import { publishSms, publishMail, publishAudit, notifyUser, publishUserDomainEvent } from '../utils/publishers.js';
 import type { Locale } from '../utils/publishers.js';
 import { normalizePhone } from '../utils/phone.js';
+import { TokenService } from './token.service.js';
 
 const isEmail = (identifier: string): boolean => identifier.includes('@');
 
@@ -14,7 +15,7 @@ export const PasswordService = {
    * SMS users receive otp.sms; email users receive otp.mail.
    * Always silent — never reveals whether account exists.
    */
-  async forgotPassword(identifier: string): Promise<void> {
+  async forgotPassword(identifier: string, reqLocale?: string): Promise<void> {
     const viaEmail = isEmail(identifier);
     const normalized = viaEmail ? identifier : normalizePhone(identifier);
 
@@ -26,7 +27,9 @@ export const PasswordService = {
 
     const { code, expiresIn } = await OtpService.create(user.id, 'password_reset');
 
-    const locale = user.locale as Locale;
+    // Anonymous flow — honour the language the user picked in the browser
+    // (x-user-locale, resolved by the gateway) over the saved account locale.
+    const locale = (reqLocale ?? user.locale) as Locale;
     if (viaEmail && user.email) {
       publishMail({
         type: 'otp.mail',
@@ -54,7 +57,7 @@ export const PasswordService = {
    * Works for both SMS (phone identifier) and email identifiers.
    * Revokes all sessions on success.
    */
-  async resetPassword(identifier: string, otp: string, newPassword: string): Promise<void> {
+  async resetPassword(identifier: string, otp: string, newPassword: string, reqLocale?: string): Promise<void> {
     const viaEmail = isEmail(identifier);
     const normalized = viaEmail ? identifier : normalizePhone(identifier);
 
@@ -68,19 +71,18 @@ export const PasswordService = {
 
     const passwordHash = await hashPassword(newPassword);
 
-    await prisma.$transaction([
-      prisma.user.update({ where: { id: user.id }, data: { password_hash: passwordHash } }),
-      prisma.refreshToken.updateMany({
-        where: { user_id: user.id, revoked_at: null },
-        data: { revoked_at: new Date() },
-      }),
-    ]);
+    await prisma.user.update({ where: { id: user.id }, data: { password_hash: passwordHash } });
+
+    // Forgot-password reset: the user is anonymous (no current session to keep),
+    // so kill every session outright — refresh revoked + blacklist:user fires, so
+    // in-flight access tokens die too. They log in fresh with the new password.
+    await TokenService.revokeAllForUser(user.id);
 
     notifyUser(user, {
       sms: user.phone_number ? { type: 'security.password_changed', phone_number: user.phone_number, first_name: user.first_name } : undefined,
       mail: user.email ? { type: 'security.password_changed', email: user.email, first_name: user.first_name } : undefined,
       push: { type: 'security.password_changed' },
-    });
+    }, reqLocale);
 
     publishUserDomainEvent({ type: 'user.password_changed', id: user.id, user_type: user.user_type });
 

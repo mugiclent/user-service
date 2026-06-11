@@ -6,14 +6,13 @@ import { slugify } from '../utils/slugify.js';
 import { publishAudit } from '../utils/publishers.js';
 import {
   isValidPattern,
-  maxScopeFromPatterns,
+  canAssignGrants,
   compressPatterns,
-  SCOPE_RANK,
   buildAbilityFromRules,
+  getScopeFor,
 } from '../utils/ability.js';
 import type { Subjects } from '../utils/ability.js';
-import { getScopeFor } from '../utils/ability.js';
-import { PERMISSIONS } from '../loaders/bootstrap.js';
+import { PERMISSIONS } from '../utils/catalog.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,32 +68,38 @@ export const RoleService = {
     query: { org_id?: string; q?: string },
   ): Promise<{ data: Record<string, unknown>[] }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = getScopeFor(ability, 'read', 'Role') === 'platform';
+    const canSeeAllOrgs = getScopeFor(ability, 'read', 'Role') === 'platform';
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const where: Record<string, any> = {};
 
-    if (platform) {
-      // Platform admin sees everything including the passenger system role
+    if (canSeeAllOrgs) {
       if (query.org_id) where['org_id'] = query.org_id;
     } else {
-      // All other staff: global templates (org_id=null) + their own org's roles,
-      // excluding the passenger system role
+      // Other staff see global templates (org_id=null) + their own org's roles.
       where['OR'] = [{ org_id: null }, { org_id: requestingUser.org_id ?? null }];
-      where['slug'] = { not: 'passenger' };
     }
 
     if (query.q) {
-      if (!where['AND']) where['AND'] = [];
-      where['AND'].push({ name: { contains: query.q, mode: 'insensitive' } });
+      where['AND'] = [{ name: { contains: query.q, mode: 'insensitive' } }];
     }
 
     const roles = await prisma.role.findMany({
       where,
       orderBy: [{ org_id: 'asc' }, { name: 'asc' }],
+      ...withGrants,
     });
 
-    return { data: roles.map(serializeRoleSummary) };
+    // Annotate each role with whether the caller may assign it — this is what
+    // drives the role-builder UI, and it is the SAME guard enforced on write.
+    // (Org admins simply won't be able to assign e.g. passenger or platform-admin
+    //  because they don't hold those grants — no slug special-casing needed.)
+    return {
+      data: roles.map((r) => ({
+        ...serializeRoleSummary(r),
+        can_assign: canAssignGrants(ability, r.role_grants.map((g) => g.pattern), PERMISSIONS),
+      })),
+    };
   },
 
   // -------------------------------------------------------------------------
@@ -106,9 +111,7 @@ export const RoleService = {
     data: { name: string; slug?: string; description?: string; org_id?: string; patterns: string[] },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = getScopeFor(ability, 'manage', 'Role') === 'platform';
-
-    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('create', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     // Validate every pattern against the catalog
     for (const pattern of data.patterns) {
@@ -117,16 +120,14 @@ export const RoleService = {
       }
     }
 
-    // Privilege-escalation guard: org admins cannot create platform-scope grants
-    if (!platform) {
-      const maxScope = maxScopeFromPatterns(data.patterns);
-      if (SCOPE_RANK[maxScope] >= SCOPE_RANK['platform']) {
-        throw new AppError('GRANT_SCOPE_ESCALATION', 403);
-      }
+    // Escalation guard: you can only grant power you already hold.
+    if (!canAssignGrants(ability, data.patterns, PERMISSIONS)) {
+      throw new AppError('GRANT_SCOPE_ESCALATION', 403);
     }
 
-    // Determine org_id for the new role
-    const org_id = platform
+    // Only platform-scope role managers may target an arbitrary org.
+    const canTargetAnyOrg = getScopeFor(ability, 'create', 'Role') === 'platform';
+    const org_id = canTargetAnyOrg
       ? (data.org_id ?? null)
       : requestingUser.org_id!;
 
@@ -164,21 +165,21 @@ export const RoleService = {
     roleId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = getScopeFor(ability, 'read', 'Role') === 'platform';
+    const canSeeAllOrgs = getScopeFor(ability, 'read', 'Role') === 'platform';
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
 
-    // The passenger role is an internal system role — only platform admins can inspect it
-    if (!platform && role.slug === 'passenger') throw new AppError('FORBIDDEN', 403);
-
-    // Global roles (org_id=null) are visible to everyone.
-    // Org-scoped roles are visible only to members of that org (or platform admin).
-    if (!platform && role.org_id !== null && role.org_id !== requestingUser.org_id) {
+    // Global templates (org_id=null) are visible to all staff; org-scoped roles
+    // only to members of that org (or platform-scope readers).
+    if (!canSeeAllOrgs && role.org_id !== null && role.org_id !== requestingUser.org_id) {
       throw new AppError('FORBIDDEN', 403);
     }
 
-    return serializeRole(role);
+    return {
+      ...serializeRole(role),
+      can_assign: canAssignGrants(ability, role.role_grants.map((g) => g.pattern), PERMISSIONS),
+    };
   },
 
   // -------------------------------------------------------------------------
@@ -191,17 +192,15 @@ export const RoleService = {
     data: { name?: string; description?: string },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-
-    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('update', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
     if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    // Platform admin can manage any role; org admin only their own org's roles
-    // (the extra read Rule for global templates does NOT grant write access).
-    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
+    // Object-level scope: org-scope editors only reach their own org's roles
+    // (global templates have org_id=null and never match an org condition).
+    if (!ability.can('update', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 
@@ -235,15 +234,13 @@ export const RoleService = {
 
   async deleteRole(requestingUser: AuthenticatedUser, roleId: string): Promise<void> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-
-    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('delete', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const role = await prisma.role.findUnique({ where: { id: roleId } });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
     if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
+    if (!ability.can('delete', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 
@@ -270,16 +267,13 @@ export const RoleService = {
     patterns: string[],
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const platform = getScopeFor(ability, 'manage', 'Role') === 'platform';
-
-    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('update', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
     if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
+    if (!ability.can('update', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 
@@ -288,12 +282,9 @@ export const RoleService = {
       if (!isValidPattern(pattern, PERMISSIONS)) throw new AppError('INVALID_GRANT_PATTERN', 422);
     }
 
-    // Escalation guard for org admins
-    if (!platform) {
-      const allPatterns = [...role.role_grants.map((g) => g.pattern), ...patterns];
-      if (SCOPE_RANK[maxScopeFromPatterns(allPatterns)] >= SCOPE_RANK['platform']) {
-        throw new AppError('GRANT_SCOPE_ESCALATION', 403);
-      }
+    // Escalation guard: every new grant must be one the caller already holds.
+    if (!canAssignGrants(ability, patterns, PERMISSIONS)) {
+      throw new AppError('GRANT_SCOPE_ESCALATION', 403);
     }
 
     // Compute compressed pattern set after adding the new patterns, then diff
@@ -343,8 +334,7 @@ export const RoleService = {
     grantId: string,
   ): Promise<void> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-
-    if (!ability.can('manage', 'Role')) throw new AppError('FORBIDDEN', 403);
+    if (!ability.can('update', 'Role')) throw new AppError('FORBIDDEN', 403);
 
     const grant = await prisma.roleGrant.findUnique({ where: { id: grantId } });
     if (!grant || grant.role_id !== roleId) throw new AppError('GRANT_NOT_FOUND', 404);
@@ -352,8 +342,8 @@ export const RoleService = {
 
     const role = await prisma.role.findUnique({ where: { id: roleId } });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.slug === 'passenger') throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
-    if (!ability.can('manage', subject('Role', role) as unknown as Subjects)) {
+    if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
+    if (!ability.can('update', subject('Role', role) as unknown as Subjects)) {
       throw new AppError('FORBIDDEN', 403);
     }
 

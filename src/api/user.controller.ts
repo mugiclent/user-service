@@ -6,6 +6,8 @@ import { AppError } from '../utils/AppError.js';
 import { consumeSudoToken } from '../middleware/consumeSudoToken.js';
 import { getRedisClient } from '../loaders/redis.js';
 import type { SudoAction } from '../utils/sudoToken.js';
+import { sendRefreshResponse } from '../utils/sendAuthResponse.js';
+import type { ClientType } from '../services/token.service.js';
 
 export const UserController = {
   async getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -40,8 +42,16 @@ export const UserController = {
           'change_password',
           getRedisClient(),
         );
-        await UserService.changePassword(user.id, body.password);
-        res.status(204).end();
+        const clientType: ClientType = req.headers['x-client-type'] === 'mobile' ? 'mobile' : 'web';
+        const tokens = await UserService.changePassword(user.id, body.password, {
+          user_agent: req.headers['user-agent'],
+          ip_address: req.ip,
+          clientType,
+          reqLocale: user.locale,
+        });
+        // Stay logged in on THIS device with a brand-new session: web gets fresh
+        // cookies (204), mobile gets the new tokens in the body (200).
+        sendRefreshResponse(req, res, tokens);
         return;
       }
 
@@ -138,8 +148,18 @@ export const UserController = {
         last_name?: string;
         status?: string;
         org_id?: string;
-        role_slugs?: string[];
       });
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async assignRoles(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const { role_slugs } = req.body as { role_slugs: string[] };
+      const result = await UserService.assignRoles(user, req.params['id']!, role_slugs);
       res.status(200).json(result);
     } catch (err) {
       next(err);

@@ -13,7 +13,9 @@ import {
   serializeOrgCreated,
   serializeOrgFull,
 } from '../models/serializers.js';
+import { subject } from '@casl/ability';
 import { buildAbilityFromRules, getScopeFor } from '../utils/ability.js';
+import type { Subjects } from '../utils/ability.js';
 
 // ---------------------------------------------------------------------------
 // Helpers — cooperative notification recipients
@@ -280,7 +282,7 @@ export const OrgService = {
     orgId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const admin = getScopeFor(ability, 'read', 'Org') === 'platform';
+    const canSeeAllOrgs = getScopeFor(ability, 'read', 'Org') === 'platform';
 
     const org = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
@@ -288,10 +290,12 @@ export const OrgService = {
     });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
-    // Non-admin can only view their own org
-    if (!admin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
+    // Object-level scope: own/org readers only reach their own org (Org id condition).
+    if (!ability.can('read', subject('Org', org) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
+    }
 
-    return serializeOrgFull(org, admin);
+    return serializeOrgFull(org, canSeeAllOrgs);
   },
 
   // ---------------------------------------------------------------------------
@@ -319,20 +323,24 @@ export const OrgService = {
     },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const admin = getScopeFor(ability, 'update', 'Org') === 'platform';
-    const orgAdmin = !admin && ability.can('update', 'Org') && !!requestingUser.org_id;
+    const isPlatform = getScopeFor(ability, 'update', 'Org') === 'platform';
 
-    if (!admin && !orgAdmin) throw new AppError('FORBIDDEN', 403);
-    if (orgAdmin && requestingUser.org_id !== orgId) throw new AppError('FORBIDDEN', 403);
-
-    // org_admin cannot change status — only katisha_admin can
-    if (!admin && data.status !== undefined) throw new AppError('FORBIDDEN', 403);
+    // Coarse gate first (don't leak org existence to callers with no update power).
+    if (!ability.can('update', 'Org')) throw new AppError('FORBIDDEN', 403);
 
     const existing = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
       select: { id: true, logo_path: true, name: true, contact_email: true, contact_phone: true, address: true, status: true, rejection_reason: true, org_type: true, cooperative_approved_at: true, parent_org_id: true, story: true, cancellations_allowed: true, tin: true },
     });
     if (!existing) throw new AppError('ORG_NOT_FOUND', 404);
+
+    // Object-level scope: org-scope editors only reach their own org (Org id condition).
+    if (!ability.can('update', subject('Org', existing) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
+    }
+
+    // Only platform-scope editors may change status.
+    if (!isPlatform && data.status !== undefined) throw new AppError('FORBIDDEN', 403);
     const oldLogoPath = existing.logo_path;
 
     const updateData: Record<string, unknown> = {};
@@ -350,12 +358,12 @@ export const OrgService = {
     if (data.cancellations_allowed !== undefined) updateData['cancellations_allowed'] = data.cancellations_allowed;
     if (data.bank_id !== undefined) updateData['bank_id'] = data.bank_id;
     if (data.account_number !== undefined) updateData['account_number'] = data.account_number;
-    if (data.parent_org_id !== undefined && admin) {
+    if (data.parent_org_id !== undefined && isPlatform) {
       if (data.parent_org_id === null && existing.org_type === 'coop_member') throw new AppError('COOP_MEMBER_REQUIRES_PARENT', 400);
       updateData['parent_org_id'] = data.parent_org_id;
     }
 
-    if (data.status !== undefined && admin) {
+    if (data.status !== undefined && isPlatform) {
       // coop_member requires cooperative sign-off before admin can activate
       if (data.status === 'active' && existing.org_type === 'coop_member' && !existing.cooperative_approved_at) {
         throw new AppError('COOPERATIVE_APPROVAL_REQUIRED', 400);
@@ -381,7 +389,7 @@ export const OrgService = {
     });
 
     // On activation: create org-admin invitation and send approval notification
-    if (data.status === 'active' && admin) {
+    if (data.status === 'active' && isPlatform) {
       const orgAdminRole = await prisma.role.findFirst({ where: { slug: 'org-admin', org_id: null } });
       if (orgAdminRole) {
         const rawToken = generateRawToken();
@@ -523,7 +531,7 @@ export const OrgService = {
         });
       }
     });
-    return serializeOrgFull(org, admin);
+    return serializeOrgFull(org, isPlatform);
   },
 
   // ---------------------------------------------------------------------------

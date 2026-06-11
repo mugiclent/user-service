@@ -6,6 +6,19 @@ import { sendAuthResponse, sendRefreshResponse, clearAuthCookies } from '../util
 import type { AuthenticatedUser } from '../models/index.js';
 import { prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
+import type { ClientType } from '../services/token.service.js';
+
+/** Web (cookies, tight lifetimes) unless the client self-identifies as mobile. */
+const clientTypeOf = (req: Request): ClientType =>
+  req.headers['x-client-type'] === 'mobile' ? 'mobile' : 'web';
+
+/**
+ * The gateway-resolved request locale (X-Locale > JWT > Accept-Language). Used to
+ * drive notifications for anonymous self-actions (signup/login/reset OTPs), where
+ * there is no saved account locale yet.
+ */
+const localeOf = (req: Request): string | undefined =>
+  req.headers?.['x-user-locale'] as string | undefined;
 
 export const AuthController = {
   async login(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -16,7 +29,7 @@ export const AuthController = {
         device_name?: string;
         user_type: 'passenger' | 'staff';
       };
-      const result = await AuthService.login(identifier, password, user_type, device_name, req.ip, req.headers['user-agent']);
+      const result = await AuthService.login(identifier, password, user_type, device_name, req.ip, req.headers['user-agent'], clientTypeOf(req), localeOf(req));
 
       if (result.requires_verification) {
         // Account not yet verified — OTP sent to entered channel
@@ -52,7 +65,7 @@ export const AuthController = {
         otp: string;
         device_name?: string;
       };
-      const { user, tokens } = await AuthService.verify2fa(user_id, otp, device_name, req.ip, req.headers['user-agent']);
+      const { user, tokens } = await AuthService.verify2fa(user_id, otp, device_name, req.ip, req.headers['user-agent'], clientTypeOf(req));
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
     } catch (err) {
       next(err);
@@ -109,7 +122,7 @@ export const AuthController = {
         channel: 'phone' | 'email';
         device_name?: string;
       };
-      const { user, tokens } = await AuthService.verifyLogin(user_id, otp, channel, device_name, req.ip, req.headers['user-agent']);
+      const { user, tokens } = await AuthService.verifyLogin(user_id, otp, channel, device_name, req.ip, req.headers['user-agent'], clientTypeOf(req), localeOf(req));
       sendAuthResponse(req, res, { user: serializeUserForAuth(user), tokens });
     } catch (err) {
       next(err);
@@ -132,7 +145,7 @@ export const AuthController = {
 
   async forgotPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      await AuthService.forgotPassword((req.body as { identifier: string }).identifier);
+      await AuthService.forgotPassword((req.body as { identifier: string }).identifier, localeOf(req));
       res.status(204).end();
     } catch (err) {
       next(err);
@@ -142,7 +155,7 @@ export const AuthController = {
   async resetPassword(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const { identifier, otp, new_password } = req.body as { identifier: string; otp: string; new_password: string };
-      await AuthService.resetPassword(identifier, otp, new_password);
+      await AuthService.resetPassword(identifier, otp, new_password, localeOf(req));
       clearAuthCookies(res);
       res.status(204).end();
     } catch (err) {
@@ -167,7 +180,7 @@ export const AuthController = {
         return;
       }
 
-      const { tokens } = await AuthService.refresh(rawToken);
+      const { tokens } = await AuthService.refresh(rawToken, clientTypeOf(req));
       sendRefreshResponse(req, res, tokens);
     } catch (err) {
       next(err);

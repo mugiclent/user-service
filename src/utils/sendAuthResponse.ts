@@ -49,7 +49,9 @@ export const sendAuthResponse = (
       secure: config.cookie.secure,
       sameSite: 'lax',
       path: '/api/v1/auth/refresh',
-      maxAge: config.jwt.refreshTtlMs,
+      // Web sessions are short-lived (sliding idle window); the cookie should not
+      // outlive the refresh token it carries.
+      maxAge: config.jwt.session.web.idleMs,
     })
     .status(200)
     .json({ user });
@@ -101,7 +103,9 @@ export const sendRefreshResponse = (
       secure: config.cookie.secure,
       sameSite: 'lax',
       path: '/api/v1/auth/refresh',
-      maxAge: config.jwt.refreshTtlMs,
+      // Web sessions are short-lived (sliding idle window); the cookie should not
+      // outlive the refresh token it carries.
+      maxAge: config.jwt.session.web.idleMs,
     })
     .status(204)
     .end();

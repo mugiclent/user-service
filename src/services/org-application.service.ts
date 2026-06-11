@@ -1,82 +1,76 @@
 import { prisma } from '../models/index.js';
+import type { Prisma } from '../models/index.js';
 import { slugify } from '../utils/slugify.js';
 import { AppError } from '../utils/AppError.js';
 import { OrgOtpService } from './org-otp.service.js';
 import { publishMail, publishSms, publishAudit, notifyUser } from '../utils/publishers.js';
 import type { Locale, NotifiableUser } from '../utils/publishers.js';
+import { buildRulesFromGrants, buildAbilityFromRules, getScopeFor, SCOPE_RANK } from '../utils/ability.js';
+import type { PermissionScope } from '../utils/ability.js';
+import { PERMISSIONS } from '../utils/catalog.js';
 
 // ---------------------------------------------------------------------------
 // Helpers — notification recipients
 // ---------------------------------------------------------------------------
+//
+// Recipients are resolved through each candidate's *ability*, never by matching
+// grant pattern strings. A user "receives" a notification at a scope iff their
+// expanded rules grant `receive` on `Notification` at that scope or broader —
+// so `*:*:platform`, `notification:*:org`, `notification:receive:org`, and any
+// compressed/wildcard form all resolve identically. Compression-safe by design.
 
-const PLATFORM_NOTIFICATION_PATTERNS = [
-  '*:*:platform',
-  'Notification:*:platform',
-  '*:receive:platform',
-  'Notification:receive:platform',
-];
+const withGrants = {
+  include: {
+    user_roles: { include: { role: { include: { role_grants: true } } } },
+    user_grants: true,
+  },
+} as const;
 
-const getPlatformNotificationRecipients = () =>
-  prisma.user.findMany({
-    where: {
-      status: 'active',
-      deleted_at: null,
-      OR: [
-        {
-          user_roles: {
-            some: {
-              role: {
-                role_grants: {
-                  some: { pattern: { in: PLATFORM_NOTIFICATION_PATTERNS } },
-                },
-              },
-            },
-          },
-        },
-        {
-          user_grants: {
-            some: { pattern: { in: PLATFORM_NOTIFICATION_PATTERNS } },
-          },
-        },
-      ],
-    },
-    select: { email: true, phone_number: true, fcm_token: true, notif_channel: true, locale: true },
-  });
+type CandidateUser = Awaited<ReturnType<typeof fetchCandidates>>[number];
 
-const COOP_NOTIFICATION_PATTERNS = [
-  '*:*:org',
-  'Notification:*:org',
-  '*:receive:org',
-  'Notification:receive:org',
-];
+const fetchCandidates = (where: Prisma.UserWhereInput) =>
+  prisma.user.findMany({ where, ...withGrants });
 
-const getCoopNotificationRecipients = (coopOrgId: string) =>
-  prisma.user.findMany({
-    where: {
-      org_id: coopOrgId,
-      status: 'active',
-      deleted_at: null,
-      OR: [
-        {
-          user_roles: {
-            some: {
-              role: {
-                role_grants: {
-                  some: { pattern: { in: COOP_NOTIFICATION_PATTERNS } },
-                },
-              },
-            },
-          },
-        },
-        {
-          user_grants: {
-            some: { pattern: { in: COOP_NOTIFICATION_PATTERNS } },
-          },
-        },
-      ],
-    },
-    select: { email: true, phone_number: true, fcm_token: true, notif_channel: true, locale: true },
-  });
+/** Highest scope at which this user receives Notifications, or null. */
+const notificationReceiveScope = (user: CandidateUser): PermissionScope | null => {
+  const patterns = new Set<string>();
+  for (const ur of user.user_roles) for (const g of ur.role.role_grants) patterns.add(g.pattern);
+  for (const g of user.user_grants) patterns.add(g.pattern);
+
+  const ability = buildAbilityFromRules(
+    buildRulesFromGrants([...patterns], user.id, user.org_id, PERMISSIONS),
+  );
+  return getScopeFor(ability, 'receive', 'Notification');
+};
+
+const toNotifiable = (u: CandidateUser): NotifiableUser => ({
+  email: u.email,
+  phone_number: u.phone_number,
+  fcm_token: u.fcm_token,
+  notif_channel: u.notif_channel,
+  locale: u.locale,
+});
+
+/** Staff who receive platform-scoped notifications (i.e. platform admins). */
+const getPlatformNotificationRecipients = async (): Promise<NotifiableUser[]> => {
+  // Narrow at the DB by membership facts (staff), then decide by ability — not by
+  // grant strings. Platform-notification events are infrequent, so this is cheap.
+  const candidates = await fetchCandidates({ user_type: 'staff', status: 'active', deleted_at: null });
+  return candidates
+    .filter((u) => notificationReceiveScope(u) === 'platform')
+    .map(toNotifiable);
+};
+
+/** Members of a cooperative who receive org-scoped (or broader) notifications. */
+const getCoopNotificationRecipients = async (coopOrgId: string): Promise<NotifiableUser[]> => {
+  const candidates = await fetchCandidates({ org_id: coopOrgId, status: 'active', deleted_at: null });
+  return candidates
+    .filter((u) => {
+      const scope = notificationReceiveScope(u);
+      return scope !== null && SCOPE_RANK[scope] >= SCOPE_RANK['org'];
+    })
+    .map(toNotifiable);
+};
 
 // ---------------------------------------------------------------------------
 // OrgApplicationService

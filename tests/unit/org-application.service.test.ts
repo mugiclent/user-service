@@ -11,9 +11,11 @@ const mockTxOrgDocCreateMany = vi.fn().mockResolvedValue({ count: 2 });
 const mockOrgFindFirst = vi.fn();
 const mockOrgFindUnique = vi.fn();
 const mockOrgUpdate = vi.fn().mockResolvedValue({});
+// Candidates carry grants now — recipients are resolved through their ability
+// (receive Notification at platform scope), never by matching pattern strings.
 const mockUserFindMany = vi.fn().mockResolvedValue([
-  { email: 'admin1@katisha.com', phone_number: '+250788000010', notif_channel: ['sms', 'email'], fcm_token: null, locale: 'rw' },
-  { email: 'admin2@katisha.com', phone_number: '+250788000011', notif_channel: ['email'], fcm_token: null, locale: 'rw' },
+  { id: 'admin-1', org_id: null, email: 'admin1@katisha.com', phone_number: '+250788000010', notif_channel: ['sms', 'email'], fcm_token: null, locale: 'rw', user_roles: [], user_grants: [{ pattern: '*:*:platform' }] },
+  { id: 'admin-2', org_id: null, email: 'admin2@katisha.com', phone_number: '+250788000011', notif_channel: ['email'], fcm_token: null, locale: 'rw', user_roles: [], user_grants: [{ pattern: '*:*:platform' }] },
 ]);
 const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
   const tx = {
@@ -243,6 +245,21 @@ describe('OrgApplicationService.verifyContact', () => {
     expect(mockPublishAudit).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'verify_contact', resource: 'Org', resource_id: 'org-1' }),
     );
+  });
+
+  it('resolves recipients via the ability — compression-safe, no string matching', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg());
+    const u = (over: Record<string, unknown>) => ({
+      id: 'x', org_id: null, email: 'x@k.com', phone_number: null, notif_channel: ['email'], fcm_token: null, locale: 'rw',
+      user_roles: [], user_grants: [], ...over,
+    });
+    mockUserFindMany.mockResolvedValueOnce([
+      u({ id: 'a', user_grants: [{ pattern: 'notification:*:platform' }] }),                    // wildcard action → platform receive ✓
+      u({ id: 'b', user_roles: [{ role: { role_grants: [{ pattern: '*:*:platform' }] } }] }),    // compressed god-mode → ✓
+      u({ id: 'c', user_grants: [{ pattern: 'notification:receive:own' }] }),                    // own scope only → ✗ (excluded)
+    ]);
+    await OrgApplicationService.verifyContact('org-1', '123456', 'phone');
+    expect(mockNotifyUser).toHaveBeenCalledTimes(2); // a + b, not c
   });
 });
 

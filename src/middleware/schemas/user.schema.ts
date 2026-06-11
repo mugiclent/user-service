@@ -30,8 +30,12 @@ export const updateUserSchema = Joi.object({
   last_name: Joi.string().trim().max(100).optional(),
   status: Joi.string().valid('active', 'suspended').optional(),
   org_id: Joi.string().uuid().optional(),
-  role_slugs: Joi.array().items(Joi.string().trim()).optional(),
 }).min(1);
+
+// PUT /users/:id/roles — dedicated role assignment (separate from profile edits)
+export const assignRolesSchema = Joi.object({
+  role_slugs: Joi.array().items(Joi.string().trim()).required(),
+});
 
 export const inviteUserSchema = Joi.object({
   first_name: Joi.string().trim().max(100).required(),

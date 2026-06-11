@@ -56,6 +56,7 @@ const mockRefreshTokenUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockInvitationFindUnique = vi.fn();
 const mockOrgFindUnique = vi.fn().mockResolvedValue({ status: 'active' });
 
+const mockRoleFindFirst = vi.fn();
 const mockTxUserUpdate = vi.fn();
 const mockTxUserCreate = vi.fn();
 const mockTxUserFindUniqueOrThrow = vi.fn();
@@ -83,8 +84,10 @@ vi.mock('../../src/models/index.js', () => ({
       findUniqueOrThrow: mockUserFindUniqueOrThrow,
       findUnique: mockUserFindUnique,
       findFirst: mockUserFindFirst,
+      count: vi.fn().mockResolvedValue(1),
       update: mockUserUpdate,
     },
+    role: { findFirst: mockRoleFindFirst },
     invitation: { findUnique: mockInvitationFindUnique, findFirst: vi.fn().mockResolvedValue(null) },
     org: { findUnique: mockOrgFindUnique },
     refreshToken: { updateMany: mockRefreshTokenUpdateMany },
@@ -236,7 +239,7 @@ describe('UserService domain events — staff.suspended (updateUser)', () => {
     const target = makeStaffUser({ id: 'user-2' });
     const updated = makeStaffUser({ id: 'user-2', status: 'suspended' });
     mockUserFindUnique.mockResolvedValueOnce(target);
-    mockTxUserUpdate.mockResolvedValueOnce(updated);
+    mockUserUpdate.mockResolvedValueOnce(updated);
 
     await UserService.updateUser(adminUser as never, 'user-2', { status: 'suspended' });
     await flushImmediate();
@@ -250,7 +253,7 @@ describe('UserService domain events — staff.suspended (updateUser)', () => {
     const target = makeStaffUser({ id: 'user-2', user_type: 'passenger' });
     const updated = makeStaffUser({ id: 'user-2', user_type: 'passenger', status: 'suspended' });
     mockUserFindUnique.mockResolvedValueOnce(target);
-    mockTxUserUpdate.mockResolvedValueOnce(updated);
+    mockUserUpdate.mockResolvedValueOnce(updated);
 
     await UserService.updateUser(adminUser as never, 'user-2', { status: 'suspended' });
     await flushImmediate();
@@ -268,7 +271,7 @@ describe('UserService domain events — staff.updated (updateUser)', () => {
     const target = makeStaffUser({ id: 'user-2', first_name: 'OldFirst' });
     const updated = makeStaffUser({ id: 'user-2', first_name: 'NewFirst' });
     mockUserFindUnique.mockResolvedValueOnce(target);
-    mockTxUserUpdate.mockResolvedValueOnce(updated);
+    mockUserUpdate.mockResolvedValueOnce(updated);
 
     await UserService.updateUser(adminUser as never, 'user-2', { first_name: 'NewFirst' });
     await flushImmediate();
@@ -282,7 +285,7 @@ describe('UserService domain events — staff.updated (updateUser)', () => {
     const target = makeStaffUser({ id: 'user-2', status: 'active' });
     const updated = makeStaffUser({ id: 'user-2', status: 'suspended' });
     mockUserFindUnique.mockResolvedValueOnce(target);
-    mockTxUserUpdate.mockResolvedValueOnce(updated);
+    mockUserUpdate.mockResolvedValueOnce(updated);
 
     await UserService.updateUser(adminUser as never, 'user-2', { status: 'suspended' });
     await flushImmediate();
@@ -292,15 +295,14 @@ describe('UserService domain events — staff.updated (updateUser)', () => {
     );
   });
 
-  it('publishes staff.updated when roles change', async () => {
+  it('publishes staff.updated when roles change (via assignRoles)', async () => {
     const target = makeStaffUser({ id: 'user-2', user_roles: [{ role: { slug: 'org-staff', role_grants: [] } }] });
     const updated = makeStaffUser({ id: 'user-2', user_roles: [{ role: { slug: 'org-admin', role_grants: [] } }] });
     mockUserFindUnique.mockResolvedValueOnce(target);
-    mockTxUserUpdate.mockResolvedValueOnce(updated);
-    mockTxRoleFindMany.mockResolvedValueOnce([{ id: 'role-org-admin' }]);
+    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-org-admin', slug: 'org-admin', role_grants: [{ pattern: 'user:read:org' }] });
     mockTxUserFindUniqueOrThrow.mockResolvedValueOnce(updated);
 
-    await UserService.updateUser(adminUser as never, 'user-2', { role_slugs: ['org-admin'] });
+    await UserService.assignRoles(adminUser as never, 'user-2', ['org-admin']);
     await flushImmediate();
 
     expect(publishUserEvent).toHaveBeenCalledWith(
