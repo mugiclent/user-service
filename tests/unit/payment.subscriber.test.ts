@@ -21,10 +21,6 @@ const mockChannel = {
   nack: vi.fn(),
 } as unknown as Channel;
 
-vi.mock('../../src/loaders/rabbitmq.js', () => ({
-  getConsumerChannel: vi.fn().mockResolvedValue(mockChannel),
-}));
-
 // ── Redis mock ────────────────────────────────────────────────────────────────
 
 const mockRedisPublish = vi.fn().mockResolvedValue(1);
@@ -53,7 +49,7 @@ const makeMsg = (payload: object): ConsumeMessage =>
 beforeEach(async () => {
   vi.clearAllMocks();
   capturedHandler = null;
-  await initPaymentSubscriber();
+  await initPaymentSubscriber(mockChannel);
 });
 
 // ── queue setup ───────────────────────────────────────────────────────────────
