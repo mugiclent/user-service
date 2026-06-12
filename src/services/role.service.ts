@@ -1,4 +1,3 @@
-import { subject } from '@casl/ability';
 import { prisma } from '../models/index.js';
 import type { AuthenticatedUser } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
@@ -11,8 +10,8 @@ import {
   buildAbilityFromRules,
   getScopeFor,
 } from '../utils/ability.js';
-import type { Subjects } from '../utils/ability.js';
 import { PERMISSIONS } from '../utils/catalog.js';
+import { resolveEffective } from '../utils/overrides.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,8 +26,48 @@ type RoleWithGrants = {
   description: string | null;
   org_id: string | null;
   is_managed: boolean;
+  override_of: string | null;
+  is_hidden: boolean;
   created_at: Date;
   role_grants: { id: string; pattern: string; is_managed: boolean; created_at: Date }[];
+};
+
+/**
+ * Deep-copy a platform-default role (+ its grants) into an org-scoped fork, once.
+ * Copy-on-write: the org edits the fork, never the shared default.
+ */
+const forkRole = async (orgId: string, def: RoleWithGrants): Promise<RoleWithGrants> => {
+  const existing = await prisma.role.findFirst({ where: { org_id: orgId, override_of: def.id }, ...withGrants });
+  if (existing) return existing;
+  return prisma.$transaction(async (tx) => {
+    const created = await tx.role.create({
+      data: { name: def.name, slug: def.slug, description: def.description, org_id: orgId, override_of: def.id, is_managed: false },
+    });
+    if (def.role_grants.length > 0) {
+      await tx.roleGrant.createMany({
+        data: def.role_grants.map((g) => ({ role_id: created.id, pattern: g.pattern, is_managed: false })),
+      });
+    }
+    return tx.role.findUniqueOrThrow({ where: { id: created.id }, ...withGrants });
+  });
+};
+
+/**
+ * Resolve the concrete role an org may mutate: its own row, a platform admin's
+ * direct target, or a fresh fork of a default (auto copy-on-write). Throws FORBIDDEN
+ * if the role belongs to another org and the caller lacks platform scope.
+ */
+const ensureOrgRole = async (
+  ability: ReturnType<typeof buildAbilityFromRules>,
+  user: AuthenticatedUser,
+  role: RoleWithGrants,
+): Promise<RoleWithGrants> => {
+  const canTargetAnyOrg = getScopeFor(ability, 'update', 'Role') === 'platform';
+  if (canTargetAnyOrg) return role;                 // platform admin edits the row in place
+  if (!user.org_id) throw new AppError('FORBIDDEN', 403);
+  if (role.org_id === user.org_id) return role;     // org's own role
+  if (role.org_id === null) return forkRole(user.org_id, role); // fork the default
+  throw new AppError('FORBIDDEN', 403);             // another org's role
 };
 
 type RoleWithoutGrants = Omit<RoleWithGrants, 'role_grants'>;
@@ -90,12 +129,17 @@ export const RoleService = {
       ...withGrants,
     });
 
+    // Copy-on-write: a non-platform viewer sees their org's fork in place of any
+    // default it shadows (and tombstoned defaults disappear). Platform-scope readers
+    // see the raw rows so they can manage defaults and inspect every org's forks.
+    const visible = canSeeAllOrgs ? roles : resolveEffective(roles, requestingUser.org_id ?? null);
+
     // Annotate each role with whether the caller may assign it — this is what
     // drives the role-builder UI, and it is the SAME guard enforced on write.
     // (Org admins simply won't be able to assign e.g. passenger or platform-admin
     //  because they don't hold those grants — no slug special-casing needed.)
     return {
-      data: roles.map((r) => ({
+      data: visible.map((r) => ({
         ...serializeRoleSummary(r),
         can_assign: canAssignGrants(ability, r.role_grants.map((g) => g.pattern), PERMISSIONS),
       })),
@@ -196,20 +240,17 @@ export const RoleService = {
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    // Object-level scope: org-scope editors only reach their own org's roles
-    // (global templates have org_id=null and never match an org condition).
-    if (!ability.can('update', subject('Role', role) as unknown as Subjects)) {
-      throw new AppError('FORBIDDEN', 403);
-    }
+    // Copy-on-write: an org editing a platform default forks an org-scoped copy
+    // (ensureOrgRole), which also enforces object-level scope (own org / platform).
+    const target = await ensureOrgRole(ability, requestingUser, role);
 
     const updateData: { name?: string; description?: string } = {};
     if (data.name !== undefined) updateData.name = data.name;
     if (data.description !== undefined) updateData.description = data.description;
 
     const updated = await prisma.role.update({
-      where: { id: roleId },
+      where: { id: target.id },
       data: updateData,
       ...withGrants,
     });
@@ -218,10 +259,10 @@ export const RoleService = {
       actor_id: requestingUser.id,
       action: 'update',
       resource: 'Role',
-      resource_id: roleId,
+      resource_id: target.id,
       delta: {
-        ...(data.name !== undefined ? { name: { from: role.name, to: data.name } } : {}),
-        ...(data.description !== undefined ? { description: { from: role.description, to: data.description } } : {}),
+        ...(data.name !== undefined ? { name: { from: target.name, to: data.name } } : {}),
+        ...(data.description !== undefined ? { description: { from: target.description, to: data.description } } : {}),
       },
     }));
 
@@ -238,9 +279,28 @@ export const RoleService = {
 
     const role = await prisma.role.findUnique({ where: { id: roleId } });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    if (!ability.can('delete', subject('Role', role) as unknown as Subjects)) {
+    const canTargetAnyOrg = getScopeFor(ability, 'delete', 'Role') === 'platform';
+
+    // Org "deleting" a platform default → tombstone it for that org only (copy-on-
+    // write); the shared default stays intact for every other org.
+    if (!canTargetAnyOrg && role.org_id === null) {
+      const orgId = requestingUser.org_id;
+      if (!orgId) throw new AppError('FORBIDDEN', 403);
+      const existing = await prisma.role.findFirst({ where: { org_id: orgId, override_of: role.id } });
+      if (existing) {
+        await prisma.role.update({ where: { id: existing.id }, data: { is_hidden: true } });
+      } else {
+        await prisma.role.create({
+          data: { name: role.name, slug: role.slug, description: role.description, org_id: orgId, override_of: role.id, is_hidden: true, is_managed: false },
+        });
+      }
+      publishAudit({ actor_id: requestingUser.id, action: 'delete', resource: 'Role', resource_id: role.id });
+      return;
+    }
+
+    // Hard delete of an org's own role / a default as platform admin.
+    if (!canTargetAnyOrg && role.org_id !== requestingUser.org_id) {
       throw new AppError('FORBIDDEN', 403);
     }
 
@@ -271,11 +331,9 @@ export const RoleService = {
 
     const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
 
-    if (!ability.can('update', subject('Role', role) as unknown as Subjects)) {
-      throw new AppError('FORBIDDEN', 403);
-    }
+    // Copy-on-write: editing a default's grants forks an org-scoped copy first.
+    const target = await ensureOrgRole(ability, requestingUser, role);
 
     // Validate all patterns
     for (const pattern of patterns) {
@@ -288,7 +346,7 @@ export const RoleService = {
     }
 
     // Compute compressed pattern set after adding the new patterns, then diff
-    const existingPatterns = role.role_grants.map((g) => g.pattern);
+    const existingPatterns = target.role_grants.map((g) => g.pattern);
     const compressed = compressPatterns([...existingPatterns, ...patterns], PERMISSIONS);
     const existingSet = new Set(existingPatterns);
     const compressedSet = new Set(compressed);
@@ -297,24 +355,24 @@ export const RoleService = {
 
     // No change — new pattern already subsumed by an existing wildcard
     if (toAdd.length === 0 && toDelete.length === 0) {
-      return serializeRole(role);
+      return serializeRole(target);
     }
 
     const updated = await prisma.$transaction(async (tx) => {
       if (toDelete.length > 0) {
-        await tx.roleGrant.deleteMany({ where: { role_id: roleId, pattern: { in: toDelete } } });
+        await tx.roleGrant.deleteMany({ where: { role_id: target.id, pattern: { in: toDelete } } });
       }
       if (toAdd.length > 0) {
-        await tx.roleGrant.createMany({ data: toAdd.map((p) => ({ role_id: roleId, pattern: p })) });
+        await tx.roleGrant.createMany({ data: toAdd.map((p) => ({ role_id: target.id, pattern: p })) });
       }
-      return tx.role.findUniqueOrThrow({ where: { id: roleId }, ...withGrants });
+      return tx.role.findUniqueOrThrow({ where: { id: target.id }, ...withGrants });
     });
 
     setImmediate(() => publishAudit({
       actor_id: requestingUser.id,
       action: 'update',
       resource: 'Role',
-      resource_id: roleId,
+      resource_id: target.id,
       delta: {
         ...(toAdd.length > 0 ? { grants_added: toAdd } : {}),
         ...(toDelete.length > 0 ? { grants_consolidated: toDelete } : {}),
@@ -338,22 +396,27 @@ export const RoleService = {
 
     const grant = await prisma.roleGrant.findUnique({ where: { id: grantId } });
     if (!grant || grant.role_id !== roleId) throw new AppError('GRANT_NOT_FOUND', 404);
-    if (grant.is_managed) throw new AppError('MANAGED_GRANT_IMMUTABLE', 403);
 
-    const role = await prisma.role.findUnique({ where: { id: roleId } });
+    const role = await prisma.role.findUnique({ where: { id: roleId }, ...withGrants });
     if (!role) throw new AppError('ROLE_NOT_FOUND', 404);
-    if (role.is_managed) throw new AppError('MANAGED_ROLE_IMMUTABLE', 403);
-    if (!ability.can('update', subject('Role', role) as unknown as Subjects)) {
-      throw new AppError('FORBIDDEN', 403);
-    }
 
-    await prisma.roleGrant.delete({ where: { id: grantId } });
+    // Copy-on-write: removing a grant from a default forks an org-scoped copy first.
+    const target = await ensureOrgRole(ability, requestingUser, role);
+
+    // On a fork the grant ids differ (they were copied), so match by pattern; on the
+    // org's own role the grant id is stable.
+    const targetGrant = target.id === role.id
+      ? target.role_grants.find((g) => g.id === grantId)
+      : target.role_grants.find((g) => g.pattern === grant.pattern);
+    if (targetGrant) {
+      await prisma.roleGrant.delete({ where: { id: targetGrant.id } });
+    }
 
     setImmediate(() => publishAudit({
       actor_id: requestingUser.id,
       action: 'update',
       resource: 'Role',
-      resource_id: roleId,
+      resource_id: target.id,
       delta: { grant_removed: { from: grant.pattern, to: null } },
     }));
   },

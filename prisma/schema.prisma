@@ -166,15 +166,23 @@ model Role {
   slug        String   @db.VarChar(100)
   description String?  @db.VarChar(500)
   org_id      String?
+  // is_managed marks a platform-seeded default. It is NO LONGER a freeze — an org
+  // edits a default by forking a copy-on-write copy (override_of -> default), and
+  // is_hidden tombstones a default for one org. See src/utils/overrides.ts.
   is_managed  Boolean  @default(false)
+  override_of String?
+  is_hidden   Boolean  @default(false)
   created_at  DateTime @default(now())
 
   org              Org?             @relation(fields: [org_id], references: [id])
+  override_parent  Role?            @relation("RoleOverride", fields: [override_of], references: [id], onDelete: Cascade)
+  overrides        Role[]           @relation("RoleOverride")
   user_roles       UserRole[]
   invitation_roles InvitationRole[]
   role_grants      RoleGrant[]
 
   @@unique([slug, org_id])
+  @@index([org_id])
   @@map("roles")
 }
 

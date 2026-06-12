@@ -345,11 +345,30 @@ describe('RoleService.updateRole', () => {
     });
   });
 
-  it('throws MANAGED_ROLE_IMMUTABLE for is_managed role', async () => {
-    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ is_managed: true }));
-    await expect(RoleService.updateRole(makePlatformAdmin() as never, 'role-1', { name: 'X' })).rejects.toMatchObject({
-      code: 'MANAGED_ROLE_IMMUTABLE', status: 403,
-    });
+  it('platform admin edits a managed default in place (no fork)', async () => {
+    const managed = makeRole({ is_managed: true, org_id: null });
+    mockRoleFindUnique.mockResolvedValueOnce(managed);
+    mockRoleUpdate.mockResolvedValueOnce({ ...managed, name: 'X' });
+    const result = await RoleService.updateRole(makePlatformAdmin() as never, 'role-1', { name: 'X' });
+    expect(result).toMatchObject({ name: 'X' });
+    expect(mockRoleUpdate).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'role-1' }, data: { name: 'X' } }));
+    expect(mockRoleFindFirst).not.toHaveBeenCalled(); // no copy-on-write fork
+  });
+
+  it('org admin forks a platform default on edit (copy-on-write)', async () => {
+    const def = makeRole({ org_id: null, is_managed: true, role_grants: [makeGrant()] });
+    mockRoleFindUnique.mockResolvedValueOnce(def);
+    mockRoleFindFirst.mockResolvedValueOnce(null); // no existing fork
+    const fork = makeRole({ id: 'role-1-fork', org_id: 'org-1', override_of: 'role-1', role_grants: [makeGrant({ id: 'g2' })] });
+    mockTxRoleCreate.mockResolvedValueOnce(fork);
+    mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(fork);
+    mockRoleUpdate.mockResolvedValueOnce({ ...fork, name: 'X' });
+
+    const result = await RoleService.updateRole(makeOrgAdmin() as never, 'role-1', { name: 'X' });
+
+    expect(mockTxRoleCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ org_id: 'org-1', override_of: 'role-1' }) }));
+    expect(mockRoleUpdate).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'role-1-fork' } }));
+    expect(result).toMatchObject({ name: 'X' });
   });
 
   it('org admin cannot update another org role', async () => {
@@ -382,11 +401,23 @@ describe('RoleService.deleteRole', () => {
     });
   });
 
-  it('throws MANAGED_ROLE_IMMUTABLE for is_managed role', async () => {
-    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ is_managed: true }));
-    await expect(RoleService.deleteRole(makePlatformAdmin() as never, 'role-1')).rejects.toMatchObject({
-      code: 'MANAGED_ROLE_IMMUTABLE', status: 403,
-    });
+  it('platform admin deletes a managed default in place', async () => {
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ is_managed: true, org_id: null }));
+    mockInvitationRoleCount.mockResolvedValueOnce(0);
+    mockRoleDelete.mockResolvedValueOnce({});
+    await RoleService.deleteRole(makePlatformAdmin() as never, 'role-1');
+    expect(mockRoleDelete).toHaveBeenCalledWith({ where: { id: 'role-1' } });
+  });
+
+  it('org admin tombstones a platform default (copy-on-write)', async () => {
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, is_managed: true }));
+    mockRoleFindFirst.mockResolvedValueOnce(null); // no existing fork/tombstone
+    mockRoleCreate.mockResolvedValueOnce({});
+    await RoleService.deleteRole(makeOrgAdmin() as never, 'role-1');
+    expect(mockRoleCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ org_id: 'org-1', override_of: 'role-1', is_hidden: true }) }),
+    );
+    expect(mockRoleDelete).not.toHaveBeenCalled();
   });
 
   it('throws FORBIDDEN when org admin targets another org role', async () => {
@@ -433,11 +464,15 @@ describe('RoleService.addGrant', () => {
     });
   });
 
-  it('throws MANAGED_ROLE_IMMUTABLE for managed role', async () => {
-    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ is_managed: true }));
-    await expect(RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:read:org'])).rejects.toMatchObject({
-      code: 'MANAGED_ROLE_IMMUTABLE', status: 403,
-    });
+  it('platform admin adds a grant to a managed default in place (no longer frozen)', async () => {
+    const role = makeRole({ is_managed: true, org_id: null, role_grants: [] });
+    mockRoleFindUnique.mockResolvedValueOnce(role);
+    mockTxRoleFindUniqueOrThrow.mockResolvedValueOnce(makeRole({ role_grants: [makeGrant()] }));
+
+    const result = await RoleService.addGrant(makePlatformAdmin() as never, 'role-1', ['user:read:org']);
+
+    expect(mockTxRoleGrantCreateMany).toHaveBeenCalledWith({ data: [{ role_id: 'role-1', pattern: 'user:read:org' }] });
+    expect((result as Record<string, unknown>)['grants']).toHaveLength(1);
   });
 
   it('creates new grant via transaction and returns updated role', async () => {
@@ -541,12 +576,13 @@ describe('RoleService.removeGrant', () => {
     });
   });
 
-  it('throws MANAGED_GRANT_IMMUTABLE for managed grant', async () => {
+  it('platform admin removes a managed grant in place (no longer frozen)', async () => {
     mockRoleGrantFindUnique.mockResolvedValueOnce(makeGrant({ is_managed: true }));
-    mockRoleFindUnique.mockResolvedValueOnce(makeRole());
-    await expect(RoleService.removeGrant(makePlatformAdmin() as never, 'role-1', 'grant-1')).rejects.toMatchObject({
-      code: 'MANAGED_GRANT_IMMUTABLE', status: 403,
-    });
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, role_grants: [makeGrant({ is_managed: true })] }));
+    mockRoleGrantDelete.mockResolvedValueOnce({});
+    await RoleService.removeGrant(makePlatformAdmin() as never, 'role-1', 'grant-1');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(mockRoleGrantDelete).toHaveBeenCalledWith({ where: { id: 'grant-1' } });
   });
 
   it('throws FORBIDDEN when org admin targets another org role', async () => {
@@ -559,7 +595,7 @@ describe('RoleService.removeGrant', () => {
 
   it('deletes grant and publishes audit', async () => {
     mockRoleGrantFindUnique.mockResolvedValueOnce(makeGrant({ is_managed: false }));
-    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null }));
+    mockRoleFindUnique.mockResolvedValueOnce(makeRole({ org_id: null, role_grants: [makeGrant()] }));
     mockRoleGrantDelete.mockResolvedValueOnce({});
 
     await RoleService.removeGrant(makePlatformAdmin() as never, 'role-1', 'grant-1');
