@@ -161,6 +161,13 @@ describe('scope conditions', () => {
     expect(rule?.conditions).toBeUndefined();
     expect(getScopeFor(abilityFor(['user:read:platform']), 'read', 'User')).toBe('platform');
   });
+
+  it('Org {id} condition is ORG scope, not own (regression)', () => {
+    // org-scoped Org grant bakes { id: orgId }; getScopeFor must not read that as own
+    expect(getScopeFor(abilityFor(['org:read:org']), 'read', 'Org')).toBe('org');
+    // own User {id} is still own
+    expect(getScopeFor(abilityFor(['user:read:own']), 'read', 'User')).toBe('own');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -187,6 +194,13 @@ describe('canAssignGrants', () => {
 
   it('org admin CAN assign org-scoped roles it holds', () => {
     expect(canAssignGrants(orgAdmin, ['user:read:org', 'trip:create:org'], PERMISSIONS)).toBe(true);
+  });
+
+  it('org admin CAN assign roles containing org:*:org grants — incl. its own role (regression)', () => {
+    // Previously blocked: Org {id} condition mis-read as own scope by getScopeFor,
+    // so org-admins could not invite/assign ANY staff role (all carry org:read:org).
+    expect(canAssignGrants(orgAdmin, ['org:read:org', 'org:update:org'], PERMISSIONS)).toBe(true);
+    expect(canAssignGrants(orgAdmin, ORG_ADMIN, PERMISSIONS)).toBe(true);
   });
 
   it('cannot grant a broader scope than held (own holder cannot grant org)', () => {
