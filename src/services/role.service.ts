@@ -79,6 +79,11 @@ const serializeRoleSummary = (role: RoleWithoutGrants): Record<string, unknown> 
   description: role.description,
   org_id: role.org_id,
   is_managed: role.is_managed,
+  // Copy-on-write provenance: override_of is the platform default this row forks
+  // (null for defaults / net-new org roles); is_customised lets the UI badge a
+  // role the org has overridden.
+  override_of: role.override_of,
+  is_customised: role.override_of !== null,
   created_at: role.created_at,
 });
 
