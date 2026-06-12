@@ -385,3 +385,20 @@ model OrgOtp {
   @@index([org_id, purpose])
   @@map("org_otps")
 }
+
+// Local projection of the passenger's wallet ledger, fed by payment-service's
+// `wallet.transaction.completed` events. Lets us serve transaction history and
+// the display balance without a synchronous call to payment-service. No FK to
+// User: it is an eventually-consistent projection, not a relational child.
+model WalletTransaction {
+  id            String   @id @default(uuid())
+  user_id       String
+  type          String   @db.VarChar(20) // CREDIT | DEBIT
+  amount        Decimal  @db.Decimal(12, 2)
+  balance_after Decimal  @db.Decimal(12, 2)
+  occurred_at   DateTime
+  created_at    DateTime @default(now())
+
+  @@index([user_id, occurred_at])
+  @@map("wallet_transactions")
+}

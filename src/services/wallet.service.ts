@@ -52,4 +52,38 @@ export const WalletService = {
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
     return { balance: Number(user.balance), currency: 'RWF', user_id: userId };
   },
+
+  // Served from the local wallet_transactions projection (fed by payment-service's
+  // wallet.transaction.completed events) — no synchronous call to payment-service.
+  async getTransactions(
+    userId: string,
+    opts: { page?: number; limit?: number } = {},
+  ): Promise<{ transactions: unknown[]; total: number; page: number; limit: number }> {
+    const page = opts.page && opts.page > 0 ? opts.page : 1;
+    const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, 100) : 20;
+    const skip = (page - 1) * limit;
+
+    const [rows, total] = await Promise.all([
+      prisma.walletTransaction.findMany({
+        where: { user_id: userId },
+        orderBy: { occurred_at: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.walletTransaction.count({ where: { user_id: userId } }),
+    ]);
+
+    return {
+      transactions: rows.map((t) => ({
+        id: t.id,
+        type: t.type,
+        amount: Number(t.amount),
+        balance_after: Number(t.balance_after),
+        occurred_at: t.occurred_at,
+      })),
+      total,
+      page,
+      limit,
+    };
+  },
 };

@@ -4,8 +4,6 @@ import { AppError } from '../utils/AppError.js';
 import { WalletService } from '../services/wallet.service.js';
 import { getRedisClient } from '../loaders/redis.js';
 
-const PAYMENT_SVC = 'http://payment-svc:8098';
-
 const SSE_TIMEOUT_MS = 3 * 60 * 1000;
 
 export const WalletController = {
@@ -36,10 +34,12 @@ export const WalletController = {
   async getTransactions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-      const upstream = await fetch(`${PAYMENT_SVC}/transactions/${user.id}${qs}`);
-      const body = await upstream.json() as unknown;
-      res.status(upstream.status).json(body);
+      const q = req.query as { page?: string; limit?: string };
+      const result = await WalletService.getTransactions(user.id, {
+        page: q.page ? parseInt(q.page, 10) : undefined,
+        limit: q.limit ? parseInt(q.limit, 10) : undefined,
+      });
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }
@@ -48,10 +48,12 @@ export const WalletController = {
   async getUserTransactions(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const userId = req.params['id']!;
-      const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-      const upstream = await fetch(`${PAYMENT_SVC}/transactions/${userId}${qs}`);
-      const body = await upstream.json() as unknown;
-      res.status(upstream.status).json(body);
+      const q = req.query as { page?: string; limit?: string };
+      const result = await WalletService.getTransactions(userId, {
+        page: q.page ? parseInt(q.page, 10) : undefined,
+        limit: q.limit ? parseInt(q.limit, 10) : undefined,
+      });
+      res.status(200).json(result);
     } catch (err) {
       next(err);
     }

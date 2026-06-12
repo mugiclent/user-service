@@ -1,7 +1,7 @@
 /**
  * Tests for src/api/wallet.controller.ts — SSE stream + initiate topup
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { Request, Response, NextFunction } from 'express';
 import { AppError } from '../../src/utils/AppError.js';
@@ -11,12 +11,14 @@ import { AppError } from '../../src/utils/AppError.js';
 const mockInitiateTopup = vi.fn();
 const mockVerifyTopupOwner = vi.fn();
 const mockGetWallet = vi.fn();
+const mockGetTransactions = vi.fn();
 
 vi.mock('../../src/services/wallet.service.js', () => ({
   WalletService: {
     getWallet: mockGetWallet,
     initiateTopup: mockInitiateTopup,
     verifyTopupOwner: mockVerifyTopupOwner,
+    getTransactions: mockGetTransactions,
   },
 }));
 
@@ -264,105 +266,73 @@ describe('WalletController.streamTopup — SSE flow', () => {
 
 });
 
-// ── getTransactions ───────────────────────────────────────────────────────────
+// ── getTransactions (served from the local projection) ────────────────────────
 
-const mockFetch = vi.fn();
-
-beforeEach(() => { vi.stubGlobal('fetch', mockFetch); });
-afterEach(() => { vi.unstubAllGlobals(); });
-
-const makeTxReq = (overrides: { userId?: string; url?: string; params?: Record<string, string> } = {}): Request => ({
+const makeTxReq = (overrides: { userId?: string; query?: Record<string, string>; params?: Record<string, string> } = {}): Request => ({
   user: { id: overrides.userId ?? 'user-1' },
   params: overrides.params ?? {},
-  url: overrides.url ?? '/me/wallet/transactions',
+  query: overrides.query ?? {},
   on: vi.fn(),
 } as unknown as Request);
 
-const fakeList = {
-  data: [],
-  balance: { available: 5000, currency: 'RWF' },
-  pagination: { page: 1, limit: 20, total: 0, has_more: false },
-};
+const fakeList = { transactions: [], total: 0, page: 1, limit: 20 };
 
 describe('WalletController.getTransactions', () => {
-  it('proxies to payment-svc and returns 200 with the list', async () => {
-    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+  it('returns 200 with the local transaction list', async () => {
+    mockGetTransactions.mockResolvedValue(fakeList);
     const res = makeRes();
     const next = vi.fn() as NextFunction;
 
     await WalletController.getTransactions(makeTxReq(), res, next);
 
-    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-1');
+    expect(mockGetTransactions).toHaveBeenCalledWith('user-1', { page: undefined, limit: undefined });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(fakeList);
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('forwards query string to payment-svc', async () => {
-    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+  it('passes page/limit from the query', async () => {
+    mockGetTransactions.mockResolvedValue(fakeList);
     await WalletController.getTransactions(
-      makeTxReq({ url: '/me/wallet/transactions?page=2&type=topup' }),
+      makeTxReq({ query: { page: '2', limit: '5' } }),
       makeRes(),
       vi.fn() as NextFunction,
     );
-    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-1?page=2&type=topup');
+    expect(mockGetTransactions).toHaveBeenCalledWith('user-1', { page: 2, limit: 5 });
   });
 
-  it('passes upstream non-200 status through', async () => {
-    mockFetch.mockResolvedValue({ status: 503, json: async () => ({ error: 'unavailable' }) });
-    const res = makeRes();
-
-    await WalletController.getTransactions(makeTxReq(), res, vi.fn() as NextFunction);
-
-    expect(res.status).toHaveBeenCalledWith(503);
-  });
-
-  it('calls next(err) when fetch throws', async () => {
-    mockFetch.mockRejectedValue(new Error('connection refused'));
+  it('calls next(err) when the service throws', async () => {
+    mockGetTransactions.mockRejectedValue(new Error('db error'));
     const next = vi.fn() as NextFunction;
-
     await WalletController.getTransactions(makeTxReq(), makeRes(), next);
-
     expect((next as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBeInstanceOf(Error);
   });
 });
 
 describe('WalletController.getUserTransactions', () => {
-  it('proxies to payment-svc using path param user id', async () => {
-    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
+  it('reads the local projection for the path-param user id', async () => {
+    mockGetTransactions.mockResolvedValue(fakeList);
     const res = makeRes();
 
     await WalletController.getUserTransactions(
-      makeTxReq({ params: { id: 'user-99' }, url: '/user-99/wallet/transactions' }),
+      makeTxReq({ params: { id: 'user-99' } }),
       res,
       vi.fn() as NextFunction,
     );
 
-    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-99');
+    expect(mockGetTransactions).toHaveBeenCalledWith('user-99', { page: undefined, limit: undefined });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(fakeList);
   });
 
-  it('forwards query string', async () => {
-    mockFetch.mockResolvedValue({ status: 200, json: async () => fakeList });
-    await WalletController.getUserTransactions(
-      makeTxReq({ params: { id: 'user-99' }, url: '/user-99/wallet/transactions?limit=5&from=2026-01-01' }),
-      makeRes(),
-      vi.fn() as NextFunction,
-    );
-    expect(mockFetch).toHaveBeenCalledWith('http://payment-svc:8098/transactions/user-99?limit=5&from=2026-01-01');
-  });
-
-  it('calls next(err) when fetch throws', async () => {
-    mockFetch.mockRejectedValue(new Error('timeout'));
+  it('calls next(err) when the service throws', async () => {
+    mockGetTransactions.mockRejectedValue(new Error('db error'));
     const next = vi.fn() as NextFunction;
-
     await WalletController.getUserTransactions(
-      makeTxReq({ params: { id: 'user-99' }, url: '/user-99/wallet/transactions' }),
+      makeTxReq({ params: { id: 'user-99' } }),
       makeRes(),
       next,
     );
-
     expect((next as ReturnType<typeof vi.fn>).mock.calls[0][0]).toBeInstanceOf(Error);
   });
 });
