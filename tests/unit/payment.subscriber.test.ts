@@ -1,6 +1,7 @@
 /**
  * Tests for src/subscribers/payment.subscriber.ts
- * Consumes payment-service's actual events, dispatched by AMQP routing key.
+ * Consumes payment-service's passenger/organisation wallet events + topup outcomes,
+ * dispatched by AMQP routing key.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Channel, ConsumeMessage } from 'amqplib';
@@ -12,6 +13,7 @@ let capturedHandler: ((msg: ConsumeMessage | null) => Promise<void>) | null = nu
 const mockChannel = {
   assertQueue: vi.fn().mockResolvedValue(undefined),
   bindQueue: vi.fn().mockResolvedValue(undefined),
+  unbindQueue: vi.fn().mockResolvedValue(undefined),
   consume: vi.fn().mockImplementation(
     (_queue: string, handler: (msg: ConsumeMessage | null) => Promise<void>) => {
       capturedHandler = handler;
@@ -32,11 +34,13 @@ vi.mock('../../src/loaders/redis.js', () => ({
 // ── Prisma mock ───────────────────────────────────────────────────────────────
 
 const mockUserUpdate = vi.fn().mockResolvedValue({});
+const mockOrgUpdate = vi.fn().mockResolvedValue({});
 const mockWalletTxCreate = vi.fn().mockResolvedValue({});
 const mockTransaction = vi.fn().mockImplementation((ops: unknown[]) => Promise.all(ops));
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     user: { update: mockUserUpdate },
+    org: { update: mockOrgUpdate },
     walletTransaction: { create: mockWalletTxCreate },
     $transaction: mockTransaction,
   },
@@ -58,93 +62,96 @@ beforeEach(async () => {
 // ── queue setup ───────────────────────────────────────────────────────────────
 
 describe('initPaymentSubscriber — queue setup', () => {
-  it('asserts and binds the queue', () => {
+  it('asserts the queue and binds the specific wallet/topup keys (and drops #)', () => {
     expect(mockChannel.assertQueue).toHaveBeenCalledWith('payment-user-svc', { durable: true, arguments: { 'x-dead-letter-exchange': 'payment.dlx' } });
-    expect(mockChannel.bindQueue).toHaveBeenCalledWith('payment-user-svc', 'payment', '#');
+    for (const key of ['wallet.events', 'topup.confirmed', 'topup.failed']) {
+      expect(mockChannel.bindQueue).toHaveBeenCalledWith('payment-user-svc', 'payment', key);
+    }
+    expect(mockChannel.unbindQueue).toHaveBeenCalledWith('payment-user-svc', 'payment', '#');
   });
 });
 
-// ── wallet.transaction.completed (balance projection) ─────────────────────────
+// ── passenger.transaction ─────────────────────────────────────────────────────
 
-describe('wallet.transaction.completed event', () => {
-  // payment-service emits camelCase + bigint-as-string
-  const event = { userId: 'user-1', newBalance: '15000', type: 'CREDIT', amount: '5000', occurredAt: '2026-06-12T00:00:00.000Z' };
+describe('passenger.transaction (wallet.events)', () => {
+  const event = { type: 'passenger.transaction', userId: 'user-1', newBalance: '15000', movement: 'CREDIT', amount: '5000', occurredAt: '2026-06-12T00:00:00.000Z', source: 'topup', reference: 'ref-1', ticketId: null };
 
-  it('SETS the user balance to newBalance (mirror, not increment)', async () => {
-    await capturedHandler!(makeMsg('wallet.transaction.completed', event));
-    expect(mockUserUpdate).toHaveBeenCalledWith({ where: { id: 'user-1' }, data: { balance: 15000 } });
+  it('SETS the user balance to newBalance (BigInt)', async () => {
+    await capturedHandler!(makeMsg('wallet.events', event));
+    expect(mockUserUpdate).toHaveBeenCalledWith({ where: { id: 'user-1' }, data: { balance: 15000n } });
+    expect(mockOrgUpdate).not.toHaveBeenCalled();
   });
 
-  it('appends a wallet_transactions ledger row', async () => {
-    await capturedHandler!(makeMsg('wallet.transaction.completed', event));
+  it('appends a PASSENGER ledger row with integer amounts', async () => {
+    await capturedHandler!(makeMsg('wallet.events', event));
     expect(mockWalletTxCreate).toHaveBeenCalledWith({
-      data: { user_id: 'user-1', type: 'CREDIT', amount: 5000, balance_after: 15000, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
+      data: { owner_id: 'user-1', owner_type: 'PASSENGER', type: 'CREDIT', source: 'topup', reference: 'ref-1', ticket_id: null, amount: 5000n, balance_after: 15000n, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
     });
   });
 
   it('acks the message', async () => {
-    await capturedHandler!(makeMsg('wallet.transaction.completed', event));
+    await capturedHandler!(makeMsg('wallet.events', event));
     expect(mockChannel.ack).toHaveBeenCalled();
   });
 });
 
-// ── topup.confirmed (SSE bridge) ──────────────────────────────────────────────
+// ── organisation.transaction ──────────────────────────────────────────────────
+
+describe('organisation.transaction (wallet.events)', () => {
+  const event = { type: 'organisation.transaction', orgId: 'org-1', newBalance: '20000', movement: 'CREDIT', amount: '1800', occurredAt: '2026-06-12T00:00:00.000Z', source: 'ticket_payment', reference: 'ref-2', ticketId: 'ticket-1' };
+
+  it('SETS the org balance to newBalance (BigInt)', async () => {
+    await capturedHandler!(makeMsg('wallet.events', event));
+    expect(mockOrgUpdate).toHaveBeenCalledWith({ where: { id: 'org-1' }, data: { balance: 20000n } });
+    expect(mockUserUpdate).not.toHaveBeenCalled();
+  });
+
+  it('appends an ORGANISATION ledger row', async () => {
+    await capturedHandler!(makeMsg('wallet.events', event));
+    expect(mockWalletTxCreate).toHaveBeenCalledWith({
+      data: { owner_id: 'org-1', owner_type: 'ORGANISATION', type: 'CREDIT', source: 'ticket_payment', reference: 'ref-2', ticket_id: 'ticket-1', amount: 1800n, balance_after: 20000n, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
+    });
+  });
+});
+
+// ── topup.confirmed / topup.failed (SSE bridge) ───────────────────────────────
 
 describe('topup.confirmed event', () => {
-  const event = { topupId: 'topup-1', topupRef: 'ref-1', userId: 'user-1', amount: '5000', newBalance: '15000', confirmedAt: '2026-06-12T00:00:00.000Z' };
-
+  const event = { topupId: 'topup-1', userId: 'user-1', amount: '5000', newBalance: '15000' };
   it('bridges to the topup Redis channel as topup.payment.confirmed', async () => {
     await capturedHandler!(makeMsg('topup.confirmed', event));
     expect(mockRedisPublish).toHaveBeenCalledWith('topup:topup-1', JSON.stringify({
       type: 'topup.payment.confirmed', topup_id: 'topup-1', user_id: 'user-1', amount: 5000, new_balance: 15000,
     }));
-  });
-
-  it('does not itself touch the balance (handled by wallet.transaction.completed)', async () => {
-    await capturedHandler!(makeMsg('topup.confirmed', event));
     expect(mockUserUpdate).not.toHaveBeenCalled();
-  });
-
-  it('acks the message', async () => {
-    await capturedHandler!(makeMsg('topup.confirmed', event));
-    expect(mockChannel.ack).toHaveBeenCalled();
   });
 });
 
-// ── topup.failed (SSE bridge) ─────────────────────────────────────────────────
-
 describe('topup.failed event', () => {
-  const event = { topupId: 'topup-2', topupRef: 'ref-2', userId: 'user-1', amount: '5000', reason: 'PULL_FAILED', failedAt: '2026-06-12T00:00:00.000Z' };
-
+  const event = { topupId: 'topup-2', userId: 'user-1', reason: 'PULL_FAILED' };
   it('bridges to the topup Redis channel as topup.payment.failed', async () => {
     await capturedHandler!(makeMsg('topup.failed', event));
     expect(mockRedisPublish).toHaveBeenCalledWith('topup:topup-2', JSON.stringify({
       type: 'topup.payment.failed', topup_id: 'topup-2', user_id: 'user-1', reason: 'PULL_FAILED',
     }));
   });
-
-  it('does not update any balance', async () => {
-    await capturedHandler!(makeMsg('topup.failed', event));
-    expect(mockUserUpdate).not.toHaveBeenCalled();
-  });
 });
 
-// ── unrelated payment events ──────────────────────────────────────────────────
+// ── unrelated / error handling ────────────────────────────────────────────────
 
 describe('unrelated routing keys', () => {
   it('acks and ignores ticket payment events', async () => {
     await capturedHandler!(makeMsg('payment.confirmed', { paymentRef: 'p1', method: 'mtn' }));
     expect(mockUserUpdate).not.toHaveBeenCalled();
+    expect(mockOrgUpdate).not.toHaveBeenCalled();
     expect(mockRedisPublish).not.toHaveBeenCalled();
     expect(mockChannel.ack).toHaveBeenCalled();
   });
 });
 
-// ── error handling ────────────────────────────────────────────────────────────
-
 describe('error handling', () => {
   it('nacks (no requeue) when message body is malformed JSON', async () => {
-    const badMsg = { content: Buffer.from('not-json{{{'), fields: { routingKey: 'wallet.transaction.completed' } } as unknown as ConsumeMessage;
+    const badMsg = { content: Buffer.from('not-json{{{'), fields: { routingKey: 'wallet.events' } } as unknown as ConsumeMessage;
     await capturedHandler!(badMsg);
     expect(mockChannel.nack).toHaveBeenCalledWith(badMsg, false, false);
     expect(mockChannel.ack).not.toHaveBeenCalled();
@@ -152,7 +159,7 @@ describe('error handling', () => {
 
   it('nacks when a DB write throws', async () => {
     mockUserUpdate.mockRejectedValueOnce(new Error('DB error'));
-    const msg = makeMsg('wallet.transaction.completed', { userId: 'u', newBalance: '100', type: 'CREDIT', amount: '100', occurredAt: '2026-06-12T00:00:00.000Z' });
+    const msg = makeMsg('wallet.events', { type: 'passenger.transaction', userId: 'u', newBalance: '100', movement: 'CREDIT', amount: '100', occurredAt: '2026-06-12T00:00:00.000Z' });
     await capturedHandler!(msg);
     expect(mockChannel.nack).toHaveBeenCalledWith(msg, false, false);
   });

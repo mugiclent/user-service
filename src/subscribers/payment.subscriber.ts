@@ -4,42 +4,47 @@ import { prisma } from '../models/index.js';
 
 const QUEUE = 'payment-user-svc';
 const EXCHANGE = 'payment';
-const ROUTING_KEY = '#';
 
-// Events as emitted by payment-service (camelCase; bigints serialized as strings).
-// We dispatch on the AMQP routing key — payment-service does not put a `type` in
-// the body for these.
-interface TopupConfirmed {
-  topupId: string;
-  topupRef: string;
-  userId: string;
-  amount: string;
-  newBalance: string;
-  confirmedAt: string;
-}
-interface TopupFailed {
-  topupId: string;
-  topupRef: string;
-  userId: string;
-  amount: string;
-  reason: string;
-  failedAt: string;
-}
-// CQRS projection — payment-service is the source of truth for the wallet
-// balance; we mirror it onto the user record so reads never hit payment-service.
-interface WalletTransactionCompleted {
+// Routing keys we bind. payment-service emits passenger AND organisation wallet
+// movements under `wallet.events` (discriminated by a `type` field); top-up
+// outcomes drive the SSE stream.
+const BINDINGS = ['wallet.events', 'topup.confirmed', 'topup.failed'];
+
+// payment-service emits camelCase; bigints are serialized as strings.
+interface PassengerTransaction {
+  type: 'passenger.transaction';
   userId: string;
   newBalance: string;
-  type: 'CREDIT' | 'DEBIT';
+  movement: 'CREDIT' | 'DEBIT';
   amount: string;
   occurredAt: string;
+  source?: 'topup' | 'ticket_payment' | 'refund';
+  reference?: string;
+  ticketId?: string | null;
 }
+interface OrganisationTransaction {
+  type: 'organisation.transaction';
+  orgId: string;
+  newBalance: string;
+  movement: 'CREDIT' | 'DEBIT';
+  amount: string;
+  occurredAt: string;
+  source?: 'ticket_payment' | 'refund';
+  reference?: string;
+  ticketId?: string | null;
+}
+type WalletEvent = PassengerTransaction | OrganisationTransaction;
+
+interface TopupConfirmed { topupId: string; userId: string; amount: string; newBalance: string }
+interface TopupFailed { topupId: string; userId: string; reason: string }
 
 export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
   const redis = getRedisClient();
 
   await ch.assertQueue(QUEUE, { durable: true, arguments: { 'x-dead-letter-exchange': 'payment.dlx' } });
-  await ch.bindQueue(QUEUE, EXCHANGE, ROUTING_KEY);
+  for (const key of BINDINGS) await ch.bindQueue(QUEUE, EXCHANGE, key);
+  // Drop the legacy catch-all binding — we now bind the specific wallet/topup keys.
+  await ch.unbindQueue(QUEUE, EXCHANGE, '#');
 
   await ch.consume(QUEUE, async (msg) => {
     if (!msg) return;
@@ -47,29 +52,22 @@ export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
 
     try {
       switch (routingKey) {
-        // Authoritative balance projection — set (not increment) so the display
-        // balance can never drift from payment-service, and append a ledger row.
-        case 'wallet.transaction.completed': {
-          const e = JSON.parse(msg.content.toString()) as WalletTransactionCompleted;
-          const newBalance = Number(e.newBalance);
-          await prisma.$transaction([
-            prisma.user.update({ where: { id: e.userId }, data: { balance: newBalance } }),
-            prisma.walletTransaction.create({
-              data: {
-                user_id: e.userId,
-                type: e.type,
-                amount: Number(e.amount),
-                balance_after: newBalance,
-                occurred_at: new Date(e.occurredAt),
-              },
-            }),
-          ]);
+        // Authoritative balance projection for BOTH owners. SET (not increment)
+        // from newBalance so the display balance never drifts, and append a
+        // ledger row tagged with the owner type.
+        case 'wallet.events': {
+          const e = JSON.parse(msg.content.toString()) as WalletEvent;
+          if (e.type === 'passenger.transaction') {
+            await projectMovement('PASSENGER', e.userId, e);
+          } else if (e.type === 'organisation.transaction') {
+            await projectMovement('ORGANISATION', e.orgId, e);
+          }
           break;
         }
 
-        // Top-up outcome — bridge to the per-topup Redis channel the SSE stream
-        // (`GET /users/me/wallet/topup/:id/stream`) is waiting on. Balance is
-        // handled by wallet.transaction.completed above.
+        // Top-up outcome → bridge to the per-topup Redis channel the SSE stream
+        // (`GET /users/me/wallet/topup/:id/stream`) waits on. Balance is handled
+        // by the passenger.transaction above.
         case 'topup.confirmed': {
           const e = JSON.parse(msg.content.toString()) as TopupConfirmed;
           await redis.publish(`topup:${e.topupId}`, JSON.stringify({
@@ -93,8 +91,6 @@ export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
           break;
         }
 
-        // payment.confirmed / payment.failed (momo/cash ticket payments) and any
-        // other payment events are not relevant to the user-service projection.
         default:
           break;
       }
@@ -107,4 +103,32 @@ export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
   });
 
   console.warn(`[payment-subscriber] Listening on ${QUEUE}`);
+};
+
+// Mirror the owner's balance and append a ledger row, in one transaction.
+const projectMovement = async (
+  ownerType: 'PASSENGER' | 'ORGANISATION',
+  ownerId: string,
+  e: WalletEvent,
+): Promise<void> => {
+  const newBalance = BigInt(e.newBalance);
+  const ledger = prisma.walletTransaction.create({
+    data: {
+      owner_id: ownerId,
+      owner_type: ownerType,
+      type: e.movement,
+      source: e.source ?? null,
+      reference: e.reference ?? null,
+      ticket_id: e.ticketId ?? null,
+      amount: BigInt(e.amount),
+      balance_after: newBalance,
+      occurred_at: new Date(e.occurredAt),
+    },
+  });
+
+  const balanceUpdate = ownerType === 'PASSENGER'
+    ? prisma.user.update({ where: { id: ownerId }, data: { balance: newBalance } })
+    : prisma.org.update({ where: { id: ownerId }, data: { balance: newBalance } });
+
+  await prisma.$transaction([balanceUpdate, ledger]);
 };

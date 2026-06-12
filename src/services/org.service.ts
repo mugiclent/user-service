@@ -195,6 +195,29 @@ export const OrgService = {
     }
 
     publishAudit({ actor_id: requestingUser.id, action: 'create', resource: 'Org', resource_id: org.id });
+
+    // An org created directly as active (platform-admin shortcut, not the apply
+    // → approve flow) must still be provisioned downstream — emit org.activated
+    // so payment-service creates its wallet and trip-service mirrors the org.
+    if (org.status === 'active') {
+      publishOrgEvent({
+        type: 'org.activated',
+        id: org.id,
+        name: org.name,
+        slug: org.slug,
+        org_type: org.org_type,
+        status: 'active',
+        billing_day: org.billing_day ?? 1,
+        tin: org.tin,
+        logo_path: org.logo_path,
+        parent_org_id: org.parent_org_id,
+        story: org.story,
+        cancellations_allowed: org.cancellations_allowed,
+        bank_id: org.bank_id,
+        account_number: org.account_number,
+      });
+    }
+
     return serializeOrgCreated(org);
   },
 

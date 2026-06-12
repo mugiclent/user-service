@@ -54,7 +54,7 @@ export const WalletService = {
   },
 
   // Served from the local wallet_transactions projection (fed by payment-service's
-  // wallet.transaction.completed events) — no synchronous call to payment-service.
+  // passenger.transaction events) — no synchronous call to payment-service.
   async getTransactions(
     userId: string,
     opts: { page?: number; limit?: number } = {},
@@ -63,20 +63,24 @@ export const WalletService = {
     const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, 100) : 20;
     const skip = (page - 1) * limit;
 
+    const where = { owner_id: userId, owner_type: 'PASSENGER' };
     const [rows, total] = await Promise.all([
       prisma.walletTransaction.findMany({
-        where: { user_id: userId },
+        where,
         orderBy: { occurred_at: 'desc' },
         skip,
         take: limit,
       }),
-      prisma.walletTransaction.count({ where: { user_id: userId } }),
+      prisma.walletTransaction.count({ where }),
     ]);
 
     return {
       transactions: rows.map((t) => ({
         id: t.id,
         type: t.type,
+        source: t.source,
+        reference: t.reference,
+        ticket_id: t.ticket_id,
         amount: Number(t.amount),
         balance_after: Number(t.balance_after),
         occurred_at: t.occurred_at,
