@@ -1,7 +1,7 @@
 // Route declarations — excluded from unit test coverage (see vitest.config.ts)
 import { Router } from 'express';
 import { UserController } from './user.controller.js';
-import { validate } from '../middleware/validate.js';
+import { validate, validateQuery } from '../middleware/validate.js';
 import { authenticate } from '../middleware/authenticate.js';
 import { authorize } from '../middleware/authorize.js';
 import {
@@ -16,6 +16,8 @@ import {
   updateInvitationSchema,
   addUserGrantsSchema,
   assignRolesSchema,
+  listUsersQuerySchema,
+  setInvitationGrantsSchema,
 } from '../middleware/schemas/user.schema.js';
 import { sudoRateLimiter } from '../middleware/rateLimiter.js';
 
@@ -30,8 +32,14 @@ router.post('/accept-invite', validate(acceptInviteSchema), UserController.accep
 // GET    /api/v1/users/invitations
 router.get('/invitations', authenticate, authorize('invite', 'User'), UserController.listInvitations);
 
+// GET    /api/v1/users/invitations/:id
+router.get('/invitations/:id', authenticate, authorize('invite', 'User'), UserController.getInvitationById);
+
 // PATCH  /api/v1/users/invitations/:id
 router.patch('/invitations/:id', authenticate, authorize('invite', 'User'), validate(updateInvitationSchema), UserController.updateInvitation);
+
+// PUT    /api/v1/users/invitations/:id/grants — replace direct grants (assign_role scope)
+router.put('/invitations/:id/grants', authenticate, authorize('assign_role', 'User'), validate(setInvitationGrantsSchema), UserController.setInvitationGrants);
 
 // POST   /api/v1/users/invitations/:id/resend
 router.post('/invitations/:id/resend', authenticate, authorize('invite', 'User'), UserController.resendInvitation);
@@ -69,7 +77,7 @@ router.post('/me/login-channel/confirm', authenticate, validate(loginChannelConf
 router.get('/me/avatar/presigned-url', authenticate, UserController.getAvatarPresignedUrl);
 
 // GET /api/v1/users
-router.get('/', authenticate, authorize('read', 'User'), UserController.listUsers);
+router.get('/', authenticate, authorize('read', 'User'), validateQuery(listUsersQuerySchema), UserController.listUsers);
 
 // GET /api/v1/users/:id
 router.get('/:id', authenticate, authorize('read', 'User'), UserController.getUserById);

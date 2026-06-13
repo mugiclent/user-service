@@ -293,7 +293,7 @@ export const OrgService = {
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
     const ability = buildAbilityFromRules(requestingUser.rules);
-    return serializeOrgFull(org, getScopeFor(ability, 'read', 'Org') === 'platform');
+    return serializeOrgFull(org, getScopeFor(ability, 'read', 'Org'));
   },
 
   // ---------------------------------------------------------------------------
@@ -305,7 +305,7 @@ export const OrgService = {
     orgId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const canSeeAllOrgs = getScopeFor(ability, 'read', 'Org') === 'platform';
+    const scope = getScopeFor(ability, 'read', 'Org');
 
     const org = await prisma.org.findUnique({
       where: { id: orgId, deleted_at: null },
@@ -318,7 +318,7 @@ export const OrgService = {
       throw new AppError('FORBIDDEN', 403);
     }
 
-    return serializeOrgFull(org, canSeeAllOrgs);
+    return serializeOrgFull(org, scope);
   },
 
   // ---------------------------------------------------------------------------
@@ -346,7 +346,8 @@ export const OrgService = {
     },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const isPlatform = getScopeFor(ability, 'update', 'Org') === 'platform';
+    const scope = getScopeFor(ability, 'update', 'Org');
+    const isPlatform = scope === 'platform';
 
     // Coarse gate first (don't leak org existence to callers with no update power).
     if (!ability.can('update', 'Org')) throw new AppError('FORBIDDEN', 403);
@@ -554,7 +555,7 @@ export const OrgService = {
         });
       }
     });
-    return serializeOrgFull(org, isPlatform);
+    return serializeOrgFull(org, scope);
   },
 
   // ---------------------------------------------------------------------------
@@ -594,7 +595,7 @@ export const OrgService = {
     }
 
     publishAudit({ actor_id: requestingUser.id, action: 'cooperative_approve', resource: 'Org', resource_id: orgId });
-    return serializeOrgFull(updated, false);
+    return serializeOrgFull(updated, 'org');
   },
 
   // ---------------------------------------------------------------------------

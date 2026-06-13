@@ -97,8 +97,12 @@ const deleteAbandonedOrgApplications = () =>
   });
 
 /**
- * Delete invitations that expired without being accepted and are older than 7 days.
+ * Delete invitations that expired and are older than 7 days.
  * Keeps recent expired invites briefly in case an admin is checking status.
+ *
+ * No accepted-state filter is needed: accepted invitations are deleted at accept
+ * time (acceptInvite), so every surviving row is unaccepted. This job only sweeps
+ * up the ones that were never accepted and have since gone stale.
  * Runs daily.
  */
 const deleteExpiredInvitations = () =>
@@ -106,7 +110,6 @@ const deleteExpiredInvitations = () =>
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const { count } = await prisma.invitation.deleteMany({
       where: {
-        accepted_at: null,
         expires_at: { lt: sevenDaysAgo },
       },
     });

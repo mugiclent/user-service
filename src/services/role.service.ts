@@ -310,8 +310,9 @@ export const RoleService = {
     }
 
     // Block deletion if there are pending invitations referencing this role.
+    // All surviving invitations are pending — accepted ones are deleted on accept.
     const pendingInvitations = await prisma.invitationRole.count({
-      where: { role_id: roleId, invitation: { accepted_at: null } },
+      where: { role_id: roleId },
     });
     if (pendingInvitations > 0) {
       throw new AppError('ROLE_HAS_PENDING_INVITATIONS', 409);

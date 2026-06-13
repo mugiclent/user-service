@@ -10,3 +10,12 @@ export const validate =
     req.body = value;
     next();
   };
+
+export const validateQuery =
+  (schema: Joi.ObjectSchema) =>
+  (req: Request, _res: Response, next: NextFunction): void => {
+    const { error, value } = schema.validate(req.query, { abortEarly: false });
+    if (error) return next(new AppError('VALIDATION_ERROR', 422, error.details));
+    req.query = value;
+    next();
+  };

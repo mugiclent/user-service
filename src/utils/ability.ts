@@ -331,7 +331,7 @@ export const getScopeFor = (
  * True iff `ability` is permitted to hand out every grant in `targetPatterns`.
  * For each catalog-valid (subject, action) the patterns expand to, the assigner
  * must hold that pair at an equal-or-broader scope. Replaces all ad-hoc
- * isAdmin / maxScope / slug escalation checks.
+ * scope / maxScope / slug escalation checks.
  */
 export const canAssignGrants = (
   ability: AppAbility,

@@ -41,7 +41,9 @@ const mockInvitationFindUnique = vi.fn();
 const mockInvitationFindFirst = vi.fn().mockResolvedValue(null);
 const mockUserCreate = vi.fn();
 const mockUserRoleCreateMany = vi.fn().mockResolvedValue({ count: 1 });
+const mockUserGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockInvitationUpdate = vi.fn();
+const mockInvitationDelete = vi.fn().mockResolvedValue({});
 const mockUserFindUnique = vi.fn().mockResolvedValue(null);
 const mockOrgFindUnique = vi.fn().mockResolvedValue({ status: 'active' });
 
@@ -69,7 +71,8 @@ vi.mock('../../src/models/index.js', () => ({
           create: mockUserCreate,
         },
         userRole: { createMany: mockUserRoleCreateMany },
-        invitation: { update: mockInvitationUpdate },
+        userGrant: { createMany: mockUserGrantCreateMany },
+        invitation: { update: mockInvitationUpdate, delete: mockInvitationDelete },
       };
       return fn(tx);
     }),
@@ -253,8 +256,8 @@ describe('UserService.acceptInvite', () => {
       phone_number: '+250780000099',
       email: null,
       invitation_roles: [{ role_id: 'role-org-staff', role: { slug: 'org_staff' } }],
+      invitation_grants: [],
       org_id: 'org-1',
-      accepted_at: null,
       expires_at: new Date(Date.now() + 3_600_000),
     });
   });
@@ -286,8 +289,8 @@ describe('UserService.acceptInvite', () => {
       phone_number: '+250780000088',
       email: 'carol@example.com',
       invitation_roles: [{ role_id: 'role-org-staff', role: { slug: 'org_staff' } }],
+      invitation_grants: [],
       org_id: 'org-1',
-      accepted_at: null,
       expires_at: new Date(Date.now() + 3_600_000),
     });
     mockUserCreate.mockResolvedValueOnce({

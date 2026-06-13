@@ -139,26 +139,26 @@ describe('maskPhone', () => {
 // ── serializeUserForList ──────────────────────────────────────────────────────
 
 describe('serializeUserForList', () => {
-  it('masks phone for non-admin', () => {
-    const dto = serializeUserForList(makeUser() as never, false) as Record<string, unknown>;
+  it('masks phone below platform scope', () => {
+    const dto = serializeUserForList(makeUser() as never, 'org') as Record<string, unknown>;
     expect(dto.phone_number).toBe('+250788***456');
   });
 
-  it('shows full phone for admin', () => {
-    const dto = serializeUserForList(makeUser() as never, true) as Record<string, unknown>;
+  it('shows full phone at platform scope', () => {
+    const dto = serializeUserForList(makeUser() as never, 'platform') as Record<string, unknown>;
     expect(dto.phone_number).toBe('+250788123456');
   });
 
-  it('includes last_login_at for admin only', () => {
-    const admin = serializeUserForList(makeUser() as never, true) as Record<string, unknown>;
-    const nonAdmin = serializeUserForList(makeUser() as never, false) as Record<string, unknown>;
-    expect(admin).toHaveProperty('last_login_at');
-    expect(nonAdmin).not.toHaveProperty('last_login_at');
+  it('includes last_login_at at every scope', () => {
+    const platform = serializeUserForList(makeUser() as never, 'platform') as Record<string, unknown>;
+    const org = serializeUserForList(makeUser() as never, 'org') as Record<string, unknown>;
+    expect(platform).toHaveProperty('last_login_at');
+    expect(org).toHaveProperty('last_login_at');
   });
 
   it('returns null phone_number when user has none', () => {
     const user = makeUser({ phone_number: null });
-    const dto = serializeUserForList(user as never, false) as Record<string, unknown>;
+    const dto = serializeUserForList(user as never, 'org') as Record<string, unknown>;
     expect(dto.phone_number).toBeNull();
   });
 });
@@ -166,17 +166,12 @@ describe('serializeUserForList', () => {
 // ── serializeUserFullProfile ──────────────────────────────────────────────────
 
 describe('serializeUserFullProfile', () => {
-  it('includes driver fields for admin', () => {
+  it('always includes driver fields and last_login_at', () => {
     const user = makeUser({ driver_license_number: 'DL-123', last_login_at: now });
-    const dto = serializeUserFullProfile(user as never, true) as Record<string, unknown>;
+    const dto = serializeUserFullProfile(user as never) as Record<string, unknown>;
     expect(dto).toHaveProperty('driver_license_number', 'DL-123');
+    expect(dto).toHaveProperty('driver_license_verified_at');
     expect(dto).toHaveProperty('last_login_at', now);
-  });
-
-  it('excludes driver fields for non-admin', () => {
-    const dto = serializeUserFullProfile(makeUser() as never, false) as Record<string, unknown>;
-    expect(dto).not.toHaveProperty('driver_license_number');
-    expect(dto).not.toHaveProperty('last_login_at');
   });
 });
 
@@ -204,21 +199,21 @@ describe('serializeOrgCreated', () => {
 // ── serializeOrgFull ──────────────────────────────────────────────────────────
 
 describe('serializeOrgFull', () => {
-  it('includes child_orgs and approved_by for admin', () => {
+  it('includes child_orgs and approved_by at platform scope', () => {
     const org = makeOrg({ child_orgs: [{ id: 'child-1', name: 'Child', slug: 'child', status: 'active' }] });
-    const dto = serializeOrgFull(org as never, true) as Record<string, unknown>;
+    const dto = serializeOrgFull(org as never, 'platform') as Record<string, unknown>;
     expect(dto).toHaveProperty('child_orgs');
     expect(dto).toHaveProperty('approved_by', 'admin-1');
   });
 
-  it('excludes child_orgs and approved_by for non-admin', () => {
-    const dto = serializeOrgFull(makeOrg() as never, false) as Record<string, unknown>;
+  it('excludes child_orgs and approved_by below platform scope', () => {
+    const dto = serializeOrgFull(makeOrg() as never, 'org') as Record<string, unknown>;
     expect(dto).not.toHaveProperty('child_orgs');
     expect(dto).not.toHaveProperty('approved_by');
   });
 
   it('always includes approved_at', () => {
-    const dto = serializeOrgFull(makeOrg() as never, false) as Record<string, unknown>;
+    const dto = serializeOrgFull(makeOrg() as never, 'org') as Record<string, unknown>;
     expect(dto).toHaveProperty('approved_at', now);
   });
 });

@@ -29,6 +29,10 @@ const mockTxUserRoleDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxUserRoleCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxUserRoleCreate = vi.fn().mockResolvedValue({});
 const mockTxInvitationUpdate = vi.fn().mockResolvedValue({});
+const mockTxInvitationDelete = vi.fn().mockResolvedValue({});
+const mockTxInvitationFindUniqueOrThrow = vi.fn().mockResolvedValue({ invitation_roles: [], invitation_grants: [] });
+const mockTxInvitationGrantDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
+const mockTxInvitationGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxUserGrantDeleteMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockTxUserGrantCreateMany = vi.fn().mockResolvedValue({ count: 0 });
 const mockRefreshTokenUpdateMany = vi.fn().mockResolvedValue({ count: 0 });
@@ -39,7 +43,8 @@ const mockTransaction = vi.fn().mockImplementation(async (arg: unknown) => {
       user: { update: mockTxUserUpdate, create: mockTxUserCreate, findUniqueOrThrow: mockTxUserFindUniqueOrThrow },
       role: { findMany: mockTxRoleFindMany },
       userRole: { deleteMany: mockTxUserRoleDeleteMany, createMany: mockTxUserRoleCreateMany, create: mockTxUserRoleCreate },
-      invitation: { update: mockTxInvitationUpdate },
+      invitation: { update: mockTxInvitationUpdate, delete: mockTxInvitationDelete, findUniqueOrThrow: mockTxInvitationFindUniqueOrThrow },
+      invitationGrant: { deleteMany: mockTxInvitationGrantDeleteMany, createMany: mockTxInvitationGrantCreateMany },
       userGrant: { deleteMany: mockTxUserGrantDeleteMany, createMany: mockTxUserGrantCreateMany },
     };
     return (arg as (tx: unknown) => Promise<unknown>)(tx);
@@ -78,11 +83,13 @@ vi.mock('../../src/loaders/redis.js', () => ({
 const mockSerializeUserMe = vi.fn().mockReturnValue({ id: 'user-1', serialized: 'me' });
 const mockSerializeUserForList = vi.fn().mockImplementation((u: { id: string }) => ({ id: u.id }));
 const mockSerializeUserFullProfile = vi.fn().mockImplementation((u: { id: string }) => ({ id: u.id }));
+const mockSerializeInvitationFull = vi.fn().mockImplementation((inv: { id: string }) => ({ id: inv.id }));
 
 vi.mock('../../src/models/serializers.js', () => ({
   serializeUserMe: mockSerializeUserMe,
   serializeUserForList: mockSerializeUserForList,
   serializeUserFullProfile: mockSerializeUserFullProfile,
+  serializeInvitationFull: mockSerializeInvitationFull,
 }));
 
 vi.mock('../../src/utils/ability.js', async (importOriginal) => {
@@ -274,6 +281,14 @@ describe('UserService.listUsers', () => {
     expect(mockUserFindMany).toHaveBeenCalledWith(whereAndContaining({ status: 'active' }, { user_type: 'staff' }));
   });
 
+  it('filters by multiple role slugs', async () => {
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
+    await UserService.listUsers(authUser as never, { role: ['driver', 'cashier'] });
+    expect(mockUserFindMany).toHaveBeenCalledWith(
+      whereAndContaining({ user_roles: { some: { role: { slug: { in: ['driver', 'cashier'] } } } } }),
+    );
+  });
+
   it('returns data, total, page, limit', async () => {
     mockUserFindMany.mockResolvedValueOnce([makeUser()]);
     mockUserCount.mockResolvedValueOnce(1);
@@ -300,7 +315,7 @@ describe('UserService.getUserById', () => {
     mockUserFindUnique.mockResolvedValueOnce(user);
     const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.getUserById(authUser as never, 'other-user');
-    expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(user, true);
+    expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(user);
   });
 
   it('org-scoped user can view users in same org', async () => {
@@ -564,8 +579,8 @@ describe('UserService.acceptInvite', () => {
     email: null,
     phone_number: '+250788000002',
     invitation_roles: [{ role_id: 'role-1', role: { slug: 'org_staff' } }],
+    invitation_grants: [],
     org_id: 'org-1',
-    accepted_at: null,
     expires_at: futureExpiry,
     ...overrides,
   });
@@ -577,12 +592,8 @@ describe('UserService.acceptInvite', () => {
     });
   });
 
-  it('throws INVALID_TOKEN when invitation already accepted', async () => {
-    mockInvitationFindUnique.mockResolvedValueOnce(makeInvitation({ accepted_at: new Date() }));
-    await expect(UserService.acceptInvite('tok', 'pass')).rejects.toMatchObject({
-      code: 'INVALID_TOKEN', status: 400,
-    });
-  });
+  // Accepted invitations are deleted on accept, so "already accepted" is just
+  // "not found" (INVALID_TOKEN) — covered by the test above. No separate state.
 
   it('throws TOKEN_EXPIRED when invitation is past expiry', async () => {
     mockInvitationFindUnique.mockResolvedValueOnce(makeInvitation({ expires_at: pastExpiry }));
@@ -591,7 +602,7 @@ describe('UserService.acceptInvite', () => {
     });
   });
 
-  it('creates user, assigns role, marks invite accepted in transaction', async () => {
+  it('creates user, assigns role, and deletes the invitation in transaction', async () => {
     const invitation = makeInvitation();
     mockInvitationFindUnique.mockResolvedValueOnce(invitation);
     mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user', phone_number: '+250788000002', email: null, first_name: 'Bob', locale: 'rw' });
@@ -602,10 +613,24 @@ describe('UserService.acceptInvite', () => {
       }),
     );
     expect(mockTxUserRoleCreateMany).toHaveBeenCalledWith({ data: [{ user_id: 'new-user', role_id: 'role-1' }], skipDuplicates: true });
-    expect(mockTxInvitationUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { accepted_at: expect.any(Date) } }),
-    );
+    // Invitation is consumed (deleted), not stamped accepted.
+    expect(mockTxInvitationDelete).toHaveBeenCalledWith({ where: { token_hash: 'hashed-token' } });
+    expect(mockTxInvitationUpdate).not.toHaveBeenCalled();
     expect(result).toMatchObject({ user_id: 'new-user', channels: ['phone'] });
+  });
+
+  it('materialises invitation direct grants onto the new user', async () => {
+    const invitation = makeInvitation({ invitation_grants: [{ pattern: 'user:read:org' }, { pattern: 'Trip:update:org' }] });
+    mockInvitationFindUnique.mockResolvedValueOnce(invitation);
+    mockTxUserCreate.mockResolvedValueOnce({ id: 'new-user', phone_number: '+250788000002', email: null, first_name: 'Bob', locale: 'rw' });
+    await UserService.acceptInvite('tok', 'pass');
+    expect(mockTxUserGrantCreateMany).toHaveBeenCalledWith({
+      data: [
+        { user_id: 'new-user', pattern: 'user:read:org' },
+        { user_id: 'new-user', pattern: 'Trip:update:org' },
+      ],
+      skipDuplicates: true,
+    });
   });
 
   it('sends phone OTP via SMS (always)', async () => {
@@ -685,7 +710,7 @@ describe('UserService.addUserGrants', () => {
     mockUserFindUnique.mockResolvedValueOnce(targetWithGrant);
     const result = await UserService.addUserGrants(adminUser() as never, 'user-2', ['user:read:platform']);
     expect(mockTxUserGrantCreateMany).not.toHaveBeenCalled();
-    expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(targetWithGrant, true);
+    expect(mockSerializeUserFullProfile).toHaveBeenCalledWith(targetWithGrant);
     expect(result).toBeDefined();
   });
 
@@ -695,6 +720,60 @@ describe('UserService.addUserGrants', () => {
     const result = await UserService.addUserGrants(adminUser() as never, 'user-2', ['user:read:org']);
     expect(mockTransaction).toHaveBeenCalled();
     expect(result).toBeDefined();
+  });
+});
+
+// ── getInvitationById ─────────────────────────────────────────────────────────
+
+describe('UserService.getInvitationById', () => {
+  const admin = () => makeAuthUser({ role_slugs: ['platform-admin'], rules: grantAdminRules });
+
+  it('throws INVITE_NOT_FOUND when the invitation is gone (accepted/revoked/invalid)', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce(null);
+    await expect(UserService.getInvitationById(admin() as never, 'inv-1'))
+      .rejects.toMatchObject({ code: 'INVITE_NOT_FOUND', status: 404 });
+  });
+
+  it('serializes the invitation when found', async () => {
+    const invitation = { id: 'inv-1', org_id: 'org-1', invitation_roles: [], invitation_grants: [] };
+    mockInvitationFindUnique.mockResolvedValueOnce(invitation);
+    const result = await UserService.getInvitationById(admin() as never, 'inv-1');
+    expect(mockSerializeInvitationFull).toHaveBeenCalledWith(invitation);
+    expect(result).toMatchObject({ id: 'inv-1' });
+  });
+});
+
+// ── setInvitationGrants ───────────────────────────────────────────────────────
+
+describe('UserService.setInvitationGrants', () => {
+  const admin = () => makeAuthUser({ role_slugs: ['platform-admin'], rules: grantAdminRules });
+
+  it('throws FORBIDDEN without assign_role permission', async () => {
+    const auth = makeAuthUser({ role_slugs: [] });
+    await expect(UserService.setInvitationGrants(auth as never, 'inv-1', ['user:read:org']))
+      .rejects.toMatchObject({ code: 'FORBIDDEN', status: 403 });
+  });
+
+  it('throws INVITE_NOT_FOUND when the invitation is gone', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce(null);
+    await expect(UserService.setInvitationGrants(admin() as never, 'inv-1', ['user:read:org']))
+      .rejects.toMatchObject({ code: 'INVITE_NOT_FOUND', status: 404 });
+  });
+
+  it('replaces grants: clears existing then inserts the new set', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce({ id: 'inv-1', org_id: 'org-1' });
+    await UserService.setInvitationGrants(admin() as never, 'inv-1', ['user:read:org']);
+    expect(mockTxInvitationGrantDeleteMany).toHaveBeenCalledWith({ where: { invitation_id: 'inv-1' } });
+    expect(mockTxInvitationGrantCreateMany).toHaveBeenCalledWith({
+      data: [{ invitation_id: 'inv-1', pattern: 'user:read:org' }],
+    });
+  });
+
+  it('allows clearing all grants with an empty set', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce({ id: 'inv-1', org_id: 'org-1' });
+    await UserService.setInvitationGrants(admin() as never, 'inv-1', []);
+    expect(mockTxInvitationGrantDeleteMany).toHaveBeenCalledWith({ where: { invitation_id: 'inv-1' } });
+    expect(mockTxInvitationGrantCreateMany).not.toHaveBeenCalled();
   });
 });
 

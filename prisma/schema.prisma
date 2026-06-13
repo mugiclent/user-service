@@ -344,10 +344,10 @@ model Invitation {
   locale       String?   @db.VarChar(5)
   token_hash   String    @unique
   expires_at   DateTime
-  accepted_at  DateTime?
   created_at   DateTime  @default(now())
 
-  invitation_roles InvitationRole[]
+  invitation_roles  InvitationRole[]
+  invitation_grants InvitationGrant[]
 
   @@map("invitations")
 }
@@ -362,6 +362,18 @@ model InvitationRole {
 
   @@id([invitation_id, role_id])
   @@map("invitation_roles")
+}
+
+model InvitationGrant {
+  id            String   @id @default(uuid())
+  invitation_id String
+  pattern       String   @db.VarChar(80)
+  created_at    DateTime @default(now())
+
+  invitation Invitation @relation(fields: [invitation_id], references: [id], onDelete: Cascade)
+
+  @@unique([invitation_id, pattern])
+  @@map("invitation_grants")
 }
 
 model OrgDocument {

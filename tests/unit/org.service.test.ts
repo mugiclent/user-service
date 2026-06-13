@@ -232,7 +232,7 @@ describe('OrgService.getOrgById', () => {
     mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ id: 'org-2' }));
     const authUser = makeAuthUser({ role_slugs: ['platform-admin'], org_id: 'org-1', rules: PLATFORM_RULES });
     await OrgService.getOrgById(authUser as never, 'org-2');
-    expect(mockSerializeOrgFull).toHaveBeenCalledWith(expect.objectContaining({ id: 'org-2' }), true);
+    expect(mockSerializeOrgFull).toHaveBeenCalledWith(expect.objectContaining({ id: 'org-2' }), 'platform');
   });
 
   it('non-admin cannot view a different org', async () => {

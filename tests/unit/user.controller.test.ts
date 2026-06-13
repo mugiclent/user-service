@@ -167,10 +167,11 @@ describe('UserController.validatePassword', () => {
 
 describe('UserController.listUsers', () => {
   it('returns 200 with user list', async () => {
-    const req = { user: authUser, query: { page: '2', limit: '10', status: 'active' } } as unknown as Request;
+    // page/limit/role are already coerced by validateQuery before the controller runs.
+    const req = { user: authUser, query: { page: 2, limit: 10, status: 'active', role: ['driver'] } } as unknown as Request;
     const res = makeRes();
     await UserController.listUsers(req, res, next);
-    expect(mockListUsers).toHaveBeenCalledWith(authUser, { page: 2, limit: 10, status: 'active', user_type: undefined, org_id: undefined });
+    expect(mockListUsers).toHaveBeenCalledWith(authUser, { page: 2, limit: 10, status: 'active', user_type: undefined, org_id: undefined, role: ['driver'], q: undefined });
     expect(res.status).toHaveBeenCalledWith(200);
   });
 
@@ -178,7 +179,7 @@ describe('UserController.listUsers', () => {
     const req = { user: authUser, query: {} } as unknown as Request;
     await UserController.listUsers(req, makeRes(), next);
     expect(mockListUsers).toHaveBeenCalledWith(authUser, {
-      page: undefined, limit: undefined, status: undefined, user_type: undefined, org_id: undefined,
+      page: undefined, limit: undefined, status: undefined, user_type: undefined, org_id: undefined, role: undefined, q: undefined,
     });
   });
 

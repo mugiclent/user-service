@@ -2,7 +2,7 @@ import { prisma } from '../models/index.js';
 import type { Prisma, AuthenticatedUser, UserWithRoles } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { getRedisClient } from '../loaders/redis.js';
-import { serializeUserMe, serializeUserForList, serializeUserFullProfile, maskPhone } from '../models/serializers.js';
+import { serializeUserMe, serializeUserForList, serializeUserFullProfile, serializeInvitationFull, maskPhone } from '../models/serializers.js';
 import { subject } from '@casl/ability';
 import {
   buildRulesFromGrants,
@@ -184,10 +184,10 @@ export const UserService = {
 
   async listUsers(
     requestingUser: AuthenticatedUser,
-    query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string; role?: string; q?: string },
+    query: { page?: number; limit?: number; status?: string; user_type?: string; org_id?: string; role?: string[]; q?: string },
   ): Promise<{ data: Record<string, unknown>[]; total: number; page: number; limit: number }> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const canSeeAcrossOrg = getScopeFor(ability, 'read', 'User') === 'platform';
+    const scope = getScopeFor(ability, 'read', 'User');
 
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 12));
@@ -203,7 +203,7 @@ export const UserService = {
     if (query.org_id) filters.push({ org_id: query.org_id });
     if (query.status) filters.push({ status: query.status as Prisma.EnumUserStatusFieldUpdateOperationsInput['set'] });
     if (query.user_type) filters.push({ user_type: query.user_type as Prisma.EnumUserTypeFieldUpdateOperationsInput['set'] });
-    if (query.role) filters.push({ user_roles: { some: { role: { slug: query.role } } } });
+    if (query.role?.length) filters.push({ user_roles: { some: { role: { slug: { in: query.role } } } } });
     if (query.q) {
       const q = query.q;
       filters.push({ OR: [
@@ -222,7 +222,7 @@ export const UserService = {
     ]);
 
     return {
-      data: users.map((u) => serializeUserForList(u, canSeeAcrossOrg)),
+      data: users.map((u) => serializeUserForList(u, scope)),
       total,
       page,
       limit,
@@ -238,7 +238,6 @@ export const UserService = {
     targetId: string,
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const canSeeAcrossOrg = getScopeFor(ability, 'read', 'User') === 'platform';
 
     const user = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -252,7 +251,7 @@ export const UserService = {
       throw new AppError('FORBIDDEN', 403);
     }
 
-    return serializeUserFullProfile(user, canSeeAcrossOrg);
+    return serializeUserFullProfile(user);
   },
 
   // ---------------------------------------------------------------------------
@@ -265,7 +264,6 @@ export const UserService = {
     data: { first_name?: string; last_name?: string; avatar_path?: string | null; status?: string; org_id?: string; role_slugs?: string[] },
   ): Promise<Record<string, unknown>> {
     const ability = buildAbilityFromRules(requestingUser.rules);
-    const canSeeAcrossOrg = getScopeFor(ability, 'update', 'User') === 'platform';
 
     const target = await prisma.user.findUnique({
       where: { id: targetId, deleted_at: null },
@@ -365,7 +363,7 @@ export const UserService = {
       }
     });
 
-    return serializeUserFullProfile(updated, canSeeAcrossOrg);
+    return serializeUserFullProfile(updated);
   },
 
   // ---------------------------------------------------------------------------
@@ -447,7 +445,7 @@ export const UserService = {
       }
     });
 
-    return serializeUserFullProfile(updated, getScopeFor(ability, 'assign_role', 'User') === 'platform');
+    return serializeUserFullProfile(updated);
   },
 
   // ---------------------------------------------------------------------------
@@ -524,10 +522,10 @@ export const UserService = {
         ? prisma.user.findUnique({ where: { email_user_type: { email: data.email, user_type: 'staff' } }, select: { id: true } })
         : null,
       data.phone_number
-        ? prisma.invitation.findFirst({ where: { phone_number: data.phone_number, accepted_at: null, expires_at: { gt: now } }, select: { id: true } })
+        ? prisma.invitation.findFirst({ where: { phone_number: data.phone_number, expires_at: { gt: now } }, select: { id: true } })
         : null,
       data.email
-        ? prisma.invitation.findFirst({ where: { email: data.email, accepted_at: null, expires_at: { gt: now } }, select: { id: true } })
+        ? prisma.invitation.findFirst({ where: { email: data.email, expires_at: { gt: now } }, select: { id: true } })
         : null,
     ]);
     if (phoneExists || phoneInvited) throw new AppError('PHONE_ALREADY_REGISTERED', 409);
@@ -647,9 +645,14 @@ export const UserService = {
 
     const invitation = await prisma.invitation.findUnique({
       where: { token_hash: tokenHash },
-      include: { invitation_roles: { include: { role: { select: { slug: true } } } } },
+      include: {
+        invitation_roles: { include: { role: { select: { slug: true } } } },
+        invitation_grants: true,
+      },
     });
-    if (!invitation || invitation.accepted_at) throw new AppError('INVALID_TOKEN', 400);
+    // Accepted invitations are deleted (see below), so a missing row means
+    // invalid, already-used, or revoked — all indistinguishable by design.
+    if (!invitation) throw new AppError('INVALID_TOKEN', 400);
     if (invitation.expires_at < new Date()) throw new AppError('TOKEN_EXPIRED', 410);
 
     if (invitation.org_id) {
@@ -693,10 +696,17 @@ export const UserService = {
           skipDuplicates: true,
         });
       }
-      await tx.invitation.update({
-        where: { token_hash: tokenHash },
-        data: { accepted_at: new Date() },
-      });
+      // Materialise the invitation's direct grants onto the new user. They were
+      // escalation-checked when set on the invitation, so they are trusted here.
+      if (invitation.invitation_grants.length > 0) {
+        await tx.userGrant.createMany({
+          data: invitation.invitation_grants.map((g) => ({ user_id: created.id, pattern: g.pattern })),
+          skipDuplicates: true,
+        });
+      }
+      // Consume the invitation entirely — cascade drops invitation_roles +
+      // invitation_grants. There is no "accepted" tombstone; the invite is gone.
+      await tx.invitation.delete({ where: { token_hash: tokenHash } });
       return created;
     });
 
@@ -740,7 +750,7 @@ export const UserService = {
     const tokenHash = hashToken(token);
 
     const invitation = await prisma.invitation.findUnique({ where: { token_hash: tokenHash } });
-    if (!invitation || invitation.accepted_at) throw new AppError('INVITE_NOT_FOUND', 404);
+    if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
     if (invitation.expires_at < new Date()) throw new AppError('INVITE_EXPIRED', 410);
 
     const maskPhone = (phone: string) => '+' + phone.slice(0, 3) + phone.slice(3, 6) + '***' + phone.slice(-3);
@@ -776,9 +786,9 @@ export const UserService = {
     const skip = (page - 1) * limit;
 
     // Org boundary comes from the caller's Invitation rule conditions.
+    // No accepted-state filter needed — accepted invitations are deleted on accept.
     const filters: Prisma.InvitationWhereInput[] = [
       accessibleWhere(ability, 'read', 'Invitation') as Prisma.InvitationWhereInput,
-      { accepted_at: null },
     ];
 
     if (query.org_id) filters.push({ org_id: query.org_id });
@@ -840,8 +850,8 @@ export const UserService = {
     const invitation = await prisma.invitation.findUnique({
       where: { id: invitationId },
     });
+    // Accepted invitations are deleted on accept, so absence === gone (accepted/revoked/invalid).
     if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
-    if (invitation.accepted_at) throw new AppError('INVITE_ALREADY_ACCEPTED', 409);
 
     if (!hasPlatformScope && invitation.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
 
@@ -936,8 +946,8 @@ export const UserService = {
     const invitation = await prisma.invitation.findUnique({
       where: { id: invitationId },
     });
+    // Accepted invitations are deleted on accept, so absence === gone (accepted/revoked/invalid).
     if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
-    if (invitation.accepted_at) throw new AppError('INVITE_ALREADY_ACCEPTED', 409);
 
     if (!hasPlatformScope && invitation.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
 
@@ -1008,16 +1018,104 @@ export const UserService = {
 
     const invitation = await prisma.invitation.findUnique({
       where: { id: invitationId },
-      select: { id: true, accepted_at: true, org_id: true },
+      select: { id: true, org_id: true },
     });
+    // Accepted invitations are deleted on accept, so absence === gone (accepted/revoked/invalid).
     if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
-    if (invitation.accepted_at) throw new AppError('INVITE_ALREADY_ACCEPTED', 409);
 
     if (!hasPlatformScope && invitation.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
 
     await prisma.invitation.delete({ where: { id: invitationId } });
 
     publishAudit({ actor_id: requestingUser.id, action: 'delete', resource: 'Invitation', resource_id: invitationId });
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /users/invitations/:id — single invitation detail (incl. direct grants)
+  // ---------------------------------------------------------------------------
+
+  async getInvitationById(
+    requestingUser: AuthenticatedUser,
+    invitationId: string,
+  ): Promise<Record<string, unknown>> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const hasPlatformScope = getScopeFor(ability, 'invite', 'User') === 'platform';
+
+    const invitation = await prisma.invitation.findUnique({
+      where: { id: invitationId },
+      include: {
+        invitation_roles: { include: { role: { select: { slug: true } } } },
+        invitation_grants: true,
+      },
+    });
+    // Accepted invitations are deleted on accept, so absence === gone (accepted/revoked/invalid).
+    if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
+
+    if (!hasPlatformScope && invitation.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+
+    return serializeInvitationFull(invitation);
+  },
+
+  // ---------------------------------------------------------------------------
+  // PUT /users/invitations/:id/grants — replace an invitation's direct grants.
+  // These are materialised onto the user when the invite is accepted.
+  // ---------------------------------------------------------------------------
+
+  async setInvitationGrants(
+    requestingUser: AuthenticatedUser,
+    invitationId: string,
+    patterns: string[],
+  ): Promise<Record<string, unknown>> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    if (!ability.can('assign_role', 'User')) throw new AppError('FORBIDDEN', 403);
+    const hasPlatformScope = getScopeFor(ability, 'assign_role', 'User') === 'platform';
+
+    const invitation = await prisma.invitation.findUnique({
+      where: { id: invitationId },
+      select: { id: true, org_id: true },
+    });
+    if (!invitation) throw new AppError('INVITE_NOT_FOUND', 404);
+
+    if (!hasPlatformScope && invitation.org_id !== requestingUser.org_id) throw new AppError('FORBIDDEN', 403);
+
+    for (const pattern of patterns) {
+      if (!isValidPattern(pattern, PERMISSIONS)) throw new AppError('INVALID_GRANT_PATTERN', 422);
+    }
+
+    // Escalation guard: you can only stage grants you already hold (this also
+    // enforces "platform scope hidden from org-admin" — they can't grant it).
+    if (!canAssignGrants(ability, patterns, PERMISSIONS)) {
+      throw new AppError('GRANT_SCOPE_ESCALATION', 403);
+    }
+
+    // Replace semantics: the submitted set is the desired full set, compressed.
+    const compressed = compressPatterns(patterns, PERMISSIONS);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.invitationGrant.deleteMany({ where: { invitation_id: invitationId } });
+      if (compressed.length > 0) {
+        await tx.invitationGrant.createMany({
+          data: compressed.map((p) => ({ invitation_id: invitationId, pattern: p })),
+        });
+      }
+      return tx.invitation.findUniqueOrThrow({
+        where: { id: invitationId },
+        include: {
+          invitation_roles: { include: { role: { select: { slug: true } } } },
+          invitation_grants: true,
+        },
+      });
+    });
+
+    publishAudit({
+      actor_id: requestingUser.id,
+      action: 'update',
+      resource: 'Invitation',
+      resource_id: invitationId,
+      delta: { grants: compressed },
+    });
+
+    return serializeInvitationFull(updated);
   },
 
   // ---------------------------------------------------------------------------
@@ -1268,8 +1366,6 @@ export const UserService = {
     const ability = buildAbilityFromRules(requestingUser.rules);
     if (!ability.can('assign_role', 'User')) throw new AppError('FORBIDDEN', 403);
 
-    const canSeeAcrossOrg = getScopeFor(ability, 'assign_role', 'User') === 'platform';
-
     const target = await prisma.user.findUnique({ where: { id: targetUserId, deleted_at: null }, ...withRoles });
     if (!target) throw new AppError('USER_NOT_FOUND', 404);
 
@@ -1295,7 +1391,7 @@ export const UserService = {
     const toAdd = compressed.filter((p) => !existingSet.has(p));
 
     if (toAdd.length === 0 && toDelete.length === 0) {
-      return serializeUserFullProfile(target, canSeeAcrossOrg);
+      return serializeUserFullProfile(target);
     }
 
     await prisma.$transaction(async (tx) => {
@@ -1335,7 +1431,7 @@ export const UserService = {
       }
     });
 
-    return serializeUserFullProfile(updated, canSeeAcrossOrg);
+    return serializeUserFullProfile(updated);
   },
 
   // ---------------------------------------------------------------------------

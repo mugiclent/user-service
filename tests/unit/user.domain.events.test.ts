@@ -71,7 +71,8 @@ const mockTransaction = vi.fn().mockImplementation(async (arg: unknown) => {
       user: { update: mockTxUserUpdate, create: mockTxUserCreate, findUniqueOrThrow: mockTxUserFindUniqueOrThrow },
       role: { findMany: mockTxRoleFindMany },
       userRole: { deleteMany: mockTxUserRoleDeleteMany, createMany: mockTxUserRoleCreateMany },
-      invitation: { update: mockTxInvitationUpdate },
+      userGrant: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      invitation: { update: mockTxInvitationUpdate, delete: vi.fn().mockResolvedValue({}) },
     };
     return (arg as (tx: unknown) => Promise<unknown>)(tx);
   }
@@ -146,9 +147,9 @@ describe('UserService domain events — staff.created', () => {
     email: null as string | null,
     locale: 'rw',
     org_id: 'org-1',
-    accepted_at: null,
     expires_at: new Date(Date.now() + 3_600_000),
     invitation_roles: [{ role_id: 'role-1', role: { slug: 'org_staff' } }],
+    invitation_grants: [],
   };
 
   beforeEach(() => {

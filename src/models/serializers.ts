@@ -1,6 +1,6 @@
 import type { Org, OrgStatus, OrgType } from '@prisma/client';
 import type { UserWithRoles } from './index.js';
-import type { AppRule } from '../utils/ability.js';
+import type { AppRule, PermissionScope } from '../utils/ability.js';
 import { displayPhone } from '../utils/phone.js';
 
 // ---------------------------------------------------------------------------
@@ -150,14 +150,14 @@ export const maskPhone = (phone: string): string => {
 
 export const serializeUserForList = (
   user: UserWithRoles,
-  isAdmin: boolean,
+  scope: PermissionScope | null,
 ): Record<string, unknown> => ({
   id: user.id,
   first_name: user.first_name,
   last_name: user.last_name,
   email: user.email,
   phone_number: user.phone_number
-    ? isAdmin
+    ? scope === 'platform'
       ? displayPhone(user.phone_number)
       : maskPhone(user.phone_number)
     : null,
@@ -166,7 +166,7 @@ export const serializeUserForList = (
   status: user.status,
   roles: user.user_roles.map((ur) => ur.role.slug),
   org_id: user.org_id,
-  ...(isAdmin ? { last_login_at: user.last_login_at } : {}),
+  last_login_at: user.last_login_at,
   created_at: user.created_at,
 });
 
@@ -176,7 +176,6 @@ export const serializeUserForList = (
 
 export const serializeUserFullProfile = (
   user: UserWithRoles,
-  isAdmin: boolean,
 ): Record<string, unknown> => ({
   id: user.id,
   first_name: user.first_name,
@@ -200,13 +199,9 @@ export const serializeUserFullProfile = (
   notif_channel: user.notif_channel,
   locale: user.locale,
   two_factor_enabled: user.two_factor_enabled,
-  ...(isAdmin
-    ? {
-        driver_license_number: user.driver_license_number,
-        driver_license_verified_at: user.driver_license_verified_at,
-        last_login_at: user.last_login_at,
-      }
-    : {}),
+  driver_license_number: user.driver_license_number,
+  driver_license_verified_at: user.driver_license_verified_at,
+  last_login_at: user.last_login_at,
   created_at: user.created_at,
   updated_at: user.updated_at,
 });
@@ -264,6 +259,39 @@ export const serializeOrgCreated = (org: Org): Record<string, unknown> => ({
   created_at: org.created_at,
 });
 
+// ---------------------------------------------------------------------------
+// Invitation serializer (single invitation detail — includes direct grants)
+// ---------------------------------------------------------------------------
+
+export interface InvitationWithRelations {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string | null;
+  phone_number: string | null;
+  org_id: string | null;
+  invited_by: string;
+  expires_at: Date;
+  created_at: Date;
+  invitation_roles: { role: { slug: string } }[];
+  invitation_grants: { id: string; pattern: string; created_at: Date }[];
+}
+
+export const serializeInvitationFull = (inv: InvitationWithRelations): Record<string, unknown> => ({
+  id: inv.id,
+  first_name: inv.first_name,
+  last_name: inv.last_name,
+  email: inv.email,
+  phone_number: inv.phone_number,
+  role_slugs: inv.invitation_roles.map((ir) => ir.role.slug),
+  grants: inv.invitation_grants.map((g) => ({ id: g.id, pattern: g.pattern, created_at: g.created_at })),
+  org_id: inv.org_id,
+  invited_by: inv.invited_by,
+  expires_at: inv.expires_at,
+  expired: inv.expires_at < new Date(),
+  created_at: inv.created_at,
+});
+
 type OrgWithRelations = Org & {
   parent_org: { id: string; name: string; slug: string; status: OrgStatus } | null;
   child_orgs: { id: string; name: string; slug: string; status: OrgStatus }[];
@@ -271,7 +299,7 @@ type OrgWithRelations = Org & {
 
 export const serializeOrgFull = (
   org: OrgWithRelations,
-  isAdmin: boolean,
+  scope: PermissionScope | null,
 ): Record<string, unknown> => ({
   id: org.id,
   name: org.name,
@@ -291,7 +319,7 @@ export const serializeOrgFull = (
   parent_org_id: org.parent_org_id,
   parent_org: org.parent_org,
   cooperative_approved_at: org.cooperative_approved_at,
-  ...(isAdmin ? { child_orgs: org.child_orgs, approved_by: org.approved_by, cooperative_approved_by: org.cooperative_approved_by } : {}),
+  ...(scope === 'platform' ? { child_orgs: org.child_orgs, approved_by: org.approved_by, cooperative_approved_by: org.cooperative_approved_by } : {}),
   approved_at: org.approved_at,
   created_at: org.created_at,
   updated_at: org.updated_at,

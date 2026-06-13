@@ -106,18 +106,19 @@ export const UserController = {
   async listUsers(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
-      const query = req.query as {
-        page?: string;
-        limit?: string;
+      // Validated + coerced by listUsersQuerySchema (validateQuery middleware).
+      const query = req.query as unknown as {
+        page?: number;
+        limit?: number;
         status?: string;
         user_type?: string;
         org_id?: string;
-        role?: string;
+        role?: string[];
         q?: string;
       };
       const result = await UserService.listUsers(user, {
-        page: query.page ? parseInt(query.page, 10) : undefined,
-        limit: query.limit ? parseInt(query.limit, 10) : undefined,
+        page: query.page,
+        limit: query.limit,
         status: query.status,
         user_type: query.user_type,
         org_id: query.org_id,
@@ -262,10 +263,34 @@ export const UserController = {
     }
   },
 
+  async getInvitationById(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.getInvitationById(user, req.params['id']!);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async resendInvitation(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
       const result = await UserService.resendInvitation(user, req.params['id']!);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
+  async setInvitationGrants(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await UserService.setInvitationGrants(
+        user,
+        req.params['id']!,
+        (req.body as { patterns: string[] }).patterns,
+      );
       res.status(200).json(result);
     } catch (err) {
       next(err);

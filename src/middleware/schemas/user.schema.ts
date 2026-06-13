@@ -32,6 +32,18 @@ export const updateUserSchema = Joi.object({
   org_id: Joi.string().uuid().optional(),
 }).min(1);
 
+// GET /users — list query params (validated + coerced before the controller)
+export const listUsersQuerySchema = Joi.object({
+  page: Joi.number().integer().min(1).optional(),
+  limit: Joi.number().integer().min(1).max(100).optional(),
+  status: Joi.string().valid('active', 'pending_verification', 'suspended', 'pending_deletion').optional(),
+  user_type: Joi.string().valid('staff', 'passenger').optional(),
+  org_id: Joi.string().uuid().optional(),
+  // Accept ?role=a or ?role=a&role=b — .single() coerces a lone value into an array.
+  role: Joi.array().items(Joi.string().trim()).single().optional(),
+  q: Joi.string().trim().max(200).optional(),
+});
+
 // PUT /users/:id/roles — dedicated role assignment (separate from profile edits)
 export const assignRolesSchema = Joi.object({
   role_slugs: Joi.array().items(Joi.string().trim()).required(),
@@ -87,4 +99,10 @@ export const updateInvitationSchema = Joi.object({
 
 export const addUserGrantsSchema = Joi.object({
   patterns: Joi.array().items(patternItem).min(1).required(),
+});
+
+// PUT /users/invitations/:id/grants — replace the invitation's direct grants.
+// Empty array is allowed: it clears all staged grants.
+export const setInvitationGrantsSchema = Joi.object({
+  patterns: Joi.array().items(patternItem).required(),
 });
