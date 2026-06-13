@@ -196,8 +196,10 @@ tags:
   - name: Roles
     description: |
       Role and grant management. Roles are collections of grant patterns (`subject:action:scope`).
-      Managed roles (`is_managed: true`) are seeded by the platform and cannot be mutated via API.
-      `platform-admin` can manage all non-managed roles; `org-admin` can only manage roles within their own org.
+      `is_managed` marks a platform-seeded role's **provenance** — it is **not** a freeze. Editing a
+      managed/template role (`org_id: null`) as an `org-admin` transparently **forks an org-scoped
+      copy** (copy-on-write, tracked via `override_of`/`is_customised`); `platform-admin` edits in place.
+      `org-admin` can only manage roles within their own org.
   - name: Permissions
     description: |
       Read-only catalog of all valid permission subjects and actions.
@@ -241,22 +243,27 @@ tags:
         │   (SSE connection opened)  │                          │
         │                            │◄── payment.events ───────┤ (RabbitMQ)
         │                            ├─ update user.balance     │
-        │◄── event: completed ───────┤  (Redis pub/sub bridge)  │
+        │◄── event: confirmed ───────┤  (Redis pub/sub bridge)  │
         │    (SSE connection closed) │                          │
         │                            │                          │
         ├─ GET /users/me/wallet ─────►│                          │
-        │◄── 200 { balance: ... } ───┤ (reads from local DB)    │
+        │◄── 200 { available: ... } ─┤ (reads from local DB)    │
       ```
 
       ### SSE Event Types
 
-      The stream (`GET /users/me/wallet/topup/:id/stream`) emits **named SSE events**:
+      The stream (`GET /users/me/wallet/topup/:id/stream`) emits **named SSE events**; each
+      event name equals the `data.status`:
 
-      | Event name | When |
-      |---|---|
-      | `completed` | Payment succeeded — `data` contains `new_balance` |
-      | `failed` | Payment failed — `data` contains `reason` |
-      | `timeout` | No confirmation within 3 minutes — client should poll or retry |
+      | Event name | When | `data` |
+      |---|---|---|
+      | `pending` | On connect | `{ status:"pending" }` |
+      | `confirmed` | Payment succeeded | `{ status, amount, currency, new_balance, message }` |
+      | `failed` | Payment declined/errored | `{ status, reason, message, retryable:true }` |
+      | `timeout` | No result within 3 minutes | `{ status:"timeout", message }` |
+
+      The terminal outcome is also **persisted** (10-min TTL), so a client that connects (or
+      reconnects) after the result is recorded replays it immediately — no lost events.
 
       ### Client implementation
 
@@ -264,27 +271,26 @@ tags:
       // 1. Initiate the top-up
       const { topup_id } = await fetch('/api/v1/users/me/wallet/topup', {
         method: 'POST',
-        body: JSON.stringify({ amount: 5000, phone_number: '+250788000001', provider: 'mtn_momo' }),
+        body: JSON.stringify({ amount: 5000, phone: '+250788000001', payment_method: 'mtn' }),
       }).then(r => r.json());
 
       // 2. Open the SSE stream
       const es = new EventSource(`/api/v1/users/me/wallet/topup/${topup_id}/stream`);
 
-      es.addEventListener('completed', (e) => {
-        // Balance is now updated in the DB — fetch the new value
-        const balance = await fetch('/api/v1/users/me/wallet').then(r => r.json()).then(d => d.balance);
-        console.log('Top-up complete, new balance:', balance);
+      es.addEventListener('confirmed', (e) => {
+        const { new_balance } = JSON.parse(e.data); // update UI without a refetch
+        console.log('Top-up complete, new balance:', new_balance);
         es.close();
       });
 
       es.addEventListener('failed', (e) => {
-        const { reason } = JSON.parse(e.data);
-        console.error('Top-up failed:', reason);
+        const { reason, message, retryable } = JSON.parse(e.data);
+        console.error('Top-up failed:', reason, message); // retryable is always true
         es.close();
       });
 
       es.addEventListener('timeout', () => {
-        console.warn('No confirmation — check status manually');
+        console.warn('No confirmation — allow retry');
         es.close();
       });
       ```
@@ -292,7 +298,7 @@ tags:
       ### Ownership & security
 
       The SSE endpoint verifies that `topup_id` was issued by the authenticated user.
-      A 404 is returned for unknown or expired IDs (ownership key expires after 6 minutes).
+      A 404 is returned for unknown or foreign IDs.
   - name: Banks
     description: |
       Bank name registry used when organisations register their payout account details.
@@ -559,10 +565,10 @@ components:
         phone_number:
           type: string
           nullable: true
-          description: Masked to `+250***123` format for non-admin callers. Full number for platform admins.
+          description: Masked (`+250788***456`) for non-platform callers; full number at platform scope.
         avatar_path:  { type: string, nullable: true }
         user_type:    { type: string, enum: [passenger, staff] }
-        status:       { type: string, enum: [active, pending_verification, suspended] }
+        status:       { type: string, enum: [active, pending_verification, suspended, pending_deletion] }
         roles:
           type: array
           items: { type: string }
@@ -571,7 +577,7 @@ components:
           type: string
           format: date-time
           nullable: true
-          description: Included only for platform admin callers.
+          description: Always included.
         created_at:   { type: string, format: date-time }
 
     UserFullProfile:
@@ -587,7 +593,7 @@ components:
         email_verified_at: { type: string, format: date-time, nullable: true }
         avatar_path:      { type: string, nullable: true }
         user_type:        { type: string, enum: [passenger, staff] }
-        status:           { type: string, enum: [active, pending_verification, suspended] }
+        status:           { type: string, enum: [active, pending_verification, suspended, pending_deletion] }
         org_id:           { type: string, format: uuid, nullable: true }
         roles:
           type: array
@@ -612,17 +618,17 @@ components:
         driver_license_number:
           type: string
           nullable: true
-          description: Admin only — omitted for non-admin callers.
+          description: Visible to any reader with `read:User` (org scope or broader).
         driver_license_verified_at:
           type: string
           format: date-time
           nullable: true
-          description: Admin only — omitted for non-admin callers.
+          description: Visible to any reader with `read:User` (org scope or broader).
         last_login_at:
           type: string
           format: date-time
           nullable: true
-          description: Admin only — omitted for non-admin callers.
+          description: Visible to any reader with `read:User` (org scope or broader).
         created_at:  { type: string, format: date-time }
         updated_at:  { type: string, format: date-time }
 
@@ -726,7 +732,10 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Admin only — UUID of the cooperative staff member who ran the cooperative pre-approval.
+          description: >
+            UUID of the cooperative staff member who ran the pre-approval. Visible to
+            org-wide readers (so a cooperative can see which of its users approved a member),
+            unlike `child_orgs`/`approved_by` which are platform-only.
         approved_at:    { type: string, format: date-time, nullable: true }
         bank_id:        { type: string, format: uuid, nullable: true }
         account_number: { type: string, nullable: true, example: '00011234567', description: '8–20 digit bank account number.' }
@@ -788,7 +797,10 @@ components:
           description: '`{subject}:{action}:{scope}` — e.g. `user:read:org`, `*:*:platform`. Use `GET /permissions` for valid subjects/actions.'
         is_managed:
           type: boolean
-          description: Managed grants are seeded by the platform and cannot be deleted via API.
+          description: >
+            Provenance flag for a platform-seeded grant (advisory). Not a hard lock —
+            removing it from a template forks an org-scoped copy (copy-on-write).
+        created_at:   { type: string, format: date-time }
 
     Role:
       type: object
@@ -797,8 +809,22 @@ components:
         id:           { type: string, format: uuid }
         name:         { type: string, example: 'Document Reviewer' }
         slug:         { type: string, example: 'document-reviewer' }
-        org_id:       { type: string, format: uuid, nullable: true, description: 'null for platform-wide roles.' }
-        is_managed:   { type: boolean, description: 'Managed roles cannot be renamed or deleted via API.' }
+        description:  { type: string, nullable: true }
+        org_id:       { type: string, format: uuid, nullable: true, description: 'null for platform-wide template roles.' }
+        is_managed:
+          type: boolean
+          description: >
+            Provenance flag, **not** a freeze. Editing a managed/template role as an org-admin
+            transparently forks an org-scoped copy (copy-on-write); platform admins edit in place.
+        override_of:
+          type: string
+          format: uuid
+          nullable: true
+          description: For an org's copy of a platform default, the id of the default it forks; null otherwise.
+        is_customised:
+          type: boolean
+          description: 'true when `override_of` is set (the org has customised a platform default).'
+        created_at:   { type: string, format: date-time }
         grants:
           type: array
           items: { $ref: '#/components/schemas/Grant' }
@@ -824,6 +850,34 @@ components:
 
     # ── Wallet ────────────────────────────────────────────────────────────────
 
+    InvitationFull:
+      type: object
+      description: A single pending invitation with its roles and staged direct grants.
+      required: [id, first_name, last_name, role_slugs, grants, org_id, invited_by, expires_at, expired, created_at]
+      properties:
+        id:           { type: string, format: uuid }
+        first_name:   { type: string }
+        last_name:    { type: string }
+        email:        { type: string, format: email, nullable: true }
+        phone_number: { type: string, nullable: true }
+        role_slugs:
+          type: array
+          items: { type: string }
+        grants:
+          type: array
+          description: Staged direct grants — materialised onto the user on accept.
+          items:
+            type: object
+            properties:
+              id:         { type: string, format: uuid }
+              pattern:    { type: string, example: 'user:read:org' }
+              created_at: { type: string, format: date-time }
+        org_id:       { type: string, format: uuid, nullable: true }
+        invited_by:   { type: string, format: uuid }
+        expires_at:   { type: string, format: date-time }
+        expired:      { type: boolean, description: 'true when expires_at is in the past.' }
+        created_at:   { type: string, format: date-time }
+
     TopupInitiated:
       type: object
       description: Returned immediately after a wallet top-up is accepted for processing.
@@ -834,142 +888,102 @@ components:
           format: uuid
           example: d3f8a1b2-0000-0000-0000-000000000042
           description: >
-            Opaque identifier for this top-up request. Use it to open the SSE
-            stream (`GET /users/me/wallet/topup/{topup_id}/stream`). Valid for 10 minutes.
+            Identifier for this top-up. Use it to open the SSE stream
+            (`GET /users/me/wallet/topup/{topup_id}/stream`).
 
     TopupEvent:
       type: object
       description: |
-        Payload delivered as an SSE `data` field on the `completed` or `failed` event.
+        Payload delivered as the SSE `data` field. The named `event` equals `status`.
         Parse with `JSON.parse(event.data)`.
+      required: [status]
       properties:
-        type:
+        status:
           type: string
-          enum: [topup.completed, topup.failed]
-          example: topup.completed
-        topup_id:
-          type: string
-          format: uuid
-          example: d3f8a1b2-0000-0000-0000-000000000042
-        user_id:
-          type: string
-          format: uuid
+          enum: [pending, confirmed, failed, timeout]
+          example: confirmed
         amount:
           type: integer
           example: 5000
-          description: Amount that was requested (in smallest currency unit).
+          description: Amount confirmed (RWF) — present on `confirmed`.
+        currency:
+          type: string
+          example: RWF
+          description: Present on `confirmed`.
         new_balance:
           type: integer
           example: 15000
-          description: Updated wallet balance — only present on `topup.completed`.
+          description: Updated wallet balance — present on `confirmed`; lets the UI update without a refetch.
         reason:
           type: string
-          example: Transaction declined by operator
-          description: Human-readable failure reason — only present on `topup.failed`.
+          example: MOMO_DECLINED
+          description: Raw provider failure code — present on `failed`.
         retryable:
           type: boolean
-          description: Whether the payment can be retried — only present on `topup.payment.failed`.
+          example: true
+          description: Always `true` on `failed` — a retry is a fresh `POST /topup` (new `topup_id`).
+        message:
+          type: string
+          description: Human-readable message — present on `confirmed`, `failed`, and `timeout`.
+          example: Your wallet has been topped up successfully.
 
     Transaction:
       type: object
-      description: A single wallet ledger entry returned by the transaction history endpoints.
-      required: [id, type, direction, amount, currency, status, reference, description, created_at, metadata]
+      description: A single wallet ledger entry (settled movement) from the transaction history.
+      required: [id, type, amount, currency, description, created_at, reference, ticket_id, balance_after]
       properties:
         id:
           type: string
           format: uuid
         type:
           type: string
-          enum: [topup, booking, refund]
+          enum: [topup, ticket_payment, refund]
           description: |
-            What kind of transaction it was.
+            The movement's source.
             - `topup` — passenger topped up via MoMo
-            - `booking` — wallet debited for a ticket purchase
-            - `refund` — money returned after an expired/cancelled ticket
-        direction:
-          type: string
-          enum: [in, out]
-          description: '`in` — money entered the wallet (topup, refund). `out` — money left (booking).'
+            - `ticket_payment` — wallet debited for a ticket purchase
+            - `refund` — money returned after a cancelled/refunded ticket
         amount:
           type: integer
-          description: Amount in the smallest currency unit (e.g. RWF).
-          example: 3821
+          description: Amount in RWF.
+          example: 1500
         currency:
           type: string
           example: RWF
-        status:
-          type: string
-          enum: [completed, pending]
-          description: |
-            - `completed` — money successfully moved.
-            - `pending` — topup initiated but not yet confirmed by MoMo (only possible on `topup` type).
-        reference:
-          type: string
-          format: uuid
-          description: Payment reference UUID (MTN X-Reference-Id for topups; ticket reference for bookings/refunds).
         description:
           type: string
-          description: Human-readable one-liner for direct UI display — no client transformation needed.
-          example: 'Ticket · Nyabugogo → Musanze'
+          description: >
+            Human-readable one-liner for direct UI display. Top-ups show the MoMo method
+            when known (e.g. `Top up via MTN`); otherwise `Wallet top-up`. Ticket movements
+            show `Ticket payment` / `Ticket refund`.
+          example: Top up via MTN
         created_at:
           type: string
           format: date-time
-        metadata:
-          type: object
-          description: Transaction-type-specific context. Shape varies by `type`.
-          oneOf:
-            - title: Topup metadata
-              properties:
-                phone:
-                  type: string
-                  description: Masked phone number (last 3 digits visible, e.g. `+250788***456`).
-                  example: '+250788***456'
-                provider:
-                  type: string
-                  enum: [mtn, airtel]
-                fee_absorbed:
-                  type: integer
-                  description: Platform-absorbed MoMo fee in RWF. Omitted when zero.
-                  example: 89
-            - title: Booking metadata
-              properties:
-                ticket_id:   { type: string, format: uuid }
-                trip_id:     { type: string, format: uuid }
-                route:       { type: string, example: 'Nyabugogo → Musanze' }
-                departure_at: { type: string, format: date-time }
-                operator:    { type: string, example: 'Volcano Express' }
-            - title: Refund metadata
-              properties:
-                ticket_id:          { type: string, format: uuid }
-                reason:             { type: string, example: TICKET_EXPIRED }
-                original_reference: { type: string, format: uuid, description: Reference of the booking that was refunded. }
+        reference:
+          type: string
+          nullable: true
+          description: Canonical payment reference for the movement.
+        ticket_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Set for `ticket_payment` / `refund` so the UI can deep-link; `null` for top-ups.
+        balance_after:
+          type: integer
+          description: Running wallet balance immediately after this movement (RWF).
+          example: 6600
 
     TransactionList:
       type: object
-      required: [data, balance, pagination]
+      required: [data, total, page, limit]
       properties:
         data:
           type: array
           items: { $ref: '#/components/schemas/Transaction' }
-        balance:
-          type: object
-          required: [available, currency]
-          description: Current wallet balance at time of response — avoids a separate GET /wallet call.
-          properties:
-            available:
-              type: integer
-              example: 6179
-            currency:
-              type: string
-              example: RWF
-        pagination:
-          type: object
-          required: [page, limit, total, has_more]
-          properties:
-            page:     { type: integer, example: 1 }
-            limit:    { type: integer, example: 20 }
-            total:    { type: integer, example: 47 }
-            has_more: { type: boolean, example: true }
+        total: { type: integer, example: 47 }
+        page:  { type: integer, example: 1 }
+        limit: { type: integer, example: 20 }
 
   responses:
     Unauthorized:
@@ -1954,8 +1968,11 @@ paths:
       description: |
         **Required permission:** `read:Org`
 
-        Non-admin callers (`org-admin`, `dispatcher`) may only read their own org.
-        The service returns `403` if the caller's `org_id` does not match the requested `id`.
+        Non-admin callers may only read their own org (`403` otherwise) — **except**
+        cooperative admins (those holding `approve:Org`), who may also read their own
+        `coop_member`s (orgs whose `parent_org_id` equals the caller's `org_id`). This is
+        what lets a cooperative load a member's review page. Platform-scope readers can
+        read any org.
       responses:
         '200':
           description: Organization detail
@@ -1976,13 +1993,14 @@ paths:
         - `status`, `rejection_reason`, and `parent_org_id` — platform admins only. `org-admin` callers receive `403` if these fields are included.
         - `logo_path` — use `path` from the logo presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
         - `story` — free-form text description of the org. Pass `null` to clear.
-        - `parent_org_id` — reassigns the org to a different parent cooperative (admin only). `null` removes the parent. Fires an `org.updated` domain event when changed.
+        - `parent_org_id` — reassigns the org to a different parent cooperative (admin only). `null` removes the parent. The target **must be a `cooperative`** (`400 PARENT_NOT_COOPERATIVE`, or `404 PARENT_ORG_NOT_FOUND`); an org cannot parent itself (`400 ORG_CANNOT_PARENT_ITSELF`); a `coop_member` cannot drop its parent (`400 COOP_MEMBER_REQUIRES_PARENT`). Fires an `org.updated` domain event when changed.
+        - `status: rejected` — requires `rejection_reason` (`400 REJECTION_REASON_REQUIRED`).
         - `status: suspended` — blacklists all active access tokens for this org's users in Redis (15 min TTL). Sends `org.suspended` notifications directly to the org contact and fans out to all active org users via their `notif_channel` preference.
         - `status: rejected` — sends `org.rejected` notifications to the org contact.
         - `status: active` — final approval by platform admins. For `coop_member` orgs, the parent
           cooperative must have pre-approved first (`cooperative_approved_at` must be set) — attempting
           activation without it returns `400 COOPERATIVE_APPROVAL_REQUIRED`. On activation, creates an
-          `Invitation` for the org contact and sends the invite link (`<STAFF_APP_URL>/i?t=<token>`,
+          `Invitation` for the org contact and sends the invite link (`<APP_URL>/i?t=<token>`,
           7-day expiry). Notification type varies by org_type: `company`/`cooperative` receive
           `org_approved.sms`/`org_approved.mail`; `coop_member` receives `org.member_approved`
           (with invite link) and the parent cooperative's admins are notified via `org.member_approved_notify_coop`.
@@ -2022,10 +2040,70 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/OrgFull' }
+        '400':
+          description: |
+            Business-rule violation. `code` is one of:
+            `COOPERATIVE_APPROVAL_REQUIRED` (activating a `coop_member` before the
+            cooperative pre-approved), `REJECTION_REASON_REQUIRED`, `PARENT_NOT_COOPERATIVE`,
+            `COOP_MEMBER_REQUIRES_PARENT`, `ORG_CANNOT_PARENT_ITSELF`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: |
+            Conflict on a changed identity field. `code` is one of:
+            `ORG_ALREADY_EXISTS` (name/slug), `CONTACT_PHONE_ALREADY_REGISTERED`,
+            `CONTACT_EMAIL_ALREADY_REGISTERED`.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /organizations/{id}/documents:
+    get:
+      tags: [Organizations]
+      summary: Get an org's application documents
+      description: |
+        **Required permission:** `read:Org` (object-scoped like `GET /organizations/{id}`:
+        own org, platform, or a cooperative admin reading their own `coop_member`).
+
+        Returns short-lived **presigned GET URLs** for the org's application documents
+        (business certificate, representative ID). Documents live in a private bucket and
+        are never publicly readable — each `url` is signed and expires.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Document links.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, doc_type, mime_type, created_at, url]
+                      properties:
+                        id:         { type: string, format: uuid }
+                        doc_type:   { type: string, enum: [business_certificate, rep_id], example: business_certificate }
+                        mime_type:  { type: string, example: application/pdf }
+                        created_at: { type: string, format: date-time }
+                        url:
+                          type: string
+                          format: uri
+                          description: Short-lived presigned GET URL (expires).
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /organizations/{id}/cooperative-approve:
     post:
@@ -2153,6 +2231,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '415':
           description: Unsupported content type
           content:
@@ -2168,8 +2247,9 @@ paths:
         Same upload flow as `GET /organizations/me/logo/presigned-url` but targets a specific
         org by ID. Intended for platform admins to manage logos for any org.
 
-        **Required permission:** `update:Org`
-        → `platform-admin` in practice
+        **Required permission:** `update:Org` — **object-scoped**: the caller must be allowed
+        to update *that* org (platform admins: any org; org-admins: only their own). A caller
+        who only holds org-scope `update:Org` gets `403` for an org other than their own.
       parameters:
         - in: path
           name: id
@@ -2198,6 +2278,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
         '415':
           description: Unsupported content type
           content:
@@ -2990,34 +3071,31 @@ paths:
       tags: [Wallet]
       summary: Get wallet balance
       description: |
-        Returns the authenticated passenger's wallet balance from the user-service's
-        local database. No call to the payment service is made — the balance is
-        kept in sync via `payment.events` RabbitMQ messages.
+        Returns the authenticated passenger's available wallet balance from the
+        user-service's local projection. No synchronous call to the payment service is
+        made — the balance is kept in sync via `payment` (`wallet.events`) RabbitMQ
+        messages, which set the balance from each movement's authoritative `newBalance`.
 
-        The balance reflects all completed top-ups, ticket purchases, and refunds
-        processed since the account was created.
+        Reflects all completed top-ups, ticket purchases, and refunds.
       security:
         - BearerAuth: []
         - CookieAuth: []
       responses:
         '200':
-          description: Current wallet balance.
+          description: Current available balance.
           content:
             application/json:
               schema:
                 type: object
-                required: [balance, currency, user_id]
+                required: [available, currency]
                 properties:
-                  balance:
+                  available:
                     type: number
                     example: 15000
-                    description: Current wallet balance in RWF.
+                    description: Available wallet balance in RWF.
                   currency:
                     type: string
                     example: RWF
-                  user_id:
-                    type: string
-                    format: uuid
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
           description: User record not found.
@@ -3053,16 +3131,18 @@ paths:
               properties:
                 amount:
                   type: integer
-                  minimum: 1
+                  minimum: 100
                   maximum: 5000000
                   example: 5000
-                  description: Amount to top up in the smallest currency unit (e.g. RWF).
-                phone_number:
+                  description: Amount to top up in RWF. Must be an integer between 100 and 5,000,000.
+                phone:
                   type: string
                   example: '+250788000001'
                   description: |
-                    Mobile money phone number in E.164 format. Optional — if omitted,
-                    the phone number registered on the user's account is used.
+                    Mobile money phone number that will be charged. Optional — if omitted,
+                    the phone number on the user's profile is used. Accepts E.164 or local
+                    Rwandan formats (normalised server-side). Note: the wallet credited is
+                    always the **authenticated** user's; `phone` only determines who pays.
                 payment_method:
                   type: string
                   enum: [mtn, airtel]
@@ -3070,20 +3150,27 @@ paths:
                   description: Mobile money provider.
       responses:
         '202':
-          description: Top-up request accepted — await confirmation via SSE stream.
+          description: Top-up request accepted — await the result via the SSE stream.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TopupInitiated' }
               example:
                 topup_id: d3f8a1b2-0000-0000-0000-000000000042
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '422':
-          description: |
-            Validation error, or `PHONE_NOT_FOUND` when `phone_number` is omitted
-            and no phone number is registered on the user's account.
+        '400':
+          description: '`INVALID_AMOUNT` — amount is not an integer, below 100, or above 5,000,000.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: INVALID_AMOUNT, message: 'Minimum top up amount is RWF 100' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: '`INVALID_PHONE` — the provided phone is invalid, or none was given and the profile has no phone.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error: { code: INVALID_PHONE, message: Invalid phone number }
 
   /users/me/wallet/topup/{topup_id}/stream:
     get:
@@ -3101,43 +3188,45 @@ paths:
 
         ## Events
 
-        Each event has a named `event` field and a JSON `data` field:
+        Each event has a named `event` field (equal to the payload's `status`) and a JSON
+        `data` field carrying that `status`:
 
         ```
         event: pending
-        data: {"status":"pending","topup_id":"..."}
+        data: {"status":"pending"}
 
-        event: completed
-        data: {"type":"topup.payment.confirmed","topup_id":"...","amount":5000,"new_balance":15000}
+        event: confirmed
+        data: {"status":"confirmed","amount":5000,"currency":"RWF","new_balance":15000,"message":"Your wallet has been topped up successfully."}
 
         event: failed
-        data: {"type":"topup.payment.failed","topup_id":"...","reason":"Transaction declined by operator"}
+        data: {"status":"failed","reason":"MOMO_DECLINED","message":"Payment was not completed. Please try again.","retryable":true}
 
         event: timeout
-        data: {"message":"Payment confirmation timed out"}
+        data: {"status":"timeout","message":"Payment timed out. Please try again."}
         ```
 
-        | Event | When | Action |
-        |---|---|---|
-        | `pending` | Immediately on connect | Confirm stream is open, await result |
-        | `completed` | Payment confirmed by mobile money | Update balance UI, close stream |
-        | `failed` | Payment rejected or errored | Show error, close stream |
-        | `timeout` | No result within 3 minutes | Notify user, close stream, allow retry |
+        | Event | `status` | When | Action |
+        |---|---|---|---|
+        | `pending` | `pending` | Immediately on connect | Confirm stream is open, await result |
+        | `confirmed` | `confirmed` | Payment confirmed | Use `new_balance` to update the UI without a refetch, close stream |
+        | `failed` | `failed` | Payment declined/errored | Show `message`; `retryable` is always `true` — a retry is a fresh `POST /topup` (new `topup_id`) |
+        | `timeout` | `timeout` | No result within 3 minutes | Notify user, close stream, allow retry |
 
-        The stream closes itself after emitting `completed`, `failed`, or `timeout`.
-        Clients should call `EventSource.close()` on receipt of any of these events.
+        The stream closes itself after emitting a terminal event (`confirmed`, `failed`, `timeout`).
+        Clients should call `EventSource.close()` on receipt.
 
         ## Ownership
 
         `topup_id` must have been issued to the authenticated user by
-        `POST /users/me/wallet/topup`. The ownership token expires after 6 minutes.
-        A 404 is returned for unknown, expired, or foreign IDs.
+        `POST /users/me/wallet/topup`. A `404` is returned for unknown or foreign IDs.
 
-        ## Reconnects
+        ## Late connect / reconnect (no lost results)
 
-        Reconnecting within the 6-minute ownership window is safe — the stream will
-        re-subscribe to the Redis channel and deliver the result when it arrives.
-        Do not reconnect after the ownership token has expired (you will receive a 404).
+        The terminal outcome is **persisted** (10-min TTL) in addition to being published.
+        On connect the server subscribes and then replays any already-recorded terminal
+        status immediately — so a client that connects (or reconnects) **after** the payment
+        resolved still receives `confirmed`/`failed` at once, rather than waiting out the
+        3-minute timeout. This matters because provider **failure** callbacks can be slow.
       security:
         - BearerAuth: []
         - CookieAuth: []
@@ -3178,16 +3267,14 @@ paths:
                   See the `TopupEvent` schema for the `data` field shape.
               example: |
                 event: pending
-                data: {"status":"pending","topup_id":"d3f8a1b2-0000-0000-0000-000000000042"}
+                data: {"status":"pending"}
 
-                event: completed
-                data: {"type":"topup.payment.confirmed","topup_id":"d3f8a1b2-0000-0000-0000-000000000042","amount":5000,"new_balance":15000}
+                event: confirmed
+                data: {"status":"confirmed","amount":5000,"currency":"RWF","new_balance":15000,"message":"Your wallet has been topped up successfully."}
 
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404':
-          description: >
-            `topup_id` not found, expired (> 10 minutes since initiation), or does not
-            belong to the authenticated user.
+          description: '`topup_id` not found, expired, or not owned by the authenticated user.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3199,9 +3286,12 @@ paths:
       tags: [Wallet]
       summary: Own transaction history
       description: |
-        Returns the authenticated user's wallet ledger — topups, bookings, and refunds —
-        proxied from the payment service. Includes the current balance so clients can
-        render the full wallet screen in a single request.
+        Returns the authenticated user's wallet ledger — top-ups, ticket payments, and
+        refunds — from the local `wallet_transactions` projection (fed by payment-service
+        `wallet.events`). No synchronous call to the payment service is made.
+
+        Only completed movements are recorded, so every row is a settled transaction
+        (there is no `status` field; pending/failed top-ups never appear here).
       security:
         - BearerAuth: []
         - CookieAuth: []
@@ -3214,19 +3304,11 @@ paths:
           schema: { type: integer, default: 20, maximum: 100 }
         - in: query
           name: type
-          schema: { type: string, enum: [topup, booking, refund] }
-          description: Filter by transaction type.
-        - in: query
-          name: from
-          schema: { type: string, format: date }
-          description: ISO date — return transactions on or after this date.
-        - in: query
-          name: to
-          schema: { type: string, format: date }
-          description: ISO date — return transactions on or before this date.
+          schema: { type: string, enum: [topup, ticket_payment, refund] }
+          description: Filter by transaction type (maps to the movement's `source`).
       responses:
         '200':
-          description: Paginated transaction list with current balance.
+          description: Paginated transaction list.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TransactionList' }
@@ -3250,8 +3332,14 @@ paths:
         **Required permission:** `invite:User`
 
         Scoping rules (derived from the caller's `invite:User` grant):
-        - `platform` scope — may specify any `org_id` in the body.
-        - `org` scope — automatically scoped to the caller's own org; `org_id` body field is ignored.
+        - `platform` scope — may specify any `org_id`, **or omit it** to invite an org-less
+          user (any kind). However, if any assigned role carries an **org-scoped** grant
+          (`subject:action:org`), an `org_id` referencing an active org is required, else
+          `400 ORG_REQUIRED_FOR_ORG_SCOPED_ROLE`.
+        - `org` scope — automatically scoped to the caller's own org; `org_id` is ignored.
+
+        Roles are escalation-guarded: you can only assign roles whose grants you already
+        hold (`403 GRANT_SCOPE_ESCALATION`).
       requestBody:
         required: true
         content:
@@ -3288,14 +3376,28 @@ paths:
                     type: string
                     description: 'Raw invite token. The invite link is already sent via SMS/email in the format `<APP_URL>/i?t=<invite_token>`. This field is returned for reference only.'
                   expires_at: { type: string, format: date-time }
+        '400':
+          description: '`ORG_REQUIRED_FOR_ORG_SCOPED_ROLE` — an org-scoped role requires a target org.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: '`FORBIDDEN`, or `GRANT_SCOPE_ESCALATION`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404':
-          description: Role slug not found
+          description: '`ROLE_NOT_FOUND`, or `ORG_NOT_FOUND` / `ORG_NOT_ACTIVE` for the target org.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
               example: { error: { code: ROLE_NOT_FOUND } }
+        '409':
+          description: 'Contact already registered (`PHONE_ALREADY_REGISTERED` / `EMAIL_ALREADY_REGISTERED`).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users/accept-invite:
@@ -3304,7 +3406,10 @@ paths:
       summary: Accept a staff invitation (set password, trigger OTP)
       description: |
         Sets the user's password, creates the account in `pending_verification` status,
-        and sends OTP(s) to the provided channel(s).
+        and sends OTP(s) to the provided channel(s). The invitation's roles **and** any
+        staged direct grants are applied to the new user, then the invitation is
+        **deleted** (consumed) — there is no "accepted" record, so a re-used token returns
+        `400 INVALID_TOKEN`.
 
         **Does not issue tokens.** After this call, the user must:
         1. Log in via `POST /auth/login` → receives `{ requires_verification: true, channel }`.
@@ -3424,21 +3529,38 @@ paths:
         required: true
         schema: { type: string, format: uuid }
 
+    get:
+      tags: [Users]
+      summary: Get a pending invitation (detail)
+      description: |
+        Returns a single pending invitation, including its roles and any staged direct
+        grants. Backs the invitation detail/edit page.
+
+        **Required permission:** `invite:User` (org-scope callers only their own org's invitations).
+
+        > **Note:** an invitation is **deleted** the moment it is accepted — there is no
+        > "accepted" state. An accepted, revoked, or unknown id all return `404 INVITE_NOT_FOUND`.
+      responses:
+        '200':
+          description: Invitation detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitationFull' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
     patch:
       tags: [Users]
       summary: Update a pending invitation
       description: |
-        Edits fields on an invitation that has not yet been accepted. Useful for correcting
-        a wrong phone number, email, name, or role before the invitee opens the link.
+        Edits fields on a pending invitation — name, phone, email, roles, locale.
 
-        **Required permission:** `invite:User`
+        **Required permission:** `invite:User` (org-scope callers only their own org's invitations).
 
-        Scoping: org-scope callers may only update invitations belonging to their own org.
-
-        Phone/email conflicts are checked against the `users` table only when the value
-        changes — the existing value is always allowed through.
-
-        Returns `409 INVITE_ALREADY_ACCEPTED` if the invitation has already been used.
+        Phone/email conflicts are checked against the `users` table only when the value changes.
+        An org-less invitation may not take on **org-scoped roles** (`400 ORG_REQUIRED_FOR_ORG_SCOPED_ROLE`).
+        An accepted/revoked invitation returns `404 INVITE_NOT_FOUND`.
       requestBody:
         required: true
         content:
@@ -3462,28 +3584,21 @@ paths:
           description: Updated invitation
           content:
             application/json:
-              schema:
-                type: object
-                properties:
-                  id:           { type: string, format: uuid }
-                  first_name:   { type: string }
-                  last_name:    { type: string }
-                  email:        { type: string, format: email, nullable: true }
-                  phone_number: { type: string, nullable: true }
-                  role_slugs:
-                    type: array
-                    items: { type: string }
-                  org_id:       { type: string, format: uuid, nullable: true }
-                  expires_at:   { type: string, format: date-time }
-                  expired:      { type: boolean }
-                  created_at:   { type: string, format: date-time }
+              schema: { $ref: '#/components/schemas/InvitationFull' }
+        '400':
+          description: '`ORG_REQUIRED_FOR_ORG_SCOPED_ROLE` — an org-less invitation cannot take org-scoped roles.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
+        '403':
+          description: '`FORBIDDEN`, or `GRANT_SCOPE_ESCALATION` (assigning roles whose grants the caller does not hold).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: |
-            Invitation already accepted (`INVITE_ALREADY_ACCEPTED`), or
-            phone/email already registered to an existing user (`PHONE_ALREADY_REGISTERED` / `EMAIL_ALREADY_REGISTERED`).
+          description: 'Phone/email already registered to a user (`PHONE_ALREADY_REGISTERED` / `EMAIL_ALREADY_REGISTERED`).'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3493,23 +3608,66 @@ paths:
       tags: [Users]
       summary: Revoke a pending invitation
       description: |
-        Permanently deletes an invitation record, preventing the invitee from ever
-        using the link. Returns `409` if the invitation was already accepted.
+        Permanently deletes an invitation (cascades its roles + grants), preventing the
+        invitee from ever using the link.
 
-        **Required permission:** `invite:User`
-
-        Scoping: org-scope callers may only delete invitations belonging to their own org.
+        **Required permission:** `invite:User` (org-scope callers only their own org's invitations).
+        An accepted/revoked invitation returns `404 INVITE_NOT_FOUND`.
       responses:
         '204': { description: Invitation revoked. }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409':
-          description: Invitation already accepted — cannot revoke.
+
+  /users/invitations/{id}/grants:
+    put:
+      tags: [Users]
+      summary: Replace an invitation's direct grants
+      description: |
+        Replaces the set of **direct grants** staged on a pending invitation (advanced
+        permissions, on top of role-based ones). They are materialised onto the user when
+        the invitation is accepted.
+
+        **Required permission:** `assign_role:User`. An empty `patterns` array clears all
+        direct grants. Grants are escalation-guarded (`403 GRANT_SCOPE_ESCALATION` — you can
+        only stage grants you already hold, which also hides `platform` scope from org-admins).
+        An org-less invitation may not take **org-scoped** grants (`400 ORG_REQUIRED_FOR_ORG_SCOPED_ROLE`).
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [patterns]
+              properties:
+                patterns:
+                  type: array
+                  items: { type: string, example: 'user:read:org' }
+                  description: 'Full desired grant set (subject:action:scope). Empty clears all.'
+      responses:
+        '200':
+          description: Updated invitation (with the new grants).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InvitationFull' }
+        '400':
+          description: '`ORG_REQUIRED_FOR_ORG_SCOPED_ROLE` — org-scoped grant on an org-less invitation.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: INVITE_ALREADY_ACCEPTED } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`FORBIDDEN` or `GRANT_SCOPE_ESCALATION`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users/invitations/{id}/resend:
     post:
@@ -3521,7 +3679,8 @@ paths:
         on the invitation (SMS and/or email).
 
         Works for both valid (not yet expired) and already-expired invitations —
-        either way a fresh link is issued. Returns `409` if already accepted.
+        either way a fresh link is issued. An accepted/revoked invitation returns
+        `404 INVITE_NOT_FOUND`.
 
         **Required permission:** `invite:User`
 
@@ -3543,12 +3702,6 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409':
-          description: Invitation already accepted — cannot resend.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: INVITE_ALREADY_ACCEPTED } }
 
   /users:
     get:
@@ -3562,7 +3715,8 @@ paths:
         - `org` scope — sees only users within their own org (scoped automatically).
         - `own` scope — sees only themselves.
 
-        The `phone_number` field is masked to `+250***123` format for non-platform callers.
+        The `phone_number` field is masked (`+250788***456`) for non-platform callers.
+        Query params are validated and coerced; bad values return `422 VALIDATION_ERROR`.
       parameters:
         - in: query
           name: page
@@ -3572,7 +3726,7 @@ paths:
           schema: { type: integer, default: 12, minimum: 1, maximum: 100 }
         - in: query
           name: status
-          schema: { type: string, enum: [active, pending_verification, suspended] }
+          schema: { type: string, enum: [active, pending_verification, suspended, pending_deletion] }
         - in: query
           name: user_type
           schema: { type: string, enum: [passenger, staff] }
@@ -3582,8 +3736,12 @@ paths:
           description: Platform admin only — filter by organization.
         - in: query
           name: role
-          schema: { type: string }
-          description: Filter by role slug (e.g. `driver`, `org-admin`).
+          description: 'Filter by role slug. **Multi-select** — repeat the param (`?role=driver&role=cashier`) to match any of several roles.'
+          style: form
+          explode: true
+          schema:
+            type: array
+            items: { type: string }
         - in: query
           name: q
           schema: { type: string, maxLength: 200 }
@@ -3604,6 +3762,7 @@ paths:
                   limit: { type: integer }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users/{id}:
     parameters:
@@ -3637,17 +3796,17 @@ paths:
       description: |
         **Required permission:** `update:User`
 
+        Edits profile fields only. **Roles are assigned via `PUT /users/{id}/roles`**, and
+        the avatar via `PATCH /users/me` — neither is accepted here.
+
         Field notes:
-        - `role_slugs` — full role replacement (all existing roles are deleted and replaced).
-          Requires `assign_role:User` (`platform-admin` only).
-        - `avatar_path` — use `path` from the avatar presigned-url endpoint. Pass `null` to remove (S3 file deleted asynchronously).
         - `status: suspended` — immediately blacklists all active access tokens in Redis
           (15 min TTL matching the JWT TTL) and sends a `security.account_suspended`
           notification to the target user via their `notif_channel` preference.
         - `org_id` — reassigns the user to a different org (`platform-admin` only).
 
         **Domain events** published to `logs` exchange → `user.events` routing key (staff users only):
-        - `staff.updated` — when `first_name`, `last_name`, `avatar_path`, `role_slugs`, or `status` changes (includes `roles[]` and `status` in payload)
+        - `staff.updated` — when `first_name`, `last_name`, or `status` changes (includes `roles[]` and `status`)
         - `staff.suspended` — additionally fired when `status` set to `suspended`
       requestBody:
         required: true
@@ -3659,13 +3818,8 @@ paths:
               properties:
                 first_name:  { type: string, maxLength: 100 }
                 last_name:   { type: string, maxLength: 100 }
-                avatar_path: { type: string, maxLength: 500, nullable: true, description: 'S3 path from avatar presigned-url. null removes the avatar.' }
                 status:      { type: string, enum: [active, suspended], description: Suspended triggers Redis token blacklist and a push/SMS notification to the user. }
                 org_id:      { type: string, format: uuid }
-                role_slugs:
-                  type: array
-                  items: { type: string }
-                  description: 'Replaces all current roles atomically. Requires `assign_role:User` (`platform-admin` only). To add a role without removing others, fetch the user first and merge.'
       responses:
         '200':
           description: Updated user profile
@@ -3689,23 +3843,72 @@ paths:
         - `own` scope — can only delete themselves.
 
         Sets `status: pending_deletion` and `deleted_at`, revokes all active refresh tokens,
-        and blacklists active access tokens in Redis for 15 min. The account is permanently
-        anonymized after the grace period (`DELETION_GRACE_DAYS`, default 30 days) by a pg_cron job.
-        Logging in during the grace period restores the account.
+        and blacklists active access tokens in Redis for 15 min. **PII is anonymized
+        immediately** (first/last name, email, phone, driver licence nulled/scrubbed) and the
+        **avatar binary is deleted** from object storage; the row itself is retained for
+        referential integrity. Nulling email/phone frees those unique slots for re-registration.
+        The last platform admin cannot be deleted.
       responses:
-        '204': { description: User soft-deleted — tokens revoked and blacklisted }
+        '204': { description: User soft-deleted — PII anonymized, avatar deleted, tokens revoked }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{id}/roles:
+    put:
+      tags: [Users]
+      summary: Replace a user's roles
+      description: |
+        Replaces a user's roles atomically (all current roles removed, then the given set
+        applied).
+
+        **Required permission:** `assign_role:User`. Escalation-guarded — you may only assign
+        roles whose grants you already hold (`403 GRANT_SCOPE_ESCALATION`). Removing the last
+        platform-admin's powers is blocked.
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role_slugs]
+              properties:
+                role_slugs:
+                  type: array
+                  items: { type: string }
+                  example: [dispatcher, driver]
+                  description: Full desired role set (slugs). Each must resolve to a role visible to the target user's org.
+      responses:
+        '200':
+          description: Updated user profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserFullProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: '`FORBIDDEN` or `GRANT_SCOPE_ESCALATION`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: '`USER_NOT_FOUND` or `ROLE_NOT_FOUND`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
 
   /users/{id}/wallet/transactions:
     get:
       tags: [Wallet]
       summary: User transaction history (admin)
       description: |
-        Returns the wallet ledger for any user by ID, proxied from the payment service.
-        Requires `read:User` permission. Response includes `user_id` and `org_id` on each
-        entry so admins can correlate transactions across users.
+        Returns the wallet ledger for any user by ID, from the local `wallet_transactions`
+        projection. Requires `read:User`. Same response shape as the own-history endpoint.
       security:
         - BearerAuth: []
         - CookieAuth: []
@@ -3723,39 +3926,13 @@ paths:
           schema: { type: integer, default: 20, maximum: 100 }
         - in: query
           name: type
-          schema: { type: string, enum: [topup, booking, refund] }
-        - in: query
-          name: from
-          schema: { type: string, format: date }
-        - in: query
-          name: to
-          schema: { type: string, format: date }
+          schema: { type: string, enum: [topup, ticket_payment, refund] }
       responses:
         '200':
-          description: Paginated transaction list with current balance.
+          description: Paginated transaction list.
           content:
             application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/TransactionList'
-                  - type: object
-                    description: Admin view — each transaction entry also includes `user_id` and `org_id`.
-                    properties:
-                      data:
-                        type: array
-                        items:
-                          allOf:
-                            - $ref: '#/components/schemas/Transaction'
-                            - type: object
-                              properties:
-                                user_id:
-                                  type: string
-                                  format: uuid
-                                  nullable: true
-                                org_id:
-                                  type: string
-                                  format: uuid
-                                  nullable: true
+              schema: { $ref: '#/components/schemas/TransactionList' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -3841,8 +4018,6 @@ paths:
       description: |
         **Required permission:** `assign_role:User`
 
-        Returns `403 MANAGED_GRANT_IMMUTABLE` if the grant has `is_managed: true`.
-
         Changes take effect on the user's **next token refresh**.
 
         Fires a `staff.updated` domain event (`logs` exchange → `user.events`) for staff users,
@@ -3850,13 +4025,12 @@ paths:
       responses:
         '204': { description: Grant removed }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403':
-          description: Forbidden or managed grant
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: '`GRANT_NOT_FOUND` (or user not found).'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: MANAGED_GRANT_IMMUTABLE } }
-        '404': { $ref: '#/components/responses/NotFound' }
 
   # ╔══════════════════════════════════════════════════════════════════════════╗
   # ║  ROLES                                                                   ║
@@ -4025,8 +4199,9 @@ paths:
 
         To change grants, use `POST /roles/{id}/grants` or `DELETE /roles/{id}/grants/{grantId}`.
 
-        Returns `403 MANAGED_ROLE_IMMUTABLE` if the role has `is_managed: true`.
-        `org-admin` callers may only update roles within their own org — global templates return `403`.
+        **Copy-on-write:** `is_managed` is not a freeze. An `org-admin` editing a global template
+        (`org_id: null`) or a managed role silently **forks an org-scoped copy** and edits that;
+        `platform-admin` edits in place. There is **no** `MANAGED_ROLE_IMMUTABLE` error.
       requestBody:
         required: true
         content:
@@ -4039,17 +4214,12 @@ paths:
                 description: { type: string, maxLength: 500, nullable: true, example: 'Reviews submitted documents before approval.' }
       responses:
         '200':
-          description: Updated role
+          description: Updated role (the org's fork when copy-on-write applied).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Role' }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403':
-          description: Forbidden or managed role
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: MANAGED_ROLE_IMMUTABLE } }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404':
           description: Role not found
           content:
@@ -4064,23 +4234,20 @@ paths:
       description: |
         **Required permission:** `delete:Role`
 
-        Returns `403 MANAGED_ROLE_IMMUTABLE` for managed roles.
+        **Copy-on-write:** an `org-admin` "deleting" a global template/default **tombstones an
+        org-scoped override** (hidden for their org only; the shared default is untouched);
+        platform admins hard-delete. There is **no** `MANAGED_ROLE_IMMUTABLE` error.
 
         Users currently assigned this role lose the join record immediately (cascade delete).
-        Their JWT still carries the old rules until the token expires (~15 min), after which
-        the role no longer appears. The users themselves are **not** deleted.
+        Their JWT still carries the old rules until the token expires (~15 min). The users
+        themselves are **not** deleted.
 
-        Deletion is blocked (`409 ROLE_HAS_PENDING_INVITATIONS`) if any uninvitations using
-        this role have not yet been accepted. Resolve or cancel those invitations first.
+        Deletion is blocked (`409 ROLE_HAS_PENDING_INVITATIONS`) if any pending invitations
+        reference this role. Resolve or revoke those invitations first.
       responses:
-        '204': { description: Role deleted — user assignments cascade-removed }
+        '204': { description: Role deleted (or org-tombstoned) — user assignments cascade-removed }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403':
-          description: Forbidden or managed role
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: MANAGED_ROLE_IMMUTABLE } }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404':
           description: Role not found
           content:
@@ -4111,7 +4278,9 @@ paths:
         wildcard are silently ignored (idempotent). Patterns are compressed at save time
         (e.g. all actions for a subject → `subject:*:scope`).
 
-        Returns `403 MANAGED_ROLE_IMMUTABLE` for managed roles.
+        **Copy-on-write:** editing a global template/managed role's grants forks an org-scoped
+        copy first (no `MANAGED_ROLE_IMMUTABLE`). Escalation-guarded: you may only add grants you
+        already hold (`403 GRANT_SCOPE_ESCALATION`).
 
         Grant changes take effect on the user's **next token refresh** — not immediately.
       requestBody:
@@ -4138,7 +4307,7 @@ paths:
               schema: { $ref: '#/components/schemas/Role' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403':
-          description: Forbidden, managed role, or scope escalation
+          description: '`FORBIDDEN` or `GRANT_SCOPE_ESCALATION`.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4174,19 +4343,14 @@ paths:
       description: |
         **Required permission:** `update:Role`
 
-        Returns `403 MANAGED_GRANT_IMMUTABLE` if the grant has `is_managed: true`.
-        Returns `403 MANAGED_ROLE_IMMUTABLE` if the role itself is managed.
+        **Copy-on-write:** removing a grant from a global template/managed role forks an
+        org-scoped copy without that grant (no `MANAGED_*_IMMUTABLE` error).
 
         Changes take effect on the user's **next token refresh**.
       responses:
         '204': { description: Grant removed }
         '401': { $ref: '#/components/responses/Unauthorized' }
-        '403':
-          description: Forbidden, managed role, or managed grant
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-              example: { error: { code: MANAGED_GRANT_IMMUTABLE } }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '404':
           description: Role or grant not found
           content:
