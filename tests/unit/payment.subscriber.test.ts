@@ -27,8 +27,9 @@ const mockChannel = {
 // ── Redis mock ────────────────────────────────────────────────────────────────
 
 const mockRedisPublish = vi.fn().mockResolvedValue(1);
+const mockRedisSet = vi.fn().mockResolvedValue('OK');
 vi.mock('../../src/loaders/redis.js', () => ({
-  getRedisClient: () => ({ publish: mockRedisPublish }),
+  getRedisClient: () => ({ publish: mockRedisPublish, set: mockRedisSet }),
 }));
 
 // ── Prisma mock ───────────────────────────────────────────────────────────────
@@ -85,7 +86,7 @@ describe('passenger.transaction (wallet.events)', () => {
   it('appends a PASSENGER ledger row with integer amounts', async () => {
     await capturedHandler!(makeMsg('wallet.events', event));
     expect(mockWalletTxCreate).toHaveBeenCalledWith({
-      data: { owner_id: 'user-1', owner_type: 'PASSENGER', type: 'CREDIT', source: 'topup', reference: 'ref-1', ticket_id: null, amount: 5000n, balance_after: 15000n, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
+      data: { owner_id: 'user-1', owner_type: 'PASSENGER', type: 'CREDIT', source: 'topup', payment_method: null, reference: 'ref-1', ticket_id: null, amount: 5000n, balance_after: 15000n, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
     });
   });
 
@@ -109,7 +110,7 @@ describe('organisation.transaction (wallet.events)', () => {
   it('appends an ORGANISATION ledger row', async () => {
     await capturedHandler!(makeMsg('wallet.events', event));
     expect(mockWalletTxCreate).toHaveBeenCalledWith({
-      data: { owner_id: 'org-1', owner_type: 'ORGANISATION', type: 'CREDIT', source: 'ticket_payment', reference: 'ref-2', ticket_id: 'ticket-1', amount: 1800n, balance_after: 20000n, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
+      data: { owner_id: 'org-1', owner_type: 'ORGANISATION', type: 'CREDIT', source: 'ticket_payment', payment_method: null, reference: 'ref-2', ticket_id: 'ticket-1', amount: 1800n, balance_after: 20000n, occurred_at: new Date('2026-06-12T00:00:00.000Z') },
     });
   });
 });
@@ -117,23 +118,27 @@ describe('organisation.transaction (wallet.events)', () => {
 // ── topup.confirmed / topup.failed (SSE bridge) ───────────────────────────────
 
 describe('topup.confirmed event', () => {
-  const event = { topupId: 'topup-1', userId: 'user-1', amount: '5000', newBalance: '15000' };
-  it('bridges to the topup Redis channel as topup.payment.confirmed', async () => {
+  const event = { topupId: 'topup-1', userId: 'user-1', amount: '5000', newBalance: '15000', method: 'mtn' };
+  it('persists + publishes the confirmed SSE payload', async () => {
     await capturedHandler!(makeMsg('topup.confirmed', event));
-    expect(mockRedisPublish).toHaveBeenCalledWith('topup:topup-1', JSON.stringify({
-      type: 'topup.payment.confirmed', topup_id: 'topup-1', user_id: 'user-1', amount: 5000, new_balance: 15000,
-    }));
+    const body = JSON.stringify({
+      status: 'confirmed', amount: 5000, currency: 'RWF', new_balance: 15000, message: 'Topped up via MTN successfully.',
+    });
+    expect(mockRedisSet).toHaveBeenCalledWith('topup_status:topup-1', body, 'EX', 600);
+    expect(mockRedisPublish).toHaveBeenCalledWith('topup:topup-1', body);
     expect(mockUserUpdate).not.toHaveBeenCalled();
   });
 });
 
 describe('topup.failed event', () => {
-  const event = { topupId: 'topup-2', userId: 'user-1', reason: 'PULL_FAILED' };
-  it('bridges to the topup Redis channel as topup.payment.failed', async () => {
+  const event = { topupId: 'topup-2', userId: 'user-1', reason: 'MOMO_DECLINED' };
+  it('persists + publishes the failed SSE payload (retryable)', async () => {
     await capturedHandler!(makeMsg('topup.failed', event));
-    expect(mockRedisPublish).toHaveBeenCalledWith('topup:topup-2', JSON.stringify({
-      type: 'topup.payment.failed', topup_id: 'topup-2', user_id: 'user-1', reason: 'PULL_FAILED',
-    }));
+    const body = JSON.stringify({
+      status: 'failed', reason: 'MOMO_DECLINED', message: 'The mobile money payment was declined. Please try again.', retryable: true,
+    });
+    expect(mockRedisSet).toHaveBeenCalledWith('topup_status:topup-2', body, 'EX', 600);
+    expect(mockRedisPublish).toHaveBeenCalledWith('topup:topup-2', body);
   });
 });
 

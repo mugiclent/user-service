@@ -60,8 +60,6 @@ const schema = Joi.object({
 
   APP_URL: Joi.string().uri().required(),
 
-  PAYMENT_SERVICE_URL: Joi.string().uri().default('http://payment-svc:8092'),
-
   S3_ENDPOINT: Joi.string().uri().required(),
   // Internal endpoint for server-side ops (e.g. http://cdn:8333 on the docker
   // network). Always required — in local dev set it equal to S3_ENDPOINT.
@@ -121,7 +119,6 @@ export const env = value as {
   ADMIN_PHONE: string;
   ADMIN_PASSWORD: string;
   APP_URL: string;
-  PAYMENT_SERVICE_URL: string;
   S3_ENDPOINT: string;
   S3_INTERNAL_ENDPOINT: string;
   S3_ACCESS_KEY: string;

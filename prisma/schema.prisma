@@ -414,10 +414,11 @@ model WalletTransaction {
   id            String   @id @default(uuid())
   owner_id      String   // userId for passengers, orgId for organisations
   owner_type    String   @db.VarChar(20) // PASSENGER | ORGANISATION
-  type          String   @db.VarChar(20) // CREDIT | DEBIT (movement)
-  source        String?  @db.VarChar(20) // topup | ticket_payment | refund
-  reference     String?  // canonical payment ref for the movement
-  ticket_id     String?  // set for ticket_payment / refund, so the UI can deep-link
+  type           String   @db.VarChar(20) // CREDIT | DEBIT (movement)
+  source         String?  @db.VarChar(20) // topup | ticket_payment | refund
+  payment_method String?  @db.VarChar(20) // mtn | airtel — set for top-ups (drives description)
+  reference      String?  // canonical payment ref for the movement
+  ticket_id      String?  // set for ticket_payment / refund, so the UI can deep-link
   amount        BigInt
   balance_after BigInt
   occurred_at   DateTime

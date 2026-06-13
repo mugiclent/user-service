@@ -1,6 +1,21 @@
 import type { Channel } from 'amqplib';
+import type { Redis } from 'ioredis';
 import { getRedisClient } from '../loaders/redis.js';
 import { prisma } from '../models/index.js';
+import { topupConfirmedMessage, topupFailedMessage } from '../utils/wallet-format.js';
+import { topupStatusKey, TOPUP_STATUS_TTL } from '../utils/topup-status.js';
+
+// Translate a top-up outcome into the SSE contract, persist it for late/reconnecting
+// subscribers (replay), then publish it for any client already streaming.
+const emitTopupOutcome = async (
+  redis: Redis,
+  topupId: string,
+  payload: Record<string, unknown>,
+): Promise<void> => {
+  const body = JSON.stringify(payload);
+  await redis.set(topupStatusKey(topupId), body, 'EX', TOPUP_STATUS_TTL);
+  await redis.publish(`topup:${topupId}`, body);
+};
 
 const QUEUE = 'payment-user-svc';
 const EXCHANGE = 'payment';
@@ -19,6 +34,7 @@ interface PassengerTransaction {
   amount: string;
   occurredAt: string;
   source?: 'topup' | 'ticket_payment' | 'refund';
+  method?: 'mtn' | 'airtel' | null; // payment-svc method; mapped to payment_method (top-ups)
   reference?: string;
   ticketId?: string | null;
 }
@@ -35,7 +51,7 @@ interface OrganisationTransaction {
 }
 type WalletEvent = PassengerTransaction | OrganisationTransaction;
 
-interface TopupConfirmed { topupId: string; userId: string; amount: string; newBalance: string }
+interface TopupConfirmed { topupId: string; userId: string; amount: string; newBalance: string; method?: 'mtn' | 'airtel' | null }
 interface TopupFailed { topupId: string; userId: string; reason: string }
 
 export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
@@ -65,29 +81,30 @@ export const initPaymentSubscriber = async (ch: Channel): Promise<void> => {
           break;
         }
 
-        // Top-up outcome → bridge to the per-topup Redis channel the SSE stream
-        // (`GET /users/me/wallet/topup/:id/stream`) waits on. Balance is handled
-        // by the passenger.transaction above.
+        // Top-up outcome → translate the payment-svc event into the user-service
+        // SSE contract, then BOTH persist it (so a client that connects after the
+        // outcome can replay it — fixes the lost-event race) and publish it (for a
+        // client already streaming). Balance is handled by passenger.transaction above.
         case 'topup.confirmed': {
           const e = JSON.parse(msg.content.toString()) as TopupConfirmed;
-          await redis.publish(`topup:${e.topupId}`, JSON.stringify({
-            type: 'topup.payment.confirmed',
-            topup_id: e.topupId,
-            user_id: e.userId,
+          await emitTopupOutcome(redis, e.topupId, {
+            status: 'confirmed',
             amount: Number(e.amount),
+            currency: 'RWF',
             new_balance: Number(e.newBalance),
-          }));
+            message: topupConfirmedMessage(e.method),
+          });
           break;
         }
 
         case 'topup.failed': {
           const e = JSON.parse(msg.content.toString()) as TopupFailed;
-          await redis.publish(`topup:${e.topupId}`, JSON.stringify({
-            type: 'topup.payment.failed',
-            topup_id: e.topupId,
-            user_id: e.userId,
+          await emitTopupOutcome(redis, e.topupId, {
+            status: 'failed',
             reason: e.reason,
-          }));
+            message: topupFailedMessage(e.reason),
+            retryable: true, // top-ups are always retryable (client mints a fresh topup_id)
+          });
           break;
         }
 
@@ -118,6 +135,7 @@ const projectMovement = async (
       owner_type: ownerType,
       type: e.movement,
       source: e.source ?? null,
+      payment_method: e.type === 'passenger.transaction' ? (e.method ?? null) : null,
       reference: e.reference ?? null,
       ticket_id: e.ticketId ?? null,
       amount: BigInt(e.amount),

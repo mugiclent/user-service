@@ -15,9 +15,12 @@ vi.mock('../../src/loaders/redis.js', () => ({
 // ── Prisma mock ───────────────────────────────────────────────────────────────
 
 const mockUserFindUnique = vi.fn().mockResolvedValue(null);
+const mockWalletTxFindMany = vi.fn().mockResolvedValue([]);
+const mockWalletTxCount = vi.fn().mockResolvedValue(0);
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
     user: { findUnique: mockUserFindUnique },
+    walletTransaction: { findMany: mockWalletTxFindMany, count: mockWalletTxCount },
   },
 }));
 
@@ -48,7 +51,7 @@ beforeEach(() => {
 // ── initiateTopup ─────────────────────────────────────────────────────────────
 
 describe('WalletService.initiateTopup', () => {
-  const body = { amount: 5000, phone_number: '+250788000001', payment_method: 'mtn' as const };
+  const body = { amount: 5000, phone: '+250788000001', payment_method: 'mtn' as const };
 
   it('returns a topup_id', async () => {
     const result = await WalletService.initiateTopup('user-1', body);
@@ -74,11 +77,21 @@ describe('WalletService.initiateTopup', () => {
     });
   });
 
-  it('normalises phone_number without + prefix', async () => {
-    await WalletService.initiateTopup('user-1', { ...body, phone_number: '250788000001' });
+  it('normalises phone without + prefix', async () => {
+    await WalletService.initiateTopup('user-1', { ...body, phone: '250788000001' });
     expect(mockPublishWalletEvent).toHaveBeenCalledWith(
       expect.objectContaining({ phone: '+250788000001' }),
     );
+  });
+
+  it('rejects amount below the minimum (100)', async () => {
+    await expect(WalletService.initiateTopup('user-1', { ...body, amount: 50 }))
+      .rejects.toMatchObject({ code: 'INVALID_AMOUNT', status: 400 });
+  });
+
+  it('rejects an invalid phone', async () => {
+    await expect(WalletService.initiateTopup('user-1', { ...body, phone: 'not-a-phone' }))
+      .rejects.toMatchObject({ code: 'INVALID_PHONE', status: 422 });
   });
 
   it('passes airtel payment_method through unchanged', async () => {
@@ -89,16 +102,16 @@ describe('WalletService.initiateTopup', () => {
   });
 
   it('falls back to user phone_number from DB when not provided', async () => {
-    mockUserFindUnique.mockResolvedValueOnce({ phone_number: '+250788000002' });
+    mockUserFindUnique.mockResolvedValueOnce({ phone_number: '250788000002' });
     await WalletService.initiateTopup('user-1', { amount: 3000, payment_method: 'mtn' });
     expect(mockUserFindUnique).toHaveBeenCalledWith({ where: { id: 'user-1' }, select: { phone_number: true } });
     expect(mockPublishWalletEvent).toHaveBeenCalledWith(expect.objectContaining({ phone: '+250788000002' }));
   });
 
-  it('throws PHONE_NOT_FOUND when no phone provided and user has none', async () => {
+  it('throws INVALID_PHONE when no phone provided and user has none', async () => {
     mockUserFindUnique.mockResolvedValueOnce({ phone_number: null });
     await expect(WalletService.initiateTopup('user-1', { amount: 3000, payment_method: 'mtn' }))
-      .rejects.toMatchObject({ code: 'PHONE_NOT_FOUND' });
+      .rejects.toMatchObject({ code: 'INVALID_PHONE' });
   });
 
   it('propagates Redis errors without publishing', async () => {
@@ -131,7 +144,7 @@ describe('WalletService.verifyTopupOwner', () => {
 // ── getWallet ─────────────────────────────────────────────────────────────────
 
 describe('WalletService.getWallet', () => {
-  it('returns balance, currency, and user_id from local DB', async () => {
+  it('returns available + currency from the local projection', async () => {
     mockUserFindUnique.mockResolvedValue({ balance: 15000 });
 
     const result = await WalletService.getWallet('user-1');
@@ -140,8 +153,7 @@ describe('WalletService.getWallet', () => {
       where: { id: 'user-1' },
       select: { balance: true },
     });
-    expect(result).toMatchObject({ currency: 'RWF', user_id: 'user-1' });
-    expect(typeof result.balance).toBe('number');
+    expect(result).toEqual({ available: 15000, currency: 'RWF' });
   });
 
   it('throws USER_NOT_FOUND (404) when user does not exist', async () => {
@@ -157,5 +169,39 @@ describe('WalletService.getWallet', () => {
     mockUserFindUnique.mockRejectedValue(new Error('DB connection lost'));
 
     await expect(WalletService.getWallet('user-1')).rejects.toThrow('DB connection lost');
+  });
+});
+
+// ── getTransactions ─────────────────────────────────────────────────────────────
+
+describe('WalletService.getTransactions', () => {
+  it('maps rows to the frontend DTO (type=source, currency, description, created_at) under data', async () => {
+    const occurred = new Date('2026-06-12T00:00:00.000Z');
+    mockWalletTxFindMany.mockResolvedValueOnce([
+      { id: 'tx-1', source: 'topup', payment_method: 'mtn', type: 'CREDIT', amount: 5000n, balance_after: 15000n, occurred_at: occurred, reference: 'ref-1', ticket_id: null },
+    ]);
+    mockWalletTxCount.mockResolvedValueOnce(1);
+
+    const result = await WalletService.getTransactions('user-1', {});
+
+    expect(result).toMatchObject({ total: 1, page: 1, limit: 20 });
+    expect(result.data[0]).toEqual({
+      id: 'tx-1',
+      type: 'topup',
+      amount: 5000,
+      currency: 'RWF',
+      description: 'Top up via MTN',
+      created_at: occurred,
+      reference: 'ref-1',
+      ticket_id: null,
+      balance_after: 15000,
+    });
+  });
+
+  it('filters by type (mapped onto source)', async () => {
+    await WalletService.getTransactions('user-1', { type: 'topup' });
+    expect(mockWalletTxFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { owner_id: 'user-1', owner_type: 'PASSENGER', source: 'topup' } }),
+    );
   });
 });

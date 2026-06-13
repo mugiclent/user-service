@@ -1,25 +1,40 @@
 import { randomUUID } from 'node:crypto';
+import type { Prisma } from '@prisma/client';
 import { getRedisClient } from '../loaders/redis.js';
 import { publishWalletEvent } from '../utils/publishers.js';
 import { prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
+import { normalizePhone } from '../utils/phone.js';
+import { describeTransaction } from '../utils/wallet-format.js';
 
 const TOPUP_TTL = 360;
+const MIN_TOPUP_AMOUNT = 100;
+const MAX_TOPUP_AMOUNT = 5_000_000;
 
 export const WalletService = {
   async initiateTopup(
     userId: string,
-    data: { amount: number; phone_number?: string; payment_method: 'mtn' | 'airtel' },
+    data: { amount: number; phone?: string; payment_method: 'mtn' | 'airtel' },
   ): Promise<{ topup_id: string }> {
-    let rawPhone = data.phone_number;
+    if (!Number.isInteger(data.amount) || data.amount < MIN_TOPUP_AMOUNT || data.amount > MAX_TOPUP_AMOUNT) {
+      throw new AppError('INVALID_AMOUNT', 400);
+    }
 
+    // Resolve the MoMo phone: explicit input or the caller's profile phone.
+    let rawPhone = data.phone;
     if (!rawPhone) {
       const user = await prisma.user.findUnique({ where: { id: userId }, select: { phone_number: true } });
-      if (!user?.phone_number) throw new AppError('PHONE_NOT_FOUND', 422);
+      if (!user?.phone_number) throw new AppError('INVALID_PHONE', 422);
       rawPhone = user.phone_number;
     }
 
-    const phone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+    let normalized: string;
+    try {
+      normalized = normalizePhone(rawPhone);
+    } catch {
+      throw new AppError('INVALID_PHONE', 422);
+    }
+    const phone = `+${normalized}`;
     const topup_id = randomUUID();
     const payment_ref = randomUUID();
 
@@ -44,46 +59,49 @@ export const WalletService = {
     return ownerId === userId;
   },
 
-  async getWallet(userId: string): Promise<{ balance: number; currency: string; user_id: string }> {
+  async getWallet(userId: string): Promise<{ available: number; currency: string }> {
     const user = await prisma.user.findUnique({
       where: { id: userId },
       select: { balance: true },
     });
     if (!user) throw new AppError('USER_NOT_FOUND', 404);
-    return { balance: Number(user.balance), currency: 'RWF', user_id: userId };
+    // `available` is the balance projection (set from payment-svc wallet.events).
+    return { available: Number(user.balance), currency: 'RWF' };
   },
 
   // Served from the local wallet_transactions projection (fed by payment-service's
   // passenger.transaction events) — no synchronous call to payment-service.
+  // The frontend contract uses `type` (= our `source`) + a derived `description`;
+  // the DB row keeps the richer movement fields (CREDIT/DEBIT, balance_after, refs).
   async getTransactions(
     userId: string,
-    opts: { page?: number; limit?: number } = {},
-  ): Promise<{ transactions: unknown[]; total: number; page: number; limit: number }> {
+    opts: { page?: number; limit?: number; type?: string } = {},
+  ): Promise<{ data: unknown[]; total: number; page: number; limit: number }> {
     const page = opts.page && opts.page > 0 ? opts.page : 1;
     const limit = opts.limit && opts.limit > 0 ? Math.min(opts.limit, 100) : 20;
     const skip = (page - 1) * limit;
 
-    const where = { owner_id: userId, owner_type: 'PASSENGER' };
+    const where: Prisma.WalletTransactionWhereInput = { owner_id: userId, owner_type: 'PASSENGER' };
+    // Frontend `type` filter maps onto our `source` (topup | ticket_payment | refund).
+    if (opts.type) where.source = opts.type;
+
     const [rows, total] = await Promise.all([
-      prisma.walletTransaction.findMany({
-        where,
-        orderBy: { occurred_at: 'desc' },
-        skip,
-        take: limit,
-      }),
+      prisma.walletTransaction.findMany({ where, orderBy: { occurred_at: 'desc' }, skip, take: limit }),
       prisma.walletTransaction.count({ where }),
     ]);
 
     return {
-      transactions: rows.map((t) => ({
+      data: rows.map((t) => ({
         id: t.id,
-        type: t.type,
-        source: t.source,
+        type: t.source,                         // contract: topup | ticket_payment | refund
+        amount: Number(t.amount),
+        currency: 'RWF',
+        description: describeTransaction(t.source, t.payment_method),
+        created_at: t.occurred_at,
+        // Extra impl fields kept — useful for the UI (deep-link, running balance).
         reference: t.reference,
         ticket_id: t.ticket_id,
-        amount: Number(t.amount),
         balance_after: Number(t.balance_after),
-        occurred_at: t.occurred_at,
       })),
       total,
       page,

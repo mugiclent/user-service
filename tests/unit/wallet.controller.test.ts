@@ -36,8 +36,9 @@ const mockDuplicate = vi.fn(() => {
   return fakeSubscriber;
 });
 
+const mockGet = vi.fn().mockResolvedValue(null); // no persisted terminal status by default
 vi.mock('../../src/loaders/redis.js', () => ({
-  getRedisClient: () => ({ duplicate: mockDuplicate }),
+  getRedisClient: () => ({ duplicate: mockDuplicate, get: mockGet }),
 }));
 
 const { WalletController } = await import('../../src/api/wallet.controller.js');
@@ -186,39 +187,34 @@ describe('WalletController.streamTopup — SSE flow', () => {
     expect(fakeSubscriber.subscribe).toHaveBeenCalledWith('topup:topup-abc');
   });
 
-  it('sends "completed" SSE event on topup.payment.confirmed message', async () => {
+  it('sends "confirmed" SSE event on a confirmed status message', async () => {
     const { res } = await setupStream();
 
     fakeSubscriber.emit('message', 'topup:topup-abc', JSON.stringify({
-      type: 'topup.payment.confirmed',
-      topup_id: 'topup-abc',
-      user_id: 'user-1',
+      status: 'confirmed',
       amount: 5000,
       currency: 'RWF',
       new_balance: 15000,
-      mtn_transaction_id: 'mtn-tx-1',
-      mtn_absorbed: 89,
+      message: 'Topped up via MTN successfully.',
     }));
 
     await new Promise((r) => setImmediate(r));
 
     const written = (res as unknown as { _chunks: string[] })._chunks.join('');
-    expect(written).toContain('event: completed');
-    expect(written).toContain('"type":"topup.payment.confirmed"');
+    expect(written).toContain('event: confirmed');
+    expect(written).toContain('"new_balance":15000');
     expect(res.end).toHaveBeenCalled();
     expect(fakeSubscriber.unsubscribe).toHaveBeenCalled();
     expect(fakeSubscriber.quit).toHaveBeenCalled();
   });
 
-  it('sends "failed" SSE event on topup.payment.failed message', async () => {
+  it('sends "failed" SSE event on a failed status message', async () => {
     const { res } = await setupStream();
 
     fakeSubscriber.emit('message', 'topup:topup-abc', JSON.stringify({
-      type: 'topup.payment.failed',
-      topup_id: 'topup-abc',
-      user_id: 'user-1',
-      reason: 'LOW_BALANCE',
-      message: 'Payment was not completed.',
+      status: 'failed',
+      reason: 'MOMO_DECLINED',
+      message: 'The mobile money payment was declined. Please try again.',
       retryable: true,
     }));
 
@@ -226,6 +222,7 @@ describe('WalletController.streamTopup — SSE flow', () => {
 
     const written = (res as unknown as { _chunks: string[] })._chunks.join('');
     expect(written).toContain('event: failed');
+    expect(written).toContain('"retryable":true');
     expect(res.end).toHaveBeenCalled();
   });
 
@@ -237,6 +234,17 @@ describe('WalletController.streamTopup — SSE flow', () => {
 
     const written = (res as unknown as { _chunks: string[] })._chunks.join('');
     expect(written).toContain('event: failed');
+    expect(res.end).toHaveBeenCalled();
+  });
+
+  it('replays a persisted terminal status on connect (race fix)', async () => {
+    mockGet.mockResolvedValueOnce(JSON.stringify({ status: 'confirmed', new_balance: 9000, message: 'done' }));
+    const { res } = await setupStream();
+
+    const written = (res as unknown as { _chunks: string[] })._chunks.join('');
+    expect(mockGet).toHaveBeenCalledWith('topup_status:topup-abc');
+    expect(written).toContain('event: confirmed');
+    expect(written).toContain('"new_balance":9000');
     expect(res.end).toHaveBeenCalled();
   });
 
@@ -285,20 +293,20 @@ describe('WalletController.getTransactions', () => {
 
     await WalletController.getTransactions(makeTxReq(), res, next);
 
-    expect(mockGetTransactions).toHaveBeenCalledWith('user-1', { page: undefined, limit: undefined });
+    expect(mockGetTransactions).toHaveBeenCalledWith('user-1', { page: undefined, limit: undefined, type: undefined });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(fakeList);
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('passes page/limit from the query', async () => {
+  it('passes page/limit/type from the query', async () => {
     mockGetTransactions.mockResolvedValue(fakeList);
     await WalletController.getTransactions(
-      makeTxReq({ query: { page: '2', limit: '5' } }),
+      makeTxReq({ query: { page: '2', limit: '5', type: 'topup' } }),
       makeRes(),
       vi.fn() as NextFunction,
     );
-    expect(mockGetTransactions).toHaveBeenCalledWith('user-1', { page: 2, limit: 5 });
+    expect(mockGetTransactions).toHaveBeenCalledWith('user-1', { page: 2, limit: 5, type: 'topup' });
   });
 
   it('calls next(err) when the service throws', async () => {
@@ -320,7 +328,7 @@ describe('WalletController.getUserTransactions', () => {
       vi.fn() as NextFunction,
     );
 
-    expect(mockGetTransactions).toHaveBeenCalledWith('user-99', { page: undefined, limit: undefined });
+    expect(mockGetTransactions).toHaveBeenCalledWith('user-99', { page: undefined, limit: undefined, type: undefined });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(fakeList);
   });
