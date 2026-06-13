@@ -50,6 +50,12 @@ const anonymizedUserFields = {
   driver_license_number: null,
 } as const;
 
+// A grant pattern is org-scoped when its scope segment is `org` (subject:action:org).
+// Such grants need an org context, so any invitation that carries one — whether from
+// a role or a direct grant — must be tied to an org_id, else it bakes to
+// { org_id: null } at accept time and matches nothing.
+const hasOrgScopedPattern = (patterns: string[]): boolean => patterns.some((p) => p.endsWith(':org'));
+
 // The grant that marks a platform super-admin. Used to guard against removing
 // the last one — identified by the *grant*, never by a role slug/name.
 const PLATFORM_ADMIN_PATTERN = '*:*:platform';
@@ -582,6 +588,13 @@ export const UserService = {
       throw new AppError('GRANT_SCOPE_ESCALATION', 403);
     }
 
+    // Org-scoped grants need an org context. A platform inviter may invite with no
+    // org, but only when none of the assigned grants are org-scoped.
+    // (Non-platform inviters always have their own org_id, so this never trips them.)
+    if (hasOrgScopedPattern(invitedGrantPatterns) && !org_id) {
+      throw new AppError('ORG_REQUIRED_FOR_ORG_SCOPED_ROLE', 400);
+    }
+
     const rawToken = generateRawToken();
     const tokenHash = hashToken(rawToken);
     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
@@ -909,6 +922,11 @@ export const UserService = {
       if (!canAssignGrants(ability, grantPatterns, PERMISSIONS)) {
         throw new AppError('GRANT_SCOPE_ESCALATION', 403);
       }
+      // An org-less invitation may not take on org-scoped roles (org_id is immutable
+      // after creation, so there is no org context to bind them to).
+      if (hasOrgScopedPattern(grantPatterns) && !invitation.org_id) {
+        throw new AppError('ORG_REQUIRED_FOR_ORG_SCOPED_ROLE', 400);
+      }
       uniqueRoles = resolved;
     }
 
@@ -1104,6 +1122,11 @@ export const UserService = {
     // enforces "platform scope hidden from org-admin" — they can't grant it).
     if (!canAssignGrants(ability, patterns, PERMISSIONS)) {
       throw new AppError('GRANT_SCOPE_ESCALATION', 403);
+    }
+
+    // Direct org-scoped grants need an org context too — block them on an org-less invite.
+    if (hasOrgScopedPattern(patterns) && !invitation.org_id) {
+      throw new AppError('ORG_REQUIRED_FOR_ORG_SCOPED_ROLE', 400);
     }
 
     // Replace semantics: the submitted set is the desired full set, compressed.

@@ -581,6 +581,27 @@ describe('UserService.inviteUser', () => {
     expect(result.invite_token).toBe('raw-invite-token');
     expect(result.expires_at).toBeInstanceOf(Date);
   });
+
+  it('platform inviter: org-scoped grants without an org are rejected', async () => {
+    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1', role_grants: [{ pattern: 'user:read:org' }] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
+    await expect(UserService.inviteUser(authUser as never, { ...base, email: 'b@c.com' }))
+      .rejects.toMatchObject({ code: 'ORG_REQUIRED_FOR_ORG_SCOPED_ROLE', status: 400 });
+  });
+
+  it('platform inviter: org-scoped grants are allowed when an org is assigned', async () => {
+    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1', role_grants: [{ pattern: 'user:read:org' }] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
+    const result = await UserService.inviteUser(authUser as never, { ...base, email: 'b@c.com', org_id: 'org-1' });
+    expect(result.invite_token).toBe('raw-invite-token');
+  });
+
+  it('platform inviter: platform/own-scoped grants need no org', async () => {
+    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1', role_grants: [{ pattern: 'user:read:platform' }] });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
+    const result = await UserService.inviteUser(authUser as never, { ...base, email: 'b@c.com' });
+    expect(result.invite_token).toBe('raw-invite-token');
+  });
 });
 
 // ── acceptInvite ──────────────────────────────────────────────────────────────
@@ -792,6 +813,33 @@ describe('UserService.setInvitationGrants', () => {
     await UserService.setInvitationGrants(admin() as never, 'inv-1', []);
     expect(mockTxInvitationGrantDeleteMany).toHaveBeenCalledWith({ where: { invitation_id: 'inv-1' } });
     expect(mockTxInvitationGrantCreateMany).not.toHaveBeenCalled();
+  });
+
+  it('rejects org-scoped direct grants on an org-less invitation', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce({ id: 'inv-1', org_id: null });
+    await expect(UserService.setInvitationGrants(admin() as never, 'inv-1', ['user:read:org']))
+      .rejects.toMatchObject({ code: 'ORG_REQUIRED_FOR_ORG_SCOPED_ROLE', status: 400 });
+  });
+
+  it('allows non-org-scoped direct grants on an org-less invitation', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce({ id: 'inv-1', org_id: null });
+    await UserService.setInvitationGrants(admin() as never, 'inv-1', ['user:read:platform']);
+    expect(mockTxInvitationGrantCreateMany).toHaveBeenCalledWith({
+      data: [{ invitation_id: 'inv-1', pattern: 'user:read:platform' }],
+    });
+  });
+});
+
+// ── updateInvitation ──────────────────────────────────────────────────────────
+
+describe('UserService.updateInvitation', () => {
+  const admin = () => makeAuthUser({ role_slugs: ['platform-admin'], rules: grantAdminRules });
+
+  it('rejects changing an org-less invitation to org-scoped roles', async () => {
+    mockInvitationFindUnique.mockResolvedValueOnce({ id: 'inv-1', org_id: null, first_name: 'A', last_name: 'B', email: null, phone_number: null });
+    mockRoleFindFirst.mockResolvedValueOnce({ id: 'role-1', role_grants: [{ pattern: 'user:read:org' }] });
+    await expect(UserService.updateInvitation(admin() as never, 'inv-1', { role_slugs: ['x'] }))
+      .rejects.toMatchObject({ code: 'ORG_REQUIRED_FOR_ORG_SCOPED_ROLE', status: 400 });
   });
 });
 
