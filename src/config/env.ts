@@ -59,15 +59,21 @@ const schema = Joi.object({
   ADMIN_PASSWORD: Joi.string().min(12).required(),
 
   APP_URL: Joi.string().uri().required(),
-  STAFF_APP_URL: Joi.string().uri().required(),
 
   PAYMENT_SERVICE_URL: Joi.string().uri().default('http://payment-svc:8092'),
 
   S3_ENDPOINT: Joi.string().uri().required(),
-  S3_INTERNAL_ENDPOINT: Joi.string().uri().optional(),
+  // Internal endpoint for server-side ops (e.g. http://cdn:8333 on the docker
+  // network). Always required — in local dev set it equal to S3_ENDPOINT.
+  S3_INTERNAL_ENDPOINT: Joi.string().uri().required(),
   S3_ACCESS_KEY: Joi.string().required(),
   S3_SECRET_KEY: Joi.string().required(),
   S3_BUCKET: Joi.string().default('katisha'),
+  // Private bucket for sensitive files (org application documents). Served only
+  // via short-lived presigned URLs — never anonymously readable. Own credentials.
+  S3_PRIVATE_BUCKET: Joi.string().default('katisha-private'),
+  S3_PRIVATE_ACCESS_KEY: Joi.string().required(),
+  S3_PRIVATE_SECRET_KEY: Joi.string().required(),
   S3_REGION: Joi.string().default('us-east-1'),
   S3_PRESIGNED_EXPIRES_IN: Joi.number().integer().default(300),
 });
@@ -115,13 +121,15 @@ export const env = value as {
   ADMIN_PHONE: string;
   ADMIN_PASSWORD: string;
   APP_URL: string;
-  STAFF_APP_URL: string;
   PAYMENT_SERVICE_URL: string;
   S3_ENDPOINT: string;
-  S3_INTERNAL_ENDPOINT: string | undefined;
+  S3_INTERNAL_ENDPOINT: string;
   S3_ACCESS_KEY: string;
   S3_SECRET_KEY: string;
   S3_BUCKET: string;
+  S3_PRIVATE_BUCKET: string;
+  S3_PRIVATE_ACCESS_KEY: string;
+  S3_PRIVATE_SECRET_KEY: string;
   S3_REGION: string;
   S3_PRESIGNED_EXPIRES_IN: number;
 };

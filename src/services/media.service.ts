@@ -66,6 +66,7 @@ export const MediaService = {
       throw new AppError('UNSUPPORTED_MEDIA_TYPE', 415);
     }
     const key = orgDocumentKey(docType, contentType);
-    return generatePresignedPutUrl(key, contentType);
+    // Documents are sensitive → private bucket (presigned access only, never public).
+    return generatePresignedPutUrl(key, contentType, 'private');
   },
 };

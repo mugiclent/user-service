@@ -1,5 +1,6 @@
 import cron from 'node-cron';
 import { prisma } from '../models/index.js';
+import { deleteFromS3 } from '../utils/s3.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,19 +81,30 @@ const deleteUnverifiedUsers = () =>
  * Hard-delete org applications where the contact email was never verified
  * and the application is older than 24 hours.
  *
- * OrgDocument rows are cascade-deleted.
+ * OrgDocument rows are cascade-deleted by the DB, but the S3 objects in the private
+ * bucket are not — collect their paths first and delete them after the rows are gone.
  * Runs daily.
  */
 const deleteAbandonedOrgApplications = () =>
   run('abandoned_org_applications', async () => {
     const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const { count } = await prisma.org.deleteMany({
-      where: {
-        status: 'unverified',
-        created_at: { lt: oneDayAgo },
-        deleted_at: null,
-      },
+    const where = {
+      status: 'unverified' as const,
+      created_at: { lt: oneDayAgo },
+      deleted_at: null,
+    };
+
+    // Grab document paths before the cascade removes the rows.
+    const docs = await prisma.orgDocument.findMany({
+      where: { org: { is: where } },
+      select: { s3_path: true },
     });
+
+    const { count } = await prisma.org.deleteMany({ where });
+
+    // Best-effort: remove the now-orphaned binaries from the private bucket.
+    for (const d of docs) await deleteFromS3(d.s3_path, 'private');
+
     return count;
   });
 

@@ -64,16 +64,20 @@ export const config = {
   },
 
   appUrl: env.APP_URL,
-  staffAppUrl: env.STAFF_APP_URL,
   paymentServiceUrl: env.PAYMENT_SERVICE_URL,
 
   s3: {
     endpoint: env.S3_ENDPOINT,
-    // Falls back to S3_ENDPOINT when not set (e.g. local dev where both are the same)
-    internalEndpoint: env.S3_INTERNAL_ENDPOINT ?? env.S3_ENDPOINT,
+    // Server-side ops (delete) endpoint — always set. In local dev it equals
+    // S3_ENDPOINT; in prod it's the internal docker-network URL (http://cdn:8333).
+    internalEndpoint: env.S3_INTERNAL_ENDPOINT,
     accessKey: env.S3_ACCESS_KEY,
     secretKey: env.S3_SECRET_KEY,
     bucket: env.S3_BUCKET,
+    // Private bucket (sensitive docs) with its own credentials.
+    privateBucket: env.S3_PRIVATE_BUCKET,
+    privateAccessKey: env.S3_PRIVATE_ACCESS_KEY,
+    privateSecretKey: env.S3_PRIVATE_SECRET_KEY,
     region: env.S3_REGION,
     presignedExpiresIn: env.S3_PRESIGNED_EXPIRES_IN,
   },

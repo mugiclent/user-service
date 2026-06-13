@@ -63,6 +63,7 @@ const makeOrg = (overrides: Record<string, unknown> = {}) => ({
   rejection_reason: null,
   cooperative_approved_at: null,
   contact_email_verified_at: null,
+  contact_phone_verified_at: now,
   contact_otp_hash: null,
   contact_otp_expires_at: null,
   created_at: now,
@@ -215,5 +216,11 @@ describe('serializeOrgFull', () => {
   it('always includes approved_at', () => {
     const dto = serializeOrgFull(makeOrg() as never, 'org') as Record<string, unknown>;
     expect(dto).toHaveProperty('approved_at', now);
+  });
+
+  it('includes contact channel verification timestamps', () => {
+    const dto = serializeOrgFull(makeOrg() as never, 'org') as Record<string, unknown>;
+    expect(dto).toHaveProperty('contact_email_verified_at', null);
+    expect(dto).toHaveProperty('contact_phone_verified_at', now);
   });
 });

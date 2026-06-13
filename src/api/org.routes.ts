@@ -27,6 +27,9 @@ router.get('/me/logo/presigned-url', authenticate, authorize('update', 'Org'), O
 // GET /api/v1/organizations/:id
 router.get('/:id', authenticate, authorize('read', 'Org'), OrgController.getOrgById);
 
+// GET /api/v1/organizations/:id/documents — presigned links to application docs (object-scoped in service)
+router.get('/:id/documents', authenticate, authorize('read', 'Org'), OrgController.getOrgDocuments);
+
 // PATCH /api/v1/organizations/:id  (also accepts logo_path to commit a presigned upload, or null to delete)
 router.patch('/:id', authenticate, authorize('update', 'Org'), validate(updateOrgSchema), OrgController.updateOrg);
 

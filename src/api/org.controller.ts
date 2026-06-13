@@ -91,6 +91,16 @@ export const OrgController = {
     }
   },
 
+  async getOrgDocuments(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const user = req.user as AuthenticatedUser;
+      const result = await OrgService.getOrgDocuments(user, req.params['id']!);
+      res.status(200).json(result);
+    } catch (err) {
+      next(err);
+    }
+  },
+
   async updateOrg(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
       const user = req.user as AuthenticatedUser;
@@ -117,6 +127,8 @@ export const OrgController = {
       if (!orgId) return next(new AppError('NO_ORG', 400));
       const contentType = req.query['content_type'] as string | undefined;
       if (!contentType) return next(new AppError('MISSING_CONTENT_TYPE', 400));
+      // Object-level guard: only mint an upload URL for an org the caller may update.
+      await OrgService.assertCanUpdateOrg(req.user as AuthenticatedUser, orgId);
       const result = await MediaService.generateOrgLogoPresignedUrl(orgId, contentType);
       res.status(200).json(result);
     } catch (err) {

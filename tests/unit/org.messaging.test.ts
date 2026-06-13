@@ -19,7 +19,7 @@ vi.mock('../../src/utils/crypto.js', async (importOriginal) => {
   return { ...actual, generateRawToken: vi.fn(() => 'org-raw-token'), hashToken: vi.fn((t: string) => `hashed:${t}`) };
 });
 
-vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com', staffAppUrl: 'https://app.katisha.com' } }));
+vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com' } }));
 
 vi.mock('../../src/utils/s3.js', () => ({
   keyFromPublicUrl: vi.fn(() => null),

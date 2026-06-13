@@ -77,7 +77,7 @@ describe('MediaService.generateOrgDocumentPresignedUrl', () => {
     mockIsAllowedDocContentType.mockReturnValue(true);
     const result = await MediaService.generateOrgDocumentPresignedUrl('business_certificate', 'application/pdf');
     expect(mockOrgDocumentKey).toHaveBeenCalledWith('business_certificate', 'application/pdf');
-    expect(mockGeneratePresignedPutUrl).toHaveBeenCalledWith('org-docs/cert.pdf', 'application/pdf');
+    expect(mockGeneratePresignedPutUrl).toHaveBeenCalledWith('org-docs/cert.pdf', 'application/pdf', 'private');
     expect(result).toEqual({ uploadUrl: 'https://s3.example.com/put', path: 'key/file.jpg' });
   });
 

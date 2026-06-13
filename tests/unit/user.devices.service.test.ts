@@ -42,7 +42,7 @@ vi.mock('../../src/models/serializers.js', () => ({
   serializeUserFullProfile: vi.fn().mockImplementation((u: { id: string }) => ({ id: u.id })),
   maskPhone: vi.fn((p: string) => p),
 }));
-vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com', staffAppUrl: 'https://staff.katisha.com' } }));
+vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com' } }));
 vi.mock('../../src/services/otp.service.js', () => ({ OtpService: { create: vi.fn() } }));
 vi.mock('../../src/loaders/bootstrap.js', () => ({ PERMISSIONS: [] }));
 

@@ -21,7 +21,7 @@ vi.mock('../../src/utils/crypto.js', () => ({
 }));
 
 vi.mock('../../src/config/index.js', () => ({
-  config: { staffAppUrl: 'https://staff.katisha.com' },
+  config: { appUrl: 'https://staff.katisha.com' },
 }));
 
 vi.mock('../../src/utils/s3.js', () => ({ keyFromPublicUrl: vi.fn(() => null), deleteFromS3: vi.fn() }));
@@ -36,7 +36,7 @@ const mockUserFindMany = vi.fn().mockResolvedValue([]);
 
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
-    org: { findUnique: mockFindUnique, update: mockUpdate },
+    org: { findUnique: mockFindUnique, findFirst: vi.fn().mockResolvedValue(null), update: mockUpdate },
     role: { findFirst: mockRoleFindFirst },
     invitation: { create: mockInvitationCreate },
     user: { findUnique: vi.fn().mockResolvedValue(null), findMany: mockUserFindMany },
@@ -159,6 +159,7 @@ describe('OrgService domain events — org.updated', () => {
 
   it('publishes org.updated when parent_org_id changes', async () => {
     mockFindUnique.mockResolvedValueOnce({ ...baseOrg, parent_org_id: null });
+    mockFindUnique.mockResolvedValueOnce({ org_type: 'cooperative' }); // parent-is-cooperative check
     mockUpdate.mockResolvedValue({
       ...baseOrg,
       parent_org_id: 'coop-1',

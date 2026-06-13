@@ -29,7 +29,7 @@ vi.mock('../../src/utils/publishers.js', () => ({
 vi.mock('../../src/loaders/redis.js', () => ({ getRedisClient: () => ({ set: vi.fn() }) }));
 vi.mock('../../src/utils/s3.js', () => ({ deleteFromS3: vi.fn() }));
 vi.mock('../../src/utils/crypto.js', () => ({ generateRawToken: vi.fn(() => 'tok'), hashToken: vi.fn((t: string) => `h:${t}`) }));
-vi.mock('../../src/config/index.js', () => ({ config: { staffAppUrl: 'https://staff.katisha.com' } }));
+vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://staff.katisha.com' } }));
 vi.mock('../../src/utils/slugify.js', () => ({ slugify: vi.fn((n: string) => n.toLowerCase().replace(/\s/g, '-')) }));
 
 const { OrgService } = await import('../../src/services/org.service.js');

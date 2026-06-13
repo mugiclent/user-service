@@ -49,7 +49,7 @@ vi.mock('../../src/loaders/redis.js', () => ({
 
 vi.mock('../../src/utils/s3.js', () => ({ deleteFromS3: vi.fn() }));
 vi.mock('../../src/utils/crypto.js', () => ({ generateRawToken: vi.fn(() => 'tok'), hashToken: vi.fn((t: string) => `h:${t}`) }));
-vi.mock('../../src/config/index.js', () => ({ config: { staffAppUrl: 'https://app.katisha.com' } }));
+vi.mock('../../src/config/index.js', () => ({ config: { appUrl: 'https://app.katisha.com' } }));
 
 const { OrgController } = await import('../../src/api/org.controller.js');
 

@@ -15,6 +15,7 @@ const mockUserFindUnique = vi.fn().mockResolvedValue(null);
 const mockUserFindMany = vi.fn().mockResolvedValue([]);
 const mockRoleFindFirst = vi.fn();
 const mockInvitationCreate = vi.fn().mockResolvedValue({});
+const mockOrgDocumentFindMany = vi.fn().mockResolvedValue([]);
 
 vi.mock('../../src/models/index.js', () => ({
   prisma: {
@@ -29,6 +30,7 @@ vi.mock('../../src/models/index.js', () => ({
     user: { findUnique: mockUserFindUnique, findMany: mockUserFindMany },
     role: { findFirst: mockRoleFindFirst },
     invitation: { create: mockInvitationCreate },
+    orgDocument: { findMany: mockOrgDocumentFindMany },
   },
 }));
 
@@ -64,8 +66,10 @@ vi.mock('../../src/config/index.js', () => ({
 }));
 
 const mockDeleteFromS3 = vi.fn();
+const mockGeneratePresignedGetUrl = vi.fn().mockResolvedValue('https://cdn/signed-get');
 vi.mock('../../src/utils/s3.js', () => ({
   deleteFromS3: mockDeleteFromS3,
+  generatePresignedGetUrl: mockGeneratePresignedGetUrl,
 }));
 
 const mockSerializeOrgForList = vi.fn().mockImplementation((o: { id: string }) => ({ id: o.id }));
@@ -147,6 +151,14 @@ describe('OrgService.createOrg', () => {
     mockOrgCreate.mockResolvedValueOnce(makeOrg());
     await OrgService.createOrg(makeAuthUser() as never, { name: 'Acme', org_type: 'company', contact_email: 'a@b.com', contact_phone: '+250788000001' });
     expect(mockPublishAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'create', resource: 'Org' }));
+  });
+
+  it('rejects a parent that is not a cooperative (coop_members cannot have children)', async () => {
+    mockOrgFindFirst.mockResolvedValueOnce(null);
+    mockOrgFindUnique.mockResolvedValueOnce({ org_type: 'company' }); // parent lookup — not a cooperative
+    await expect(OrgService.createOrg(makeAuthUser() as never, {
+      name: 'Member', org_type: 'coop_member', contact_email: 'm@b.com', contact_phone: '+250788000010', tin: '123456789', parent_org_id: 'parent-x',
+    })).rejects.toMatchObject({ code: 'PARENT_NOT_COOPERATIVE', status: 400 });
   });
 });
 
@@ -249,6 +261,59 @@ describe('OrgService.getOrgById', () => {
     await OrgService.getOrgById(authUser as never, 'org-1');
     expect(mockSerializeOrgFull).toHaveBeenCalled();
   });
+
+  it('cooperative admin can view a coop_member (parent_org_id matches their org)', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ id: 'member-1', parent_org_id: 'coop-1' }));
+    const coopAdmin = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'coop-1', rules: orgAdminRules('coop-1') });
+    await OrgService.getOrgById(coopAdmin as never, 'member-1');
+    expect(mockSerializeOrgFull).toHaveBeenCalledWith(expect.objectContaining({ id: 'member-1' }), 'org');
+  });
+
+  it('cooperative admin cannot view an org that is not their member', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(makeOrg({ id: 'member-2', parent_org_id: 'other-coop' }));
+    const coopAdmin = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'coop-1', rules: orgAdminRules('coop-1') });
+    await expect(OrgService.getOrgById(coopAdmin as never, 'member-2')).rejects.toMatchObject({
+      code: 'FORBIDDEN', status: 403,
+    });
+  });
+});
+
+// ── getOrgDocuments ─────────────────────────────────────────────────────────
+
+describe('OrgService.getOrgDocuments', () => {
+  it('throws ORG_NOT_FOUND when org is missing', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce(null);
+    await expect(OrgService.getOrgDocuments(makeAuthUser() as never, 'org-99')).rejects.toMatchObject({
+      code: 'ORG_NOT_FOUND', status: 404,
+    });
+  });
+
+  it('returns presigned GET urls for each document (platform reader)', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce({ id: 'org-1', parent_org_id: null });
+    mockOrgDocumentFindMany.mockResolvedValueOnce([
+      { id: 'doc-1', doc_type: 'business_certificate', mime_type: 'application/pdf', s3_path: 'org-docs/business_certificate/a.pdf', created_at: new Date() },
+    ]);
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: PLATFORM_RULES });
+    const result = await OrgService.getOrgDocuments(authUser as never, 'org-1');
+    expect(mockGeneratePresignedGetUrl).toHaveBeenCalledWith('org-docs/business_certificate/a.pdf', 'private');
+    expect(result.data[0]).toMatchObject({ id: 'doc-1', doc_type: 'business_certificate', url: 'https://cdn/signed-get' });
+  });
+
+  it('cooperative admin can read its member documents', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce({ id: 'member-1', parent_org_id: 'coop-1' });
+    mockOrgDocumentFindMany.mockResolvedValueOnce([]);
+    const coopAdmin = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'coop-1', rules: orgAdminRules('coop-1') });
+    const result = await OrgService.getOrgDocuments(coopAdmin as never, 'member-1');
+    expect(result).toEqual({ data: [] });
+  });
+
+  it('forbids a non-member, non-platform reader', async () => {
+    mockOrgFindUnique.mockResolvedValueOnce({ id: 'member-2', parent_org_id: 'other-coop' });
+    const coopAdmin = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'coop-1', rules: orgAdminRules('coop-1') });
+    await expect(OrgService.getOrgDocuments(coopAdmin as never, 'member-2')).rejects.toMatchObject({
+      code: 'FORBIDDEN', status: 403,
+    });
+  });
 });
 
 // ── updateOrg ─────────────────────────────────────────────────────────────────
@@ -292,6 +357,41 @@ describe('OrgService.updateOrg', () => {
     const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
     const result = await OrgService.updateOrg(authUser as never, 'org-1', { status: 'active' });
     expect(result).toMatchObject({ id: 'org-1', full: true });
+  });
+
+  it('throws ORG_ALREADY_EXISTS when renaming to a taken name', async () => {
+    const existing = { id: 'org-1', logo_path: null, name: 'Old', contact_email: 'a@b.com', contact_phone: '+250788000001', address: null, status: 'active', rejection_reason: null };
+    mockOrgFindUnique.mockResolvedValueOnce(existing);
+    mockOrgFindFirst.mockResolvedValueOnce({ id: 'org-9' });
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    await expect(OrgService.updateOrg(authUser as never, 'org-1', { name: 'Taken' }))
+      .rejects.toMatchObject({ code: 'ORG_ALREADY_EXISTS', status: 409 });
+  });
+
+  it('throws CONTACT_PHONE_ALREADY_REGISTERED when contact phone collides with a staff user', async () => {
+    const existing = { id: 'org-1', logo_path: null, name: 'Acme', contact_email: 'a@b.com', contact_phone: '+250788000001', address: null, status: 'active', rejection_reason: null };
+    mockOrgFindUnique.mockResolvedValueOnce(existing);
+    mockUserFindUnique.mockResolvedValueOnce({ id: 'staff-1' });
+    const authUser = makeAuthUser({ role_slugs: ['org-admin'], org_id: 'org-1', rules: orgAdminRules('org-1') });
+    await expect(OrgService.updateOrg(authUser as never, 'org-1', { contact_phone: '+250788999999' }))
+      .rejects.toMatchObject({ code: 'CONTACT_PHONE_ALREADY_REGISTERED', status: 409 });
+  });
+
+  it('rejects re-parenting to a non-cooperative org', async () => {
+    const existing = { id: 'org-1', logo_path: null, name: 'M', contact_email: 'a@b.com', contact_phone: '+250788000001', address: null, status: 'pending', rejection_reason: null, org_type: 'coop_member', cooperative_approved_at: null, parent_org_id: 'old-coop' };
+    mockOrgFindUnique.mockResolvedValueOnce(existing);          // the org being updated
+    mockOrgFindUnique.mockResolvedValueOnce({ org_type: 'company' }); // parent lookup — not a cooperative
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: PLATFORM_RULES });
+    await expect(OrgService.updateOrg(authUser as never, 'org-1', { parent_org_id: 'parent-x' }))
+      .rejects.toMatchObject({ code: 'PARENT_NOT_COOPERATIVE', status: 400 });
+  });
+
+  it('throws REJECTION_REASON_REQUIRED when rejecting without a reason', async () => {
+    const existing = { id: 'org-1', logo_path: null, name: 'Acme', contact_email: 'a@b.com', contact_phone: '+250788000001', address: null, status: 'pending', rejection_reason: null };
+    mockOrgFindUnique.mockResolvedValueOnce(existing);
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'] });
+    await expect(OrgService.updateOrg(authUser as never, 'org-1', { status: 'rejected' }))
+      .rejects.toMatchObject({ code: 'REJECTION_REASON_REQUIRED', status: 400 });
   });
 
   it('deletes old S3 logo when logo_path changes and old path exists', async () => {

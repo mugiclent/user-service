@@ -21,6 +21,7 @@ vi.mock('../../src/services/org.service.js', () => ({
     getOrgById: mockGetOrgById,
     updateOrg: mockUpdateOrg,
     cooperativeApprove: mockApproveChildOrg,
+    assertCanUpdateOrg: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

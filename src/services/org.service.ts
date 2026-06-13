@@ -7,7 +7,7 @@ import { generateRawToken, hashToken } from '../utils/crypto.js';
 import { publishAudit, publishSms, publishMail, notifyUser, publishOrgEvent } from '../utils/publishers.js';
 import type { Locale, NotifiableUser } from '../utils/publishers.js';
 import { config } from '../config/index.js';
-import { deleteFromS3 } from '../utils/s3.js';
+import { deleteFromS3, generatePresignedGetUrl } from '../utils/s3.js';
 import {
   serializeOrgForList,
   serializeOrgCreated,
@@ -100,6 +100,33 @@ const withRelations = {
   },
 } as const;
 
+/**
+ * A parent org must be a cooperative. This is the single invariant that keeps the
+ * hierarchy one level deep: only `cooperative` orgs can be parents, so `coop_member`
+ * (and `company`) orgs can never have children.
+ */
+/**
+ * Read authorization for a single org: own/org/platform readers via CASL, plus a
+ * cooperative admin (approve:Org) for their own coop_members. Shared by getOrgById
+ * and getOrgDocuments so the member review page and its documents authorize alike.
+ */
+const canReadOrg = (
+  ability: ReturnType<typeof buildAbilityFromRules>,
+  requestingUser: AuthenticatedUser,
+  org: { id: string; parent_org_id: string | null },
+): boolean =>
+  ability.can('read', subject('Org', org) as unknown as Subjects) ||
+  (ability.can('approve', 'Org') && org.parent_org_id !== null && org.parent_org_id === requestingUser.org_id);
+
+const assertParentIsCooperative = async (parentId: string): Promise<void> => {
+  const parent = await prisma.org.findUnique({
+    where: { id: parentId, deleted_at: null },
+    select: { org_type: true },
+  });
+  if (!parent) throw new AppError('PARENT_ORG_NOT_FOUND', 404);
+  if (parent.org_type !== 'cooperative') throw new AppError('PARENT_NOT_COOPERATIVE', 400);
+};
+
 export const OrgService = {
   // ---------------------------------------------------------------------------
   // POST /organizations — create a new org (admin only)
@@ -166,6 +193,9 @@ export const OrgService = {
     if (existing) throw new AppError('ORG_ALREADY_EXISTS', 409);
     if (phoneConflict) throw new AppError('CONTACT_PHONE_ALREADY_REGISTERED', 409);
     if (emailConflict) throw new AppError('CONTACT_EMAIL_ALREADY_REGISTERED', 409);
+
+    // Only a cooperative may be a parent — keeps coop_members from having children.
+    if (data.parent_org_id) await assertParentIsCooperative(data.parent_org_id);
 
     let org;
     try {
@@ -313,12 +343,67 @@ export const OrgService = {
     });
     if (!org) throw new AppError('ORG_NOT_FOUND', 404);
 
-    // Object-level scope: own/org readers only reach their own org (Org id condition).
-    if (!ability.can('read', subject('Org', org) as unknown as Subjects)) {
+    // Own/org/platform readers via CASL; cooperative admins also read their own
+    // coop_members (mirrors listOrgs + the parent check in cooperativeApprove/Reject).
+    if (!canReadOrg(ability, requestingUser, org)) {
       throw new AppError('FORBIDDEN', 403);
     }
 
     return serializeOrgFull(org, scope);
+  },
+
+  // ---------------------------------------------------------------------------
+  // GET /organizations/:id/documents — presigned links to an org's application
+  // documents (business certificate, rep ID). Sensitive → private bucket, served
+  // only as short-lived presigned GET URLs to authorized reviewers.
+  // ---------------------------------------------------------------------------
+
+  async getOrgDocuments(
+    requestingUser: AuthenticatedUser,
+    orgId: string,
+  ): Promise<{ data: Record<string, unknown>[] }> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+
+    const org = await prisma.org.findUnique({
+      where: { id: orgId, deleted_at: null },
+      select: { id: true, parent_org_id: true },
+    });
+    if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+    if (!canReadOrg(ability, requestingUser, org)) throw new AppError('FORBIDDEN', 403);
+
+    const documents = await prisma.orgDocument.findMany({
+      where: { org_id: orgId },
+      select: { id: true, doc_type: true, mime_type: true, s3_path: true, created_at: true },
+      orderBy: { created_at: 'asc' },
+    });
+
+    const data = await Promise.all(
+      documents.map(async (d) => ({
+        id: d.id,
+        doc_type: d.doc_type,
+        mime_type: d.mime_type,
+        created_at: d.created_at,
+        url: await generatePresignedGetUrl(d.s3_path, 'private'),
+      })),
+    );
+
+    return { data };
+  },
+
+  // ---------------------------------------------------------------------------
+  // Object-level update guard — reused by the logo presigned-URL endpoints so a
+  // caller can only mint an upload URL for an org they may actually update.
+  // (Action-level authorize('update','Org') is not enough: an org/coop admin holds
+  //  update:Org but only for their own org — never an arbitrary :id.)
+  // ---------------------------------------------------------------------------
+
+  async assertCanUpdateOrg(requestingUser: AuthenticatedUser, orgId: string): Promise<void> {
+    const ability = buildAbilityFromRules(requestingUser.rules);
+    const org = await prisma.org.findUnique({ where: { id: orgId, deleted_at: null }, select: { id: true } });
+    if (!org) throw new AppError('ORG_NOT_FOUND', 404);
+    if (!ability.can('update', subject('Org', org) as unknown as Subjects)) {
+      throw new AppError('FORBIDDEN', 403);
+    }
   },
 
   // ---------------------------------------------------------------------------
@@ -367,6 +452,24 @@ export const OrgService = {
     if (!isPlatform && data.status !== undefined) throw new AppError('FORBIDDEN', 403);
     const oldLogoPath = existing.logo_path;
 
+    // Conflict checks for changed identity fields (mirror createOrg). name is @unique
+    // (and re-slugs); contact phone/email must not collide with an existing staff user.
+    const newSlug = data.name !== undefined ? slugify(data.name) : undefined;
+    const [nameConflict, phoneConflict, emailConflict] = await Promise.all([
+      data.name !== undefined && data.name !== existing.name
+        ? prisma.org.findFirst({ where: { id: { not: orgId }, OR: [{ name: data.name }, ...(newSlug ? [{ slug: newSlug }] : [])] }, select: { id: true } })
+        : null,
+      data.contact_phone !== undefined && data.contact_phone !== existing.contact_phone
+        ? prisma.user.findUnique({ where: { phone_number_user_type: { phone_number: data.contact_phone, user_type: 'staff' } }, select: { id: true } })
+        : null,
+      data.contact_email !== undefined && data.contact_email !== existing.contact_email
+        ? prisma.user.findUnique({ where: { email_user_type: { email: data.contact_email, user_type: 'staff' } }, select: { id: true } })
+        : null,
+    ]);
+    if (nameConflict) throw new AppError('ORG_ALREADY_EXISTS', 409);
+    if (phoneConflict) throw new AppError('CONTACT_PHONE_ALREADY_REGISTERED', 409);
+    if (emailConflict) throw new AppError('CONTACT_EMAIL_ALREADY_REGISTERED', 409);
+
     const updateData: Record<string, unknown> = {};
     if (data.name !== undefined) {
       updateData['name'] = data.name;
@@ -384,6 +487,11 @@ export const OrgService = {
     if (data.account_number !== undefined) updateData['account_number'] = data.account_number;
     if (data.parent_org_id !== undefined && isPlatform) {
       if (data.parent_org_id === null && existing.org_type === 'coop_member') throw new AppError('COOP_MEMBER_REQUIRES_PARENT', 400);
+      if (data.parent_org_id !== null) {
+        if (data.parent_org_id === orgId) throw new AppError('ORG_CANNOT_PARENT_ITSELF', 400);
+        // Only a cooperative may be a parent — keeps coop_members from having children.
+        await assertParentIsCooperative(data.parent_org_id);
+      }
       updateData['parent_org_id'] = data.parent_org_id;
     }
 
@@ -391,6 +499,11 @@ export const OrgService = {
       // coop_member requires cooperative sign-off before admin can activate
       if (data.status === 'active' && existing.org_type === 'coop_member' && !existing.cooperative_approved_at) {
         throw new AppError('COOPERATIVE_APPROVAL_REQUIRED', 400);
+      }
+
+      // Rejecting requires a reason (frontend collects it in the reject dialog).
+      if (data.status === 'rejected' && !data.rejection_reason) {
+        throw new AppError('REJECTION_REASON_REQUIRED', 400);
       }
 
       updateData['status'] = data.status;
@@ -406,11 +519,23 @@ export const OrgService = {
       }
     }
 
-    const org = await prisma.org.update({
-      where: { id: orgId },
-      data: updateData,
-      ...withRelations,
-    });
+    let org;
+    try {
+      org = await prisma.org.update({
+        where: { id: orgId },
+        data: updateData,
+        ...withRelations,
+      });
+    } catch (err) {
+      // Safety net for a concurrent insert slipping past the checks above.
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        const target = (err.meta?.['target'] as string[] | undefined) ?? [];
+        if (target.includes('tin')) throw new AppError('TIN_ALREADY_EXISTS', 409);
+        if (target.includes('license_number')) throw new AppError('LICENSE_ALREADY_EXISTS', 409);
+        throw new AppError('ORG_ALREADY_EXISTS', 409); // name / slug
+      }
+      throw err;
+    }
 
     // On activation: create org-admin invitation and send approval notification
     if (data.status === 'active' && isPlatform) {
@@ -432,7 +557,7 @@ export const OrgService = {
           },
         });
 
-        const inviteLink = `${config.staffAppUrl}/i?t=${rawToken}`;
+        const inviteLink = `${config.appUrl}/i?t=${rawToken}`;
         const expiresInSeconds = 7 * 24 * 60 * 60;
 
         if (org.org_type === 'coop_member') {

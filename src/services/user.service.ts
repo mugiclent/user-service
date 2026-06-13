@@ -38,6 +38,18 @@ const withRoles = {
 // 15-minute blacklist window (matches access token TTL)
 const BLACKLIST_TTL_SECONDS = 900;
 
+// PII scrub applied on account deletion. email/phone are nullable + unique-per-type,
+// so nulling them frees the slots for re-registration. avatar binary is deleted
+// separately (deleteFromS3). The row itself is retained for referential integrity.
+const anonymizedUserFields = {
+  first_name: 'Deleted',
+  last_name: 'User',
+  email: null,
+  phone_number: null,
+  avatar_path: null,
+  driver_license_number: null,
+} as const;
+
 // The grant that marks a platform super-admin. Used to guard against removing
 // the last one — identified by the *grant*, never by a role slug/name.
 const PLATFORM_ADMIN_PATTERN = '*:*:platform';
@@ -468,7 +480,10 @@ export const UserService = {
     await prisma.$transaction([
       prisma.user.update({
         where: { id: targetId },
-        data: { status: 'pending_deletion', deleted_at: new Date() },
+        // Soft delete + anonymize PII (right-to-erasure): the row is retained for
+        // referential integrity (tickets/audit) but identifying fields are scrubbed.
+        // Nulling email/phone also frees their unique slots for re-registration.
+        data: { status: 'pending_deletion', deleted_at: new Date(), ...anonymizedUserFields },
       }),
       // Revoke all refresh tokens
       prisma.refreshToken.updateMany({
@@ -476,6 +491,9 @@ export const UserService = {
         data: { revoked_at: new Date() },
       }),
     ]);
+
+    // Delete the avatar binary (the row is kept; the file is not). Fire-and-forget.
+    if (target.avatar_path) deleteFromS3(target.avatar_path, 'public');
 
     // Blacklist active access tokens for TTL window
     try {
@@ -1328,13 +1346,17 @@ export const UserService = {
     await prisma.$transaction([
       prisma.user.update({
         where: { id: userId },
-        data: { status: 'pending_deletion', deleted_at: new Date() },
+        // Soft delete + anonymize PII; keep the row, free email/phone unique slots.
+        data: { status: 'pending_deletion', deleted_at: new Date(), ...anonymizedUserFields },
       }),
       prisma.refreshToken.updateMany({
         where: { user_id: userId, revoked_at: null },
         data: { revoked_at: new Date() },
       }),
     ]);
+
+    // Delete the avatar binary (fire-and-forget).
+    if (user.avatar_path) deleteFromS3(user.avatar_path, 'public');
 
     try {
       await getRedisClient().set(`blacklist:user:${userId}`, '1', 'EX', BLACKLIST_TTL_SECONDS);

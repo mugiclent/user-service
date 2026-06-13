@@ -472,15 +472,33 @@ describe('UserService.deleteUser', () => {
     });
   });
 
-  it('soft-deletes and revokes tokens in a transaction', async () => {
+  it('soft-deletes, anonymizes PII, and revokes tokens in a transaction', async () => {
     mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2' }));
     const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
     await UserService.deleteUser(authUser as never, 'user-2');
     expect(mockTransaction).toHaveBeenCalled();
     expect(mockUserUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { status: 'pending_deletion', deleted_at: expect.any(Date) } }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'pending_deletion',
+          deleted_at: expect.any(Date),
+          email: null,
+          phone_number: null,
+          avatar_path: null,
+          driver_license_number: null,
+          first_name: 'Deleted',
+          last_name: 'User',
+        }),
+      }),
     );
     expect(mockRefreshTokenUpdateMany).toHaveBeenCalled();
+  });
+
+  it('deletes the avatar binary from the public bucket on delete', async () => {
+    mockUserFindUnique.mockResolvedValueOnce(makeUser({ id: 'user-2', avatar_path: 'avatars/user-2/x.jpg' }));
+    const authUser = makeAuthUser({ role_slugs: ['platform-admin'], rules: [{ action: 'manage', subject: 'all' }] });
+    await UserService.deleteUser(authUser as never, 'user-2');
+    expect(mockDeleteFromS3).toHaveBeenCalledWith('avatars/user-2/x.jpg', 'public');
   });
 
   it('sets Redis blacklist entry', async () => {

@@ -311,6 +311,8 @@ export const serializeOrgFull = (
   contact_last_name: org.contact_last_name,
   contact_email: org.contact_email,
   contact_phone: org.contact_phone,
+  contact_email_verified_at: org.contact_email_verified_at,
+  contact_phone_verified_at: org.contact_phone_verified_at,
   address: org.address,
   tin: org.tin,
   license_number: org.license_number,
@@ -318,8 +320,12 @@ export const serializeOrgFull = (
   cancellations_allowed: org.cancellations_allowed,
   parent_org_id: org.parent_org_id,
   parent_org: org.parent_org,
+  // Cooperative sign-off is visible to org-wide readers: a cooperative needs to see
+  // which of its own users pre-approved a member (and the member can see it too).
   cooperative_approved_at: org.cooperative_approved_at,
-  ...(scope === 'platform' ? { child_orgs: org.child_orgs, approved_by: org.approved_by, cooperative_approved_by: org.cooperative_approved_by } : {}),
+  cooperative_approved_by: org.cooperative_approved_by,
+  // Platform-only: cross-org tree + the Katisha admin who gave final approval.
+  ...(scope === 'platform' ? { child_orgs: org.child_orgs, approved_by: org.approved_by } : {}),
   approved_at: org.approved_at,
   created_at: org.created_at,
   updated_at: org.updated_at,

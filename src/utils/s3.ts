@@ -1,28 +1,44 @@
-import { S3Client, DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, DeleteObjectCommand, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { randomUUID } from 'node:crypto';
 import { config } from '../config/index.js';
 
-const sharedCredentials = {
-  accessKeyId: config.s3.accessKey,
-  secretAccessKey: config.s3.secretKey,
+// Two buckets, each with its own credentials/identity:
+//  - 'public'  → anonymously readable (logos, avatars); served straight off the CDN.
+//  - 'private' → never anonymously readable (org documents); reached only via short-
+//                lived presigned URLs.
+export type BucketKind = 'public' | 'private';
+
+const publicCredentials = { accessKeyId: config.s3.accessKey, secretAccessKey: config.s3.secretKey };
+const privateCredentials = { accessKeyId: config.s3.privateAccessKey, secretAccessKey: config.s3.privateSecretKey };
+
+const credentialsFor = (kind: BucketKind) => (kind === 'private' ? privateCredentials : publicCredentials);
+const bucketFor = (kind: BucketKind): string => (kind === 'private' ? config.s3.privateBucket : config.s3.bucket);
+
+const makeClient = (endpoint: string, kind: BucketKind): S3Client =>
+  new S3Client({
+    forcePathStyle: true,
+    endpoint,
+    credentials: credentialsFor(kind),
+    region: config.s3.region,
+    // AWS SDK v3 injects a default CRC32 integrity checksum. For presigned PUTs it
+    // bakes the checksum of an EMPTY body into the URL, so the real upload fails with
+    // BadDigest on S3-compatible stores (SeaweedFS). Only checksum when explicitly asked.
+    requestChecksumCalculation: 'WHEN_REQUIRED',
+    responseChecksumValidation: 'WHEN_REQUIRED',
+  });
+
+// Signing clients use the PUBLIC endpoint so the browser can reach the presigned URL.
+const signClient: Record<BucketKind, S3Client> = {
+  public: makeClient(config.s3.endpoint, 'public'),
+  private: makeClient(config.s3.endpoint, 'private'),
 };
 
-// Used for presigned URLs — endpoint must be the public URL so clients can reach it
-const publicClient = new S3Client({
-  forcePathStyle: true,
-  endpoint: config.s3.endpoint,
-  credentials: sharedCredentials,
-  region: config.s3.region,
-});
-
-// Used for server-side operations (delete) — talks to SeaweedFS directly over the internal network
-const internalClient = new S3Client({
-  forcePathStyle: true,
-  endpoint: config.s3.internalEndpoint,
-  credentials: sharedCredentials,
-  region: config.s3.region,
-});
+// Server-side clients use the INTERNAL endpoint (direct over the docker network).
+const serverClient: Record<BucketKind, S3Client> = {
+  public: makeClient(config.s3.internalEndpoint, 'public'),
+  private: makeClient(config.s3.internalEndpoint, 'private'),
+};
 
 // ---------------------------------------------------------------------------
 // Content-type validation
@@ -64,18 +80,32 @@ export interface PresignedResult {
 export const generatePresignedPutUrl = async (
   path: string,
   contentType: string,
+  kind: BucketKind = 'public',
 ): Promise<PresignedResult> => {
   const cmd = new PutObjectCommand({
-    Bucket: config.s3.bucket,
+    Bucket: bucketFor(kind),
     Key: path,
     ContentType: contentType,
   });
 
-  const upload_url = await getSignedUrl(publicClient, cmd, {
+  const upload_url = await getSignedUrl(signClient[kind], cmd, {
     expiresIn: config.s3.presignedExpiresIn,
   });
 
   return { upload_url, path };
+};
+
+/**
+ * Generate a short-lived presigned GET URL for reading a private object (e.g. an
+ * org application document). The browser can fetch this directly; it expires.
+ */
+export const generatePresignedGetUrl = async (
+  path: string,
+  kind: BucketKind = 'private',
+  expiresIn: number = config.s3.presignedExpiresIn,
+): Promise<string> => {
+  const cmd = new GetObjectCommand({ Bucket: bucketFor(kind), Key: path });
+  return getSignedUrl(signClient[kind], cmd, { expiresIn });
 };
 
 // ---------------------------------------------------------------------------
@@ -96,13 +126,13 @@ export const orgDocumentKey = (docType: string, contentType: string): string =>
 // ---------------------------------------------------------------------------
 
 /** Fire-and-forget S3 delete. Logs on failure but does not throw. */
-export const deleteFromS3 = async (key: string): Promise<void> => {
+export const deleteFromS3 = async (key: string, kind: BucketKind = 'public'): Promise<void> => {
   try {
-    await internalClient.send(new DeleteObjectCommand({
-      Bucket: config.s3.bucket,
+    await serverClient[kind].send(new DeleteObjectCommand({
+      Bucket: bucketFor(kind),
       Key: key,
     }));
   } catch (err) {
-    console.error(`[s3] DELETE ${key} failed`, err);
+    console.error(`[s3] DELETE ${key} (${kind}) failed`, err);
   }
 };
