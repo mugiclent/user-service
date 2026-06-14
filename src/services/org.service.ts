@@ -140,7 +140,7 @@ export const OrgService = {
     q?: string;
     page?: number;
     limit?: number;
-  }): Promise<{ data: { id: string; name: string; slug: string; org_type: string; logo_path: string | null }[]; total: number; page: number; limit: number }> {
+  }): Promise<{ data: { id: string; name: string; slug: string; org_type: string; logo_path: string | null; story: string | null }[]; total: number; page: number; limit: number }> {
     const page = Math.max(1, query.page ?? 1);
     const limit = Math.min(100, Math.max(1, query.limit ?? 12));
     const skip = (page - 1) * limit;
@@ -157,7 +157,7 @@ export const OrgService = {
         skip,
         take: limit,
         orderBy: { name: 'asc' },
-        select: { id: true, name: true, slug: true, org_type: true, logo_path: true },
+        select: { id: true, name: true, slug: true, org_type: true, logo_path: true, story: true },
       }),
       prisma.org.count({ where }),
     ]);
