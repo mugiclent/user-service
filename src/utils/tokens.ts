@@ -8,6 +8,8 @@ export interface JwtPayload {
   sub: string;
   org_id: string | null;
   user_type: 'passenger' | 'staff';
+  /** E.164 phone number — carried so booking flows can send SMS without a user-service round-trip. Null if the account has none. */
+  phone_number: string | null;
   role_slugs: string[];
   rules: PackRule<AppRule>[];
   locale: string;

@@ -37,6 +37,8 @@ export interface AuthenticatedUser {
   id: string;
   org_id: string | null;
   user_type: 'passenger' | 'staff';
+  /** E.164 phone number from the JWT — forwarded by the gateway as X-User-Phone. Null if none on file. */
+  phone_number: string | null;
   /** Role slugs from the JWT — used for quick role checks without a DB query. */
   role_slugs: string[];
   /** Unpacked CASL rules from the JWT. */

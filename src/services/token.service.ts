@@ -66,7 +66,7 @@ const buildAccessToken = async (user: UserWithRoles, session_id?: string): Promi
   const patterns = collectPatterns(user);
   const rules = buildRulesFromGrants(patterns, user.id, user.org_id, PERMISSIONS);
   const role_slugs = user.user_roles.map((ur) => ur.role.slug);
-  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, role_slugs, rules, locale: user.locale, session_id });
+  return signAccessToken({ sub: user.id, org_id: user.org_id, user_type: user.user_type, phone_number: user.phone_number, role_slugs, rules, locale: user.locale, session_id });
 };
 
 // ---------------------------------------------------------------------------

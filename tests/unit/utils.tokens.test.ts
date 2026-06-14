@@ -7,18 +7,24 @@ import { describe, it, expect, vi } from 'vitest';
 // ── mocks ──────────────────────────────────────────────────────────────────────
 
 const mockSign = vi.fn().mockResolvedValue('signed.jwt.token');
-const mockVerify = vi.fn().mockResolvedValue({ payload: { sub: 'u-1', org_id: null, user_type: 'staff', role_slugs: [], rules: [], locale: 'rw' } });
+const mockVerify = vi.fn().mockResolvedValue({ payload: { sub: 'u-1', org_id: null, user_type: 'staff', phone_number: null, role_slugs: [], rules: [], locale: 'rw' } });
 const mockPackRules = vi.fn().mockReturnValue([]);
 const mockImportPKCS8 = vi.fn().mockResolvedValue('mock-private-key');
 const mockImportSPKI = vi.fn().mockResolvedValue('mock-public-key');
 
+// Captures the payload object handed to `new SignJWT(...)` so tests can assert claims.
+const mockSignJWTCtor = vi.fn();
+
 vi.mock('jose', () => ({
-  SignJWT: vi.fn().mockImplementation(() => ({
-    setProtectedHeader: vi.fn().mockReturnThis(),
-    setIssuedAt: vi.fn().mockReturnThis(),
-    setExpirationTime: vi.fn().mockReturnThis(),
-    sign: mockSign,
-  })),
+  SignJWT: vi.fn().mockImplementation((payload: unknown) => {
+    mockSignJWTCtor(payload);
+    return {
+      setProtectedHeader: vi.fn().mockReturnThis(),
+      setIssuedAt: vi.fn().mockReturnThis(),
+      setExpirationTime: vi.fn().mockReturnThis(),
+      sign: mockSign,
+    };
+  }),
   jwtVerify: mockVerify,
   importPKCS8: mockImportPKCS8,
   importSPKI: mockImportSPKI,
@@ -45,14 +51,24 @@ const { signAccessToken, verifyAccessToken } = await import('../../src/utils/tok
 
 describe('signAccessToken', () => {
   it('returns a signed token string', async () => {
-    const payload = { sub: 'u-1', org_id: null, user_type: 'staff' as const, role_slugs: ['org_admin'], rules: [], locale: 'rw' };
+    const payload = { sub: 'u-1', org_id: null, user_type: 'staff' as const, phone_number: '+250788123456', role_slugs: ['org_admin'], rules: [], locale: 'rw' };
     const token = await signAccessToken(payload);
     expect(token).toBe('signed.jwt.token');
     expect(mockSign).toHaveBeenCalled();
   });
 
+  it('carries phone_number into the signed payload', async () => {
+    await signAccessToken({ sub: 'u-1', org_id: null, user_type: 'passenger', phone_number: '+250788123456', role_slugs: [], rules: [], locale: 'rw' });
+    expect(mockSignJWTCtor).toHaveBeenLastCalledWith(expect.objectContaining({ phone_number: '+250788123456' }));
+  });
+
+  it('preserves a null phone_number (account with no number on file)', async () => {
+    await signAccessToken({ sub: 'u-1', org_id: null, user_type: 'passenger', phone_number: null, role_slugs: [], rules: [], locale: 'rw' });
+    expect(mockSignJWTCtor).toHaveBeenLastCalledWith(expect.objectContaining({ phone_number: null }));
+  });
+
   it('packs rules before signing', async () => {
-    await signAccessToken({ sub: 'u-1', org_id: 'o-1', user_type: 'staff', role_slugs: [], rules: [{ action: 'read', subject: 'User' }], locale: 'en' });
+    await signAccessToken({ sub: 'u-1', org_id: 'o-1', user_type: 'staff', phone_number: null, role_slugs: [], rules: [{ action: 'read', subject: 'User' }], locale: 'en' });
     expect(mockPackRules).toHaveBeenCalled();
   });
 

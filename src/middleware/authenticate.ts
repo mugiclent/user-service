@@ -13,6 +13,7 @@ import type { AppRule } from '../utils/ability.js';
  *   X-User-ID     — user UUID
  *   X-Org-ID      — org UUID or absent for passengers
  *   X-User-Type   — "passenger" | "staff"
+ *   X-User-Phone  — E.164 phone number or absent if none on file
  *   X-User-Roles  — JSON array of role slugs, e.g. ["org_admin"]
  *   X-User-Rules  — JSON array of packed CASL rules
  *   X-User-Locale — user's preferred locale, e.g. "rw" | "en" | "fr"
@@ -31,6 +32,7 @@ export const authenticate = (req: Request, _res: Response, next: NextFunction): 
       id: userId,
       org_id: (req.headers['x-org-id'] as string | undefined) ?? null,
       user_type: (req.headers['x-user-type'] as 'passenger' | 'staff') ?? 'passenger',
+      phone_number: (req.headers['x-user-phone'] as string | undefined) ?? null,
       role_slugs: JSON.parse(
         (req.headers['x-user-roles'] as string | undefined) ?? '[]',
       ) as string[],
