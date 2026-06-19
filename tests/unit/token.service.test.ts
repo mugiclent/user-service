@@ -2,6 +2,7 @@
  * Tests for src/services/token.service.ts
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { signAccessToken } from '../../src/utils/tokens.js';
 
 // ── mocks ──────────────────────────────────────────────────────────────────────
 
@@ -118,6 +119,13 @@ describe('TokenService.issueTokenPair', () => {
     const user = makeUser() as never;
     const tokens = await TokenService.issueTokenPair(user);
     expect(tokens).toEqual({ access: 'mock-access-token', refresh: 'raw-refresh-token' });
+  });
+
+  it('signs the access token with the display name (first + last)', async () => {
+    await TokenService.issueTokenPair(makeUser() as never);
+    expect(vi.mocked(signAccessToken)).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Jane Doe' }),
+    );
   });
 
   it('stores null device_name when not provided', async () => {
