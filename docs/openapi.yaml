@@ -937,11 +937,11 @@ components:
           format: uuid
         type:
           type: string
-          enum: [topup, ticket_payment, refund]
+          enum: [topup, payment, refund]
           description: |
             The movement's source.
             - `topup` — passenger topped up via MoMo
-            - `ticket_payment` — wallet debited for a ticket purchase
+            - `payment` — wallet debited for a ticket purchase
             - `refund` — money returned after a cancelled/refunded ticket
         amount:
           type: integer
@@ -968,7 +968,7 @@ components:
           type: string
           format: uuid
           nullable: true
-          description: Set for `ticket_payment` / `refund` so the UI can deep-link; `null` for top-ups.
+          description: Set for `payment` / `refund` so the UI can deep-link; `null` for top-ups.
         balance_after:
           type: integer
           description: Running wallet balance immediately after this movement (RWF).
@@ -3304,8 +3304,8 @@ paths:
           schema: { type: integer, default: 20, maximum: 100 }
         - in: query
           name: type
-          schema: { type: string, enum: [topup, ticket_payment, refund] }
-          description: Filter by transaction type (maps to the movement's `source`).
+          schema: { type: string, enum: [topup, payment, refund] }
+          description: Filter by transaction type (`payment` maps to the internal `ticket_payment` source).
       responses:
         '200':
           description: Paginated transaction list.
@@ -3926,7 +3926,7 @@ paths:
           schema: { type: integer, default: 20, maximum: 100 }
         - in: query
           name: type
-          schema: { type: string, enum: [topup, ticket_payment, refund] }
+          schema: { type: string, enum: [topup, payment, refund] }
       responses:
         '200':
           description: Paginated transaction list.

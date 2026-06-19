@@ -5,7 +5,7 @@ import { publishWalletEvent } from '../utils/publishers.js';
 import { prisma } from '../models/index.js';
 import { AppError } from '../utils/AppError.js';
 import { normalizePhone } from '../utils/phone.js';
-import { describeTransaction } from '../utils/wallet-format.js';
+import { describeTransaction, sourceToType, typeToSource } from '../utils/wallet-format.js';
 
 const TOPUP_TTL = 360;
 const MIN_TOPUP_AMOUNT = 100;
@@ -82,8 +82,9 @@ export const WalletService = {
     const skip = (page - 1) * limit;
 
     const where: Prisma.WalletTransactionWhereInput = { owner_id: userId, owner_type: 'PASSENGER' };
-    // Frontend `type` filter maps onto our `source` (topup | ticket_payment | refund).
-    if (opts.type) where.source = opts.type;
+    // Frontend `type` filter (topup | payment | refund) maps onto our `source`
+    // (topup | ticket_payment | refund) — `payment` ⇄ `ticket_payment` at the boundary.
+    if (opts.type) where.source = typeToSource(opts.type);
 
     const [rows, total] = await Promise.all([
       prisma.walletTransaction.findMany({ where, orderBy: { occurred_at: 'desc' }, skip, take: limit }),
@@ -93,7 +94,7 @@ export const WalletService = {
     return {
       data: rows.map((t) => ({
         id: t.id,
-        type: t.source,                         // contract: topup | ticket_payment | refund
+        type: sourceToType(t.source),           // contract: topup | payment | refund
         amount: Number(t.amount),
         currency: 'RWF',
         description: describeTransaction(t.source, t.payment_method),

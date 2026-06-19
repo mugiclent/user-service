@@ -1,6 +1,14 @@
 // Presentation helpers for wallet transactions / top-up events. Kept in one place
 // so the read API (descriptions) and the SSE bridge (top-up messages) stay in sync.
 
+// Public `type` contract ⇄ internal `source`. The DB column and the payment-service
+// passenger.transaction events use `ticket_payment`; the public API exposes it as
+// `payment`. Only this boundary translates — storage and upstream events are unchanged.
+export const sourceToType = (source: string | null): string | null =>
+  source === 'ticket_payment' ? 'payment' : source;
+export const typeToSource = (type: string): string =>
+  type === 'payment' ? 'ticket_payment' : type;
+
 /** MoMo method code → display label. */
 export const methodLabel = (method?: string | null): string | null =>
   method === 'mtn' ? 'MTN' : method === 'airtel' ? 'Airtel' : null;
